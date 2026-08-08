@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "value-investment-backend"
+version = "0.1.0"
+description = "FastAPI backend for a local-first value investment research workbench."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116.0,<1.0.0",
+  "pydantic-settings>=2.10.0,<3.0.0",
+  "sqlalchemy>=2.0.0,<3.0.0",
+  "uvicorn[standard]>=0.35.0,<1.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0,<1.0.0",
+  "pytest>=8.4.0,<9.0.0",
+  "ruff>=0.12.0,<1.0.0"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["app/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

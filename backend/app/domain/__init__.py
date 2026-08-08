@@ -1,0 +1,2 @@
+"""Investment research domain objects."""
+

@@ -3,10 +3,12 @@ __pycache__/
 *.py[cod]
 *.pyo
 .pytest_cache/
-.mypy_cache/
 .ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
+
+# Virtual environments
 .venv/
 venv/
 env/
@@ -18,24 +20,30 @@ build/
 .vite/
 coverage/
 
-# Local app data
-data/raw/
-data/cache/
-*.db
-*.sqlite
-*.sqlite3
-
-# Environment and secrets
+# Local configuration
 .env
 .env.*
 !.env.example
 
-# IDE / OS
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
+# Data and runtime artifacts
+data/raw/*
+data/processed/*
+data/cache/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/cache/.gitkeep
+playwright-report/
+test-results/
+*.db
+*.sqlite
+*.sqlite3
 
 # Logs
 *.log
 logs/
+
+# Editors and OS
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
