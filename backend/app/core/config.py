@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -16,6 +16,60 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"]
+    )
+    model_provider: str = Field(
+        default="openai_compatible",
+        validation_alias=AliasChoices("MODEL_PROVIDER", "VALUE_INVESTMENT_MODEL_PROVIDER"),
+    )
+    model_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "MODEL_BASE_URL",
+            "VALUE_INVESTMENT_MODEL_BASE_URL",
+            "DEEPSEEK_BASE_URL",
+        ),
+    )
+    model_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "MODEL_API_KEY",
+            "VALUE_INVESTMENT_MODEL_API_KEY",
+            "DEEPSEEK_API_KEY",
+        ),
+    )
+    model_name: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "MODEL_NAME",
+            "VALUE_INVESTMENT_MODEL_NAME",
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_MODEL_NAME",
+        ),
+    )
+    model_wire_api: str = Field(
+        default="chat_completions",
+        validation_alias=AliasChoices("MODEL_WIRE_API", "VALUE_INVESTMENT_MODEL_WIRE_API"),
+    )
+    model_reasoning_effort: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "MODEL_REASONING_EFFORT",
+            "VALUE_INVESTMENT_MODEL_REASONING_EFFORT",
+        ),
+    )
+    model_disable_response_storage: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "MODEL_DISABLE_RESPONSE_STORAGE",
+            "VALUE_INVESTMENT_MODEL_DISABLE_RESPONSE_STORAGE",
+        ),
+    )
+    model_timeout_seconds: float = Field(
+        default=180,
+        validation_alias=AliasChoices(
+            "MODEL_TIMEOUT_SECONDS",
+            "VALUE_INVESTMENT_MODEL_TIMEOUT_SECONDS",
+        ),
     )
 
     model_config = SettingsConfigDict(

@@ -1,5 +1,5 @@
 import { RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { StatusPill } from "../components/StatusPill";
 import { getHealth, type HealthResponse } from "../services/api";
@@ -91,6 +91,11 @@ export function App() {
     setActiveView("company-workspace");
   }
 
+  const handleCompanyUnavailable = useCallback(() => {
+    setSelectedCompanyId(null);
+    setActiveView("company-search");
+  }, []);
+
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="主导航">
@@ -161,6 +166,7 @@ export function App() {
           <CompanyWorkspaceView
             companyId={selectedCompanyId}
             onBackToSearch={() => setActiveView("company-search")}
+            onCompanyUnavailable={handleCompanyUnavailable}
             refreshToken={refreshToken}
           />
         ) : null}
