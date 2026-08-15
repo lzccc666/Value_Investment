@@ -1,2 +1,1 @@
 """Investment research domain objects."""
-

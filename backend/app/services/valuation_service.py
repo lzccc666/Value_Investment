@@ -1,0 +1,2183 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from copy import deepcopy
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.analysis.analyst_profiles import get_analyst_profile
+from app.analysis.valuation_parameter_matrix import (
+    STATUS_SCORES,
+    VALUATION_DIMENSIONS,
+    derive_valuation_parameter_matrix,
+)
+from app.db.models import AnalysisRun, Company, ValuationRun, utc_now
+from app.services.companies import list_company_financials
+from app.services.financial_metrics import build_financial_evidence_pack
+from app.services.memo_service import get_latest_memo_for_valuation
+
+RUN_VERSION = "010_v1"
+FORECAST_YEARS = 5
+ANALYST_PARAMETER_IMPACT_SCALE = 1.50
+ANALYST_METHOD_WEIGHT_IMPACT_SCALE = 1.50
+ANALYST_METHOD_MULTIPLIER_MIN = 0.40
+ANALYST_METHOD_MULTIPLIER_MAX = 1.80
+MODEL_BASE_WEIGHTS = {
+    "owner_earnings": 0.35,
+    "dcf": 0.35,
+    "residual_income": 0.10,
+    "dividend_discount": 0.10,
+    "asset_value": 0.10,
+}
+MODEL_WEIGHT_FACTOR_EXPONENTS = {
+    "input_completeness": 1.50,
+    "data_quality": 1.50,
+    "risk_constraint": 1.50,
+    "analyst_signal": 1.50,
+}
+FORBIDDEN_PRICE_FIELDS = {
+    "current_price",
+    "market_cap",
+    "historical_price",
+    "price_history",
+    "valuation_multiple",
+    "pe_ttm",
+    "pe_dynamic",
+    "pe_static",
+    "pb_ratio",
+    "ps_ratio",
+    "ev_ebitda",
+    "position_cost",
+    "market_rating",
+    "target_price",
+    "broker_rating",
+    "market_sentiment",
+}
+FORBIDDEN_PRICE_TERMS = (
+    "当前价格",
+    "历史价格",
+    "股价",
+    "市值",
+    "估值倍数",
+    "市盈率",
+    "市净率",
+    "市销率",
+    "目标价",
+    "券商评级",
+    "持仓成本",
+    "浮盈",
+    "浮亏",
+    "市场情绪",
+)
+
+
+class ValuationRunError(ValueError):
+    pass
+
+
+class ValuationInputError(ValuationRunError):
+    pass
+
+
+class ValuationLockError(ValuationRunError):
+    pass
+
+
+def build_valuation_snapshot(session: Session, company: Company) -> dict[str, object]:
+    memo = get_latest_memo_for_valuation(session, company_id=company.id)
+    if memo is None:
+        raise ValuationInputError("需要先生成最新综合投资备忘录，010 只读取最新未删除 memo。")
+
+    financials, _ = list_company_financials(session, company_id=company.id, limit=120, offset=0)
+    financial_evidence_pack = build_financial_evidence_pack(financials)
+    if not financial_evidence_pack.get("latest_period"):
+        raise ValuationInputError("需要先同步财务数据，当前没有可用于估值的财务证据包。")
+
+    scrubber = _PriceBlindScrubber()
+    memo_sections = memo.sections if isinstance(memo.sections, dict) else {}
+    memo_inputs = scrubber.scrub(
+        {
+            "memo_id": memo.id,
+            "version_no": memo.version_no,
+            "title": memo.title,
+            "source_snapshot_hash": memo.source_snapshot_hash,
+            "research_conclusion": memo.conclusion,
+            "valuation_assumption_queue": memo_sections.get("valuation_assumption_queue", []),
+            "key_risks": memo_sections.get("key_risks", []),
+            "counter_evidence": memo_sections.get("counter_evidence", []),
+            "data_gaps": memo_sections.get("data_gaps", []),
+            "follow_up_questions": memo_sections.get("follow_up_questions", []),
+            "confidence_summary": memo_sections.get("confidence_summary", {}),
+            "source_map": memo_sections.get("source_map", {}),
+        }
+    )
+    snapshot = {
+        "company": {
+            "id": company.id,
+            "ticker": company.ticker,
+            "exchange": company.exchange,
+            "name": company.name,
+            "industry": company.industry,
+            "status": company.status,
+            "tags": company.tags,
+        },
+        "price_blind_boundary": {
+            "price_blind": True,
+            "forbidden_inputs": sorted(FORBIDDEN_PRICE_FIELDS),
+            "scrubbed_items": scrubber.scrubbed_items,
+        },
+        "financial_evidence_pack": financial_evidence_pack,
+        "memo_inputs": memo_inputs,
+        "analyst_parameter_matrices": _latest_analyst_parameter_matrices(
+            session,
+            company_id=company.id,
+        ),
+    }
+    return snapshot
+
+
+def _latest_analyst_parameter_matrices(
+    session: Session,
+    *,
+    company_id: int,
+) -> list[dict[str, object]]:
+    runs = session.scalars(
+        select(AnalysisRun)
+        .where(
+            AnalysisRun.company_id == company_id,
+            AnalysisRun.run_type == "analyst_view",
+            AnalysisRun.status == "success",
+            AnalysisRun.is_latest.is_(True),
+        )
+        .order_by(AnalysisRun.created_at.desc(), AnalysisRun.id.desc())
+    ).all()
+    matrices = []
+    seen_profiles: set[str] = set()
+    for run in runs:
+        profile_id = str(run.analyst_profile or "")
+        if not profile_id or profile_id in seen_profiles:
+            continue
+        seen_profiles.add(profile_id)
+        result = _dict(run.result)
+        matrix = _dict(result.get("valuation_parameter_matrix"))
+        if not matrix:
+            profile = get_analyst_profile(profile_id)
+            if profile is None:
+                continue
+            matrix = derive_valuation_parameter_matrix(
+                source_run_id=run.id,
+                profile=profile,
+                result=result,
+            )
+        matrices.append(matrix)
+    return matrices
+
+
+def create_draft_valuation_run(
+    session: Session,
+    company: Company,
+    *,
+    user_assumptions: dict[str, object] | None = None,
+    user_note: str | None = None,
+) -> ValuationRun:
+    snapshot = build_valuation_snapshot(session, company)
+    memo_inputs = snapshot.get("memo_inputs")
+    memo_id = _as_int(memo_inputs.get("memo_id")) if isinstance(memo_inputs, dict) else None
+    payload = _calculate_valuation_payload(snapshot, user_assumptions or {})
+    run = ValuationRun(
+        company_id=company.id,
+        memo_id=memo_id,
+        run_version=RUN_VERSION,
+        status="draft",
+        price_blind=True,
+        forbidden_price_inputs=payload["forbidden_price_inputs"],
+        input_snapshot=snapshot,
+        input_snapshot_hash=_hash_snapshot(snapshot),
+        valuation_inputs=payload["valuation_inputs"],
+        model_suggested_assumptions=payload["model_suggested_assumptions"],
+        user_adjusted_assumptions=payload["user_adjusted_assumptions"],
+        assumptions=payload["assumptions"],
+        methods=payload["methods"],
+        results=payload["results"],
+        sensitivity=payload["sensitivity"],
+        confidence=payload["confidence"],
+        confidence_summary=payload["confidence_summary"],
+        source_map=payload["source_map"],
+        user_note=user_note,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+def recalculate_valuation_run(
+    session: Session,
+    run: ValuationRun,
+    *,
+    user_assumptions: dict[str, object],
+    user_note: str | None = None,
+) -> ValuationRun:
+    company = session.get(Company, run.company_id)
+    if company is None:
+        raise ValuationInputError("估值记录所属公司不存在。")
+    return create_draft_valuation_run(
+        session,
+        company,
+        user_assumptions=user_assumptions,
+        user_note=user_note if user_note is not None else run.user_note,
+    )
+
+
+def lock_valuation_run(session: Session, run: ValuationRun) -> ValuationRun:
+    if run.status == "locked":
+        return run
+    if run.status != "draft":
+        raise ValuationLockError("只有 draft 状态的估值记录可以锁定。")
+    if run.results.get("status") != "calculated_after_user_confirmation":
+        raise ValuationLockError("估值参数尚未由用户确认，当前草稿不能锁定。")
+    high_gaps = _high_severity_gaps(run.results.get("valuation_input_gaps"))
+    if high_gaps:
+        fields = "、".join(str(item.get("field") or item.get("summary")) for item in high_gaps)
+        raise ValuationLockError(f"存在高严重度估值输入缺口，暂不能锁定：{fields}")
+    run.status = "locked"
+    run.updated_at = utc_now()
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+def get_valuation_run(session: Session, run_id: int) -> ValuationRun | None:
+    return session.get(ValuationRun, run_id)
+
+
+def get_latest_company_valuation_run(
+    session: Session,
+    *,
+    company_id: int,
+) -> ValuationRun | None:
+    return session.scalar(
+        select(ValuationRun)
+        .where(ValuationRun.company_id == company_id)
+        .order_by(ValuationRun.created_at.desc(), ValuationRun.id.desc())
+    )
+
+
+def list_company_valuation_runs(
+    session: Session,
+    *,
+    company_id: int,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[ValuationRun], int]:
+    filters = [ValuationRun.company_id == company_id]
+    total = session.scalar(select(func.count()).select_from(ValuationRun).where(*filters)) or 0
+    items = session.scalars(
+        select(ValuationRun)
+        .where(*filters)
+        .order_by(ValuationRun.created_at.desc(), ValuationRun.id.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return items, total
+
+
+def _calculate_valuation_payload(
+    snapshot: dict[str, object],
+    user_assumptions: dict[str, object],
+) -> dict[str, Any]:
+    financial_pack = _dict(snapshot.get("financial_evidence_pack"))
+    memo_inputs = _dict(snapshot.get("memo_inputs"))
+    valuation_inputs = _derive_valuation_inputs(financial_pack)
+    input_gaps = _derive_valuation_input_gaps(financial_pack, valuation_inputs)
+    analyst_matrices = [
+        item for item in _list(snapshot.get("analyst_parameter_matrices")) if isinstance(item, dict)
+    ]
+    suggested_assumptions = _derive_assumptions(
+        financial_pack,
+        memo_inputs,
+        input_gaps,
+        analyst_matrices,
+    )
+    user_confirmed = bool(user_assumptions)
+    final_assumptions = (
+        _deep_merge(suggested_assumptions, user_assumptions) if user_confirmed else {}
+    )
+    if user_confirmed:
+        parameter_sources = _dict(final_assumptions.get("parameter_sources"))
+        parameter_sources["user_adjusted"] = sorted(user_assumptions.keys())
+        final_assumptions["parameter_sources"] = parameter_sources
+    if user_confirmed:
+        method_results = [
+            _calculate_dcf(valuation_inputs, final_assumptions, input_gaps),
+            _calculate_owner_earnings(valuation_inputs, final_assumptions, input_gaps),
+            _skipped_method(
+                "residual_income",
+                "剩余收益模型已预留，MVP 等股东权益、ROE 和权益资本成本口径稳定后完整计算。",
+            ),
+            _skipped_method(
+                "dividend_discount",
+                "分红折现模型已预留，MVP 先展示适配和输入缺口。",
+            ),
+            _skipped_method(
+                "asset_value",
+                "资产价值模型已预留，MVP 先展示资产负债底稿和缺口。",
+            ),
+        ]
+        intrinsic_value_range, weighting, dispersion_warning = _combine_method_results(
+            method_results,
+            valuation_inputs,
+            input_gaps,
+            final_assumptions,
+        )
+    else:
+        method_results = []
+        intrinsic_value_range = {
+            "total_equity_value": {},
+            "per_share_value": {},
+            "currency": "CNY",
+            "status": "needs_user_confirmation",
+        }
+        weighting = []
+        dispersion_warning = None
+    confidence, confidence_summary = _build_confidence_summary(
+        input_gaps=input_gaps,
+        method_results=method_results,
+        dispersion_warning=dispersion_warning,
+    )
+    return {
+        "forbidden_price_inputs": {
+            "price_blind": True,
+            "forbidden_fields": sorted(FORBIDDEN_PRICE_FIELDS),
+            "forbidden_terms": list(FORBIDDEN_PRICE_TERMS),
+            "scrubbed_items": _dict(snapshot.get("price_blind_boundary")).get(
+                "scrubbed_items",
+                [],
+            ),
+        },
+        "valuation_inputs": valuation_inputs,
+        "model_suggested_assumptions": suggested_assumptions,
+        "user_adjusted_assumptions": user_assumptions,
+        "assumptions": final_assumptions,
+        "methods": {
+            "selected_methods": ["dcf", "owner_earnings"],
+            "reserved_methods": ["residual_income", "dividend_discount", "asset_value"],
+            "base_weights": dict(MODEL_BASE_WEIGHTS),
+            "forecast_years": FORECAST_YEARS,
+        },
+        "results": {
+            "title": "无锚定估值实验",
+            "price_blind": True,
+            "status": (
+                "calculated_after_user_confirmation"
+                if user_confirmed
+                else "needs_user_confirmation"
+            ),
+            "method_results": method_results,
+            "model_weighting": weighting,
+            "intrinsic_value_range": intrinsic_value_range,
+            "valuation_input_gaps": input_gaps,
+            "dispersion_warning": dispersion_warning,
+            "next_step": (
+                "参数已确认，可在复核后锁定估值。"
+                if user_confirmed
+                else "请先确认或调整模型建议参数。"
+            ),
+        },
+        "sensitivity": (
+            _build_sensitivity(valuation_inputs, final_assumptions) if user_confirmed else {}
+        ),
+        "confidence": confidence,
+        "confidence_summary": confidence_summary,
+        "source_map": _dict(memo_inputs.get("source_map")),
+    }
+
+
+def _derive_valuation_inputs(financial_pack: dict[str, object]) -> dict[str, object]:
+    facts = _dict(financial_pack.get("financial_facts"))
+    latest = _dict(facts.get("latest"))
+    metrics = _dict(financial_pack.get("financial_metrics"))
+    profitability = _dict(metrics.get("profitability"))
+    cash_quality = _dict(financial_pack.get("cash_flow_quality"))
+    balance_sheet = _dict(financial_pack.get("balance_sheet_adjustment"))
+    capital_allocation = _dict(financial_pack.get("capital_allocation"))
+    trends = _dict(financial_pack.get("financial_trends"))
+    normalized_bases = _derive_normalized_statement_bases(financial_pack)
+    normalized_fcf = _derive_normalized_free_cash_flow(financial_pack)
+    normalized_base_values = _dict(normalized_bases.get("values"))
+    return {
+        "base_revenue": _num(normalized_base_values.get("revenue")) or _num(latest.get("revenue")),
+        "base_gross_profit": _num(normalized_base_values.get("gross_profit"))
+        or _num(latest.get("gross_profit")),
+        "base_net_profit": _num(normalized_base_values.get("net_profit"))
+        or _num(latest.get("net_profit")),
+        "base_deducted_net_profit": _num(normalized_base_values.get("deducted_net_profit"))
+        or _num(latest.get("deducted_net_profit")),
+        "base_operating_cash_flow": _num(normalized_base_values.get("operating_cash_flow"))
+        or _num(cash_quality.get("operating_cash_flow"))
+        or _num(latest.get("operating_cash_flow")),
+        "base_free_cash_flow": normalized_fcf["value"],
+        "base_period_method": normalized_bases["method"],
+        "base_period_type": normalized_bases["period_type"],
+        "base_source_periods": normalized_bases["source_periods"],
+        "base_free_cash_flow_source": "normalized_free_cash_flow",
+        "normalized_free_cash_flow": normalized_fcf["value"],
+        "normalization_method": normalized_fcf["method"],
+        "normalization_confidence": normalized_fcf["confidence"],
+        "latest_period_type": normalized_fcf["latest_period_type"],
+        "latest_period_used_as_dcf_base": normalized_fcf["latest_period_used_as_dcf_base"],
+        "normalization_adjustments": normalized_fcf["adjustments"],
+        "normalization_warnings": normalized_fcf["warnings"],
+        "normalization_source_periods": normalized_fcf["source_periods"],
+        "normalized_fcf_to_net_profit": normalized_fcf["fcf_to_net_profit"],
+        "capital_expenditure": _num(normalized_base_values.get("capital_expenditure"))
+        or _num(capital_allocation.get("capital_expenditure"))
+        or _num(latest.get("capital_expenditure")),
+        "depreciation_and_amortization": _num(
+            normalized_base_values.get("depreciation_and_amortization")
+        )
+        or _num(latest.get("depreciation_and_amortization")),
+        "working_capital_change": _num(normalized_base_values.get("working_capital_change")),
+        "cash_and_equivalents": _num(balance_sheet.get("cash_and_equivalents"))
+        or _num(latest.get("cash_and_equivalents")),
+        "interest_bearing_debt": _num(balance_sheet.get("interest_bearing_debt"))
+        or _num(latest.get("interest_bearing_debt")),
+        "net_cash": _num(balance_sheet.get("net_cash")) or _num(latest.get("net_cash")),
+        "shareholders_equity": _num(latest.get("shareholders_equity")),
+        "total_assets": _num(latest.get("total_assets")),
+        "total_liabilities": _num(latest.get("total_liabilities")),
+        "dividend": _num(capital_allocation.get("dividend")) or _num(latest.get("dividend")),
+        "shares_outstanding": _num(capital_allocation.get("shares_outstanding"))
+        or _num(latest.get("shares_outstanding")),
+        "roe": _num(profitability.get("roe")),
+        "gross_margin": _num(profitability.get("gross_margin")),
+        "net_margin": _num(profitability.get("net_margin")),
+        "revenue_cagr_3y": _num(trends.get("revenue_cagr_3y")),
+        "revenue_cagr_5y": _num(trends.get("revenue_cagr_5y")),
+        "net_profit_cagr_3y": _num(trends.get("net_profit_cagr_3y")),
+        "net_profit_cagr_5y": _num(trends.get("net_profit_cagr_5y")),
+        "free_cash_flow_cagr_3y": _num(trends.get("free_cash_flow_cagr_3y")),
+        "free_cash_flow_cagr_5y": _num(trends.get("free_cash_flow_cagr_5y")),
+        "latest_period": financial_pack.get("latest_period"),
+    }
+
+
+def _derive_normalized_statement_bases(financial_pack: dict[str, object]) -> dict[str, object]:
+    facts = _dict(financial_pack.get("financial_facts"))
+    series = _dict(facts.get("series"))
+    latest_period = _safe_str(financial_pack.get("latest_period"))
+    latest_period_type = _period_type(latest_period)
+    fields = [
+        "revenue",
+        "gross_profit",
+        "net_profit",
+        "deducted_net_profit",
+        "operating_cash_flow",
+        "capital_expenditure",
+        "depreciation_and_amortization",
+        "working_capital_change",
+    ]
+    values: dict[str, float | None] = {}
+    method = "latest_period"
+    source_periods: list[str] = [latest_period] if latest_period else []
+    for field in fields:
+        derived = _derive_normalized_series_value(
+            series=series,
+            field=field,
+            latest_period=latest_period,
+            latest_period_type=latest_period_type,
+        )
+        values[field] = derived["value"]
+        if derived["method"] == "ttm_adjusted":
+            method = "ttm_adjusted"
+            source_periods = list(derived["source_periods"])
+        elif method != "ttm_adjusted" and derived["method"] == "latest_annual":
+            method = "latest_annual"
+            source_periods = list(derived["source_periods"])
+    return {
+        "values": values,
+        "method": method,
+        "period_type": (
+            "ttm"
+            if method == "ttm_adjusted"
+            else "annual"
+            if method == "latest_annual"
+            else latest_period_type
+        ),
+        "source_periods": source_periods,
+    }
+
+
+def _derive_normalized_series_value(
+    *,
+    series: dict[str, object],
+    field: str,
+    latest_period: str,
+    latest_period_type: str,
+) -> dict[str, object]:
+    values_by_period = _series_value_by_period(series, field)
+    if latest_period_type in {"half_year", "quarter"}:
+        ttm_value = _derive_ttm_value(values_by_period, latest_period, latest_period_type)
+        if ttm_value is not None:
+            return {
+                "value": ttm_value["value"],
+                "method": "ttm_adjusted",
+                "source_periods": ttm_value["source_periods"],
+            }
+    annual_items = [
+        {"period": period, "value": value}
+        for period, value in values_by_period.items()
+        if _period_type(period) == "annual"
+    ]
+    if annual_items:
+        latest_annual = annual_items[0]
+        return {
+            "value": latest_annual["value"],
+            "method": "latest_annual",
+            "source_periods": [latest_annual["period"]],
+        }
+    return {
+        "value": values_by_period.get(latest_period),
+        "method": "latest_period",
+        "source_periods": [latest_period] if latest_period else [],
+    }
+
+
+def _derive_normalized_free_cash_flow(financial_pack: dict[str, object]) -> dict[str, object]:
+    facts = _dict(financial_pack.get("financial_facts"))
+    series = _dict(facts.get("series"))
+    latest_period = _safe_str(financial_pack.get("latest_period"))
+    latest_period_type = _period_type(latest_period)
+    warnings: list[str] = []
+    adjustments: list[dict[str, object]] = []
+
+    fcf_by_period = _series_value_by_period(series, "free_cash_flow")
+    profit_by_period = _series_value_by_period(series, "net_profit")
+    annual_fcf = [
+        {"period": period, "value": value}
+        for period, value in fcf_by_period.items()
+        if _period_type(period) == "annual"
+    ]
+    annual_profit = [
+        {"period": period, "value": value}
+        for period, value in profit_by_period.items()
+        if _period_type(period) == "annual"
+    ]
+
+    if latest_period_type in {"half_year", "quarter"}:
+        warnings.append("最新期为季报或中报，单期自由现金流不直接作为 DCF 基数。")
+
+    ttm_fcf = _derive_ttm_fcf(fcf_by_period, latest_period, latest_period_type)
+    source_periods: list[str] = []
+    method: str | None = None
+    confidence = "low"
+    value: float | None = None
+
+    if ttm_fcf is not None:
+        value = ttm_fcf["value"]
+        method = "ttm_adjusted"
+        confidence = "medium"
+        source_periods = ttm_fcf["source_periods"]
+    elif len(annual_fcf) >= 3:
+        value = _weighted_values([item["value"] for item in annual_fcf[:3]], [0.50, 0.30, 0.20])
+        method = "weighted_annual_3y"
+        confidence = "high"
+        source_periods = [str(item["period"]) for item in annual_fcf[:3]]
+    elif len(annual_fcf) == 2:
+        value = _weighted_values([item["value"] for item in annual_fcf], [0.50, 0.30])
+        method = "weighted_annual_available"
+        confidence = "medium"
+        source_periods = [str(item["period"]) for item in annual_fcf]
+        warnings.append("可用完整年度自由现金流不足三年，已使用可用年度加权平均。")
+    elif len(annual_fcf) == 1:
+        value = float(annual_fcf[0]["value"])
+        method = "latest_annual_adjusted"
+        confidence = "low"
+        source_periods = [str(annual_fcf[0]["period"])]
+        warnings.append("可用完整年度自由现金流不足三年，仅使用最近完整年度，需降低置信度。")
+    elif latest_period_type in {"half_year", "quarter"}:
+        warnings.append("缺少完整年度或 TTM 自由现金流，DCF 基数无法自动派生。")
+
+    if value is not None and latest_period_type in {"half_year", "quarter"} and ttm_fcf is None:
+        warnings.append("缺少去年同期现金流，无法构造 TTM，已退回完整年度口径。")
+
+    if method == "ttm_adjusted":
+        normalized_profit = _num(
+            _derive_normalized_series_value(
+                series=series,
+                field="net_profit",
+                latest_period=latest_period,
+                latest_period_type=latest_period_type,
+            ).get("value")
+        )
+    else:
+        normalized_profit = _matching_normalized_profit(
+            annual_profit=annual_profit,
+            source_periods=source_periods,
+        )
+    fcf_to_net_profit = (
+        value / normalized_profit
+        if value is not None and normalized_profit is not None and normalized_profit > 0
+        else None
+    )
+    if value is not None and normalized_profit is not None and normalized_profit > 0:
+        cap = normalized_profit * 1.30
+        if value > cap:
+            adjustments.append(
+                {
+                    "type": "cash_conversion_cap",
+                    "from": value,
+                    "to": cap,
+                    "reason": "正常化 FCF/净利润超过 1.30，未确认前不自动抬高 DCF 基数。",
+                }
+            )
+            value = cap
+            confidence = "low" if confidence == "medium" else confidence
+            warnings.append("正常化 FCF/净利润超过 1.30，已按 1.30 倍净利润设置保守上限。")
+        elif fcf_to_net_profit is not None and fcf_to_net_profit < 0.60:
+            warnings.append("正常化 FCF/净利润低于 0.60，现金转化偏弱，DCF 权重应降低。")
+            confidence = "low"
+
+    return {
+        "value": value,
+        "method": method,
+        "confidence": confidence if value is not None else "low",
+        "latest_period_type": latest_period_type,
+        "latest_period_used_as_dcf_base": (
+            latest_period_type == "annual" and method == "latest_annual_adjusted"
+        ),
+        "adjustments": adjustments,
+        "warnings": warnings,
+        "source_periods": source_periods,
+        "fcf_to_net_profit": fcf_to_net_profit,
+    }
+
+
+def _derive_ttm_fcf(
+    fcf_by_period: dict[str, float],
+    latest_period: str,
+    latest_period_type: str,
+) -> dict[str, object] | None:
+    return _derive_ttm_value(fcf_by_period, latest_period, latest_period_type)
+
+
+def _derive_ttm_value(
+    values_by_period: dict[str, float],
+    latest_period: str,
+    latest_period_type: str,
+) -> dict[str, object] | None:
+    if latest_period_type not in {"half_year", "quarter"}:
+        return None
+    latest_value = values_by_period.get(latest_period)
+    if latest_value is None:
+        return None
+    latest_year = _period_year(latest_period)
+    latest_suffix = _period_suffix(latest_period)
+    if latest_year is None or not latest_suffix:
+        return None
+    latest_annual_period = _find_annual_period(values_by_period, latest_year - 1)
+    prior_interim_period = _find_period_by_suffix(
+        values_by_period,
+        latest_year - 1,
+        latest_suffix,
+    )
+    if latest_annual_period is None or prior_interim_period is None:
+        return None
+    value = (
+        values_by_period[latest_annual_period]
+        + latest_value
+        - values_by_period[prior_interim_period]
+    )
+    return {
+        "value": value,
+        "source_periods": [latest_annual_period, latest_period, prior_interim_period],
+    }
+
+
+def _series_value_by_period(series: dict[str, object], field: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for item in _list(series.get(field)):
+        if not isinstance(item, dict):
+            continue
+        period = _safe_str(item.get("period"))
+        value = _num(item.get("value"))
+        if period and value is not None:
+            values[period] = value
+    return values
+
+
+def _weighted_values(values: list[float], weights: list[float]) -> float:
+    usable = list(zip(values, weights, strict=False))
+    total_weight = sum(weight for _, weight in usable)
+    if total_weight <= 0:
+        return 0.0
+    return sum(value * weight for value, weight in usable) / total_weight
+
+
+def _matching_normalized_profit(
+    *,
+    annual_profit: list[dict[str, object]],
+    source_periods: list[str],
+) -> float | None:
+    if not annual_profit:
+        return None
+    source_set = set(source_periods)
+    matching = [
+        float(item["value"])
+        for item in annual_profit
+        if str(item["period"]) in source_set and _num(item["value"]) is not None
+    ]
+    if len(matching) >= 3:
+        return _weighted_values(matching[:3], [0.50, 0.30, 0.20])
+    if len(matching) == 2:
+        return _weighted_values(matching, [0.50, 0.30])
+    if len(matching) == 1:
+        return matching[0]
+    latest = _num(annual_profit[0].get("value"))
+    return latest
+
+
+def _period_type(period: str) -> str:
+    normalized = period.strip().upper()
+    if not normalized:
+        return "unknown"
+    if normalized.endswith("A") or "ANNUAL" in normalized or "年报" in period or "年度" in period:
+        return "annual"
+    if (
+        "H1" in normalized
+        or "HY" in normalized
+        or "06-30" in normalized
+        or "中报" in period
+        or "半年度" in period
+    ):
+        return "half_year"
+    if (
+        "Q1" in normalized
+        or "Q2" in normalized
+        or "Q3" in normalized
+        or "Q4" in normalized
+        or "03-31" in normalized
+        or "09-30" in normalized
+        or "季报" in period
+    ):
+        return "quarter"
+    return "unknown"
+
+
+def _period_year(period: str) -> int | None:
+    digits = "".join(char for char in period if char.isdigit())
+    if len(digits) < 4:
+        return None
+    return int(digits[:4])
+
+
+def _period_suffix(period: str) -> str:
+    normalized = period.strip().upper()
+    for suffix in ("H1", "Q1", "Q2", "Q3", "Q4"):
+        if suffix in normalized:
+            return suffix
+    if "06-30" in normalized or "中报" in period or "半年度" in period:
+        return "H1"
+    if "03-31" in normalized:
+        return "Q1"
+    if "09-30" in normalized:
+        return "Q3"
+    return ""
+
+
+def _find_annual_period(values_by_period: dict[str, float], year: int) -> str | None:
+    for period in values_by_period:
+        if _period_year(period) == year and _period_type(period) == "annual":
+            return period
+    return None
+
+
+def _find_period_by_suffix(
+    values_by_period: dict[str, float],
+    year: int,
+    suffix: str,
+) -> str | None:
+    for period in values_by_period:
+        if _period_year(period) == year and _period_suffix(period) == suffix:
+            return period
+    return None
+
+
+def _derive_valuation_input_gaps(
+    financial_pack: dict[str, object],
+    valuation_inputs: dict[str, object],
+) -> list[dict[str, object]]:
+    gaps: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in _list(financial_pack.get("financial_data_gaps")):
+        if not isinstance(item, dict):
+            continue
+        needed_by = _str_list(item.get("needed_by"))
+        if "valuation_lab" not in needed_by:
+            continue
+        field = str(item.get("field") or "")
+        if not field or field in seen:
+            continue
+        seen.add(field)
+        gaps.append(
+            {
+                "field": field,
+                "severity": str(item.get("severity") or "medium"),
+                "reason": str(item.get("reason") or "估值输入缺失。"),
+                "replacement_available": bool(item.get("replacement_available", False)),
+                "source": "financial_evidence_pack",
+            }
+        )
+
+    for field, reason in (
+        ("base_net_profit", "缺少基准净利润，所有者盈余估值无法运行。"),
+        ("base_free_cash_flow", "缺少基准自由现金流，DCF 无法运行。"),
+    ):
+        if valuation_inputs.get(field) is None and field not in seen:
+            gaps.append(
+                {
+                    "field": field,
+                    "severity": "high",
+                    "reason": reason,
+                    "replacement_available": False,
+                    "source": "valuation_input_derivation",
+                }
+            )
+            seen.add(field)
+    normalization_warnings = _str_list(valuation_inputs.get("normalization_warnings"))
+    if (
+        valuation_inputs.get("base_free_cash_flow") is not None
+        and valuation_inputs.get("normalization_method")
+        in {"weighted_annual_available", "latest_annual_adjusted"}
+        and "normalized_free_cash_flow_history" not in seen
+    ):
+        gaps.append(
+            {
+                "field": "normalized_free_cash_flow_history",
+                "severity": "low",
+                "reason": "可用完整年度自由现金流不足三年，DCF 允许运行但需降低置信度。",
+                "replacement_available": True,
+                "source": "valuation_input_derivation",
+            }
+        )
+        seen.add("normalized_free_cash_flow_history")
+    if (
+        valuation_inputs.get("base_free_cash_flow") is not None
+        and valuation_inputs.get("latest_period_type") in {"half_year", "quarter"}
+        and valuation_inputs.get("normalization_method") != "ttm_adjusted"
+        and "ttm_free_cash_flow" not in seen
+    ):
+        gaps.append(
+            {
+                "field": "ttm_free_cash_flow",
+                "severity": "low",
+                "reason": "最新期为季报或中报但无法构造 TTM FCF，已退回完整年度口径。",
+                "replacement_available": True,
+                "source": "valuation_input_derivation",
+            }
+        )
+        seen.add("ttm_free_cash_flow")
+    if (
+        any("1.30" in warning for warning in normalization_warnings)
+        and "normalized_fcf_to_net_profit" not in seen
+    ):
+        gaps.append(
+            {
+                "field": "normalized_fcf_to_net_profit",
+                "severity": "medium",
+                "reason": "正常化 FCF/净利润超过 1.30，未确认前已按保守上限处理。",
+                "replacement_available": True,
+                "source": "valuation_input_derivation",
+            }
+        )
+        seen.add("normalized_fcf_to_net_profit")
+    if valuation_inputs.get("shares_outstanding") is None and "shares_outstanding" not in seen:
+        gaps.append(
+            {
+                "field": "shares_outstanding",
+                "severity": "high",
+                "reason": "缺少总股本，无法换算每股内在价值。",
+                "replacement_available": False,
+                "source": "valuation_input_derivation",
+            }
+        )
+    return gaps
+
+
+def _derive_assumptions(
+    financial_pack: dict[str, object],
+    memo_inputs: dict[str, object],
+    input_gaps: list[dict[str, object]],
+    analyst_matrices: list[dict[str, object]],
+) -> dict[str, object]:
+    trends = _dict(financial_pack.get("financial_trends"))
+    flags = _list(financial_pack.get("financial_flags"))
+    data_quality = _dict(financial_pack.get("data_quality"))
+    memo_risk_items = _list(memo_inputs.get("key_risks")) + _list(
+        memo_inputs.get("counter_evidence"),
+    )
+    base_growth = _first_number(
+        trends.get("free_cash_flow_cagr_5y"),
+        trends.get("free_cash_flow_cagr_3y"),
+        trends.get("net_profit_cagr_5y"),
+        trends.get("net_profit_cagr_3y"),
+        trends.get("revenue_cagr_5y"),
+        trends.get("revenue_cagr_3y"),
+        default=0.04,
+    )
+    base_growth = _clamp(base_growth, -0.05, 0.12)
+    financial_base_growth = base_growth
+    risk_penalty = min(0.025, 0.005 * len(flags) + 0.003 * len(input_gaps))
+    base_discount = _clamp(0.095 + risk_penalty, 0.08, 0.14)
+    base_terminal = 0.02
+    analyst_adjustment = _derive_analyst_matrix_adjustment(
+        matrices=analyst_matrices,
+        input_gaps=input_gaps,
+    )
+    base_growth = _clamp(
+        base_growth + float(analyst_adjustment["delta_growth"]),
+        -0.08,
+        0.16,
+    )
+    base_owner_growth = _clamp(
+        financial_base_growth + float(analyst_adjustment["delta_owner_growth"]),
+        -0.08,
+        0.15,
+    )
+    base_discount = _clamp(
+        base_discount + float(analyst_adjustment["delta_discount"]),
+        0.075,
+        0.16,
+    )
+    base_terminal = min(
+        base_discount - 0.01,
+        _clamp(
+            base_terminal + float(analyst_adjustment["delta_terminal"]),
+            0.0,
+            0.035,
+        ),
+    )
+    spread = _clamp(float(analyst_adjustment["scenario_spread"]), 0.015, 0.08)
+    conservative_terminal = _clamp(base_terminal - spread * 0.30, 0.0, 0.035)
+    optimistic_terminal = _clamp(base_terminal + spread * 0.25, 0.0, 0.035)
+    if float(analyst_adjustment["permanent_loss_risk_negative"]) > 0.50:
+        optimistic_terminal = min(optimistic_terminal, base_terminal)
+    scenario_inputs = {
+        "conservative": {
+            "cash_flow_growth_rate": _clamp(base_growth - spread, -0.10, 0.10),
+            "owner_earnings_growth_rate": _clamp(base_owner_growth - spread, -0.10, 0.10),
+            "discount_rate": _clamp(base_discount + spread * 0.60, 0.09, 0.18),
+            "terminal_growth_rate": conservative_terminal,
+        },
+        "base": {
+            "cash_flow_growth_rate": base_growth,
+            "owner_earnings_growth_rate": base_owner_growth,
+            "discount_rate": base_discount,
+            "terminal_growth_rate": base_terminal,
+        },
+        "optimistic": {
+            "cash_flow_growth_rate": _clamp(base_growth + spread, -0.02, 0.18),
+            "owner_earnings_growth_rate": _clamp(base_owner_growth + spread, -0.02, 0.16),
+            "discount_rate": _clamp(base_discount - spread * 0.35, 0.075, 0.14),
+            "terminal_growth_rate": optimistic_terminal,
+        },
+    }
+    return {
+        "forecast_years": FORECAST_YEARS,
+        "scenarios": scenario_inputs,
+        "source": {
+            "growth": "financial_evidence_pack.financial_trends",
+            "discount_rate": "rule_based_quality_and_gap_adjustment",
+            "terminal_growth_rate": "system_default_with_conservative_cap",
+        },
+        "parameter_sources": {
+            "system_default": ["forecast_years", "terminal_growth_rate_bounds"],
+            "financial_evidence_pack": [
+                "growth_rates",
+                "cash_flow_quality",
+                "balance_sheet_adjustment",
+                "capital_allocation",
+                "valuation_readiness",
+                "financial_data_gaps",
+            ],
+            "memo_assumption": [
+                "valuation_assumption_queue",
+                "key_risks",
+                "counter_evidence",
+                "data_gaps",
+            ],
+            "analyst_rule_matrix": [
+                "dimension_scores",
+                "quality_score",
+                "growth_score",
+                "risk_score",
+                "scenario_spread",
+                "method_multipliers",
+            ]
+            if analyst_adjustment["has_signals"]
+            else [],
+            "model_suggested": [],
+            "user_adjusted": [],
+        },
+        "weighting_constraints": {
+            "input_gap_count": len(input_gaps),
+            "financial_flag_count": len(flags),
+            "data_quality_penalty_count": len(_list(data_quality.get("confidence_penalties"))),
+            "memo_risk_count": len(memo_risk_items),
+            "analyst_method_multipliers": analyst_adjustment["method_multipliers"],
+        },
+        "rules": {
+            "terminal_growth_rate_max": 0.035,
+            "discount_rate_min": 0.075,
+            "price_blind": True,
+            "analyst_status_score_policy": analyst_adjustment["status_score_policy"],
+        },
+        "analyst_parameter_matrix_snapshot": analyst_adjustment,
+        "memo_assumption_queue": memo_inputs.get("valuation_assumption_queue", []),
+        "risk_adjustments": {
+            "key_risks": memo_inputs.get("key_risks", []),
+            "counter_evidence": memo_inputs.get("counter_evidence", []),
+        },
+    }
+
+
+def _derive_analyst_matrix_adjustment(
+    *,
+    matrices: list[dict[str, object]],
+    input_gaps: list[dict[str, object]],
+) -> dict[str, object]:
+    analyst_rows = []
+    for matrix in matrices:
+        for item in _list(matrix.get("analyst_items")):
+            if not isinstance(item, dict):
+                continue
+            rules = [rule for rule in _list(item.get("rule_impacts")) if isinstance(rule, dict)]
+            total_count = len(rules)
+            if total_count == 0:
+                continue
+            known_count = sum(str(rule.get("status")) != "unknown" for rule in rules)
+            compute_count = sum(
+                rule.get("calculation_role") == "compute"
+                and rule.get("price_blind_compatible") is True
+                for rule in rules
+            )
+            fit = _clamp(_num(item.get("profile_fit_score")) or 0.6, 0.2, 1.0)
+            confidence = _clamp(_num(item.get("data_confidence")) or 0.6, 0.2, 1.0)
+            known_completeness = known_count / total_count
+            price_blind_completeness = compute_count / total_count
+            raw_weight = 0.50 * confidence + 0.50 * fit
+            analyst_rows.append(
+                {
+                    "profile_id": item.get("profile_id"),
+                    "profile_name": item.get("profile_name"),
+                    "source_run_id": item.get("source_run_id"),
+                    "profile_fit_score": fit,
+                    "data_confidence": confidence,
+                    "known_rule_completeness": known_completeness,
+                    "price_blind_completeness": price_blind_completeness,
+                    "raw_weight": raw_weight,
+                    "rules": rules,
+                }
+            )
+
+    total_raw_weight = sum(float(item["raw_weight"]) for item in analyst_rows)
+    for item in analyst_rows:
+        item["weight"] = (
+            float(item["raw_weight"]) / total_raw_weight if total_raw_weight > 0 else 0.0
+        )
+
+    dimension_scores: dict[str, float] = {}
+    dimension_disagreement: dict[str, float] = {}
+    dimension_traces: dict[str, list[dict[str, object]]] = {}
+    parameter_traces: dict[str, list[dict[str, object]]] = {}
+    all_compute_rules = 0
+    unknown_compute_rules = 0
+    price_reference_rules = []
+    rule_audit = []
+    for analyst in analyst_rows:
+        analyst_weight = float(analyst["weight"])
+        for rule in analyst["rules"]:
+            status = str(rule.get("status") or "unknown")
+            status_score = float(STATUS_SCORES.get(status, 0.0))
+            gate = (
+                rule.get("calculation_role") == "compute"
+                and rule.get("price_blind_compatible") is True
+            )
+            if gate:
+                all_compute_rules += 1
+                if status == "unknown":
+                    unknown_compute_rules += 1
+            else:
+                price_reference_rules.append(rule)
+            trace_base = {
+                "profile_id": analyst["profile_id"],
+                "profile_name": analyst["profile_name"],
+                "source_run_id": analyst["source_run_id"],
+                "rule_id": rule.get("rule_id"),
+                "rule_label": rule.get("rule_label"),
+                "status": status,
+                "status_score": status_score,
+                "analyst_weight": analyst_weight,
+                "calculation_role": rule.get("calculation_role"),
+                "price_blind_compatible": rule.get("price_blind_compatible"),
+                "source_refs": rule.get("source_refs", {}),
+                "summary": rule.get("summary"),
+                "exclusion_reason": rule.get("exclusion_reason"),
+            }
+            rule_audit.append(
+                {
+                    **trace_base,
+                    "dimensions": rule.get("dimensions", {}),
+                    "parameter_impacts": rule.get("parameter_impacts", {}),
+                }
+            )
+            if not gate or status == "unknown":
+                continue
+            for dimension, raw_weight in _dict(rule.get("dimensions")).items():
+                dimension_weight = _num(raw_weight)
+                if dimension_weight is None:
+                    continue
+                contribution = status_score * dimension_weight * analyst_weight
+                dimension_traces.setdefault(dimension, []).append(
+                    {
+                        **trace_base,
+                        "mapping_weight": dimension_weight,
+                        "contribution": contribution,
+                    }
+                )
+            for parameter, raw_weight in _dict(rule.get("parameter_impacts")).items():
+                parameter_weight = _num(raw_weight)
+                if parameter_weight is None:
+                    continue
+                parameter_traces.setdefault(parameter, []).append(
+                    {
+                        **trace_base,
+                        "mapping_weight": parameter_weight,
+                        "contribution": status_score * parameter_weight * analyst_weight,
+                    }
+                )
+
+    for dimension in VALUATION_DIMENSIONS:
+        traces = dimension_traces.get(dimension, [])
+        denominator = sum(
+            float(item["analyst_weight"]) * abs(float(item["mapping_weight"])) for item in traces
+        )
+        score = (
+            sum(float(item["contribution"]) for item in traces) / denominator
+            if denominator
+            else 0.0
+        )
+        dimension_scores[dimension] = _clamp(score, -2.0, 1.0)
+        dimension_disagreement[dimension] = _weighted_std(
+            [float(item["status_score"]) * float(item["mapping_weight"]) for item in traces],
+            [float(item["analyst_weight"]) for item in traces],
+        )
+
+    disagreement_avg = (
+        sum(dimension_disagreement.values()) / len(dimension_disagreement)
+        if dimension_disagreement
+        else 0.0
+    )
+    unknown_ratio = unknown_compute_rules / all_compute_rules if all_compute_rules else 1.0
+    data_gap_penalty = _data_gap_penalty(input_gaps, {})
+
+    def negative(name: str) -> float:
+        return max(0.0, -dimension_scores[name])
+
+    quality_score = (
+        0.30 * dimension_scores["business_quality"]
+        + 0.25 * dimension_scores["moat_durability"]
+        + 0.20 * dimension_scores["cash_flow_reliability"]
+        + 0.15 * dimension_scores["management_quality"]
+        + 0.10 * dimension_scores["pricing_power"]
+    )
+    growth_score = (
+        0.40 * dimension_scores["growth_runway"]
+        + 0.25 * dimension_scores["pricing_power"]
+        + 0.20 * dimension_scores["demand_durability"]
+        + 0.15 * dimension_scores["execution_quality"]
+        - 0.15 * negative("capital_intensity")
+    )
+    risk_score = (
+        0.25 * negative("balance_sheet_risk")
+        + 0.25 * negative("permanent_loss_risk")
+        + 0.20 * negative("cyclicality")
+        + 0.15 * negative("accounting_quality")
+        + 0.15 * data_gap_penalty
+    )
+    delta_growth = ANALYST_PARAMETER_IMPACT_SCALE * (
+        0.030 * growth_score + 0.012 * quality_score - 0.020 * risk_score
+    )
+    delta_owner_growth = ANALYST_PARAMETER_IMPACT_SCALE * (
+        0.020 * growth_score
+        + 0.018 * quality_score
+        - 0.025 * negative("capital_intensity")
+        - 0.018 * risk_score
+    )
+    delta_discount = ANALYST_PARAMETER_IMPACT_SCALE * (
+        -0.018 * quality_score + 0.030 * risk_score + 0.012 * disagreement_avg
+    )
+    delta_terminal = ANALYST_PARAMETER_IMPACT_SCALE * (
+        0.012 * dimension_scores["moat_durability"]
+        + 0.006 * dimension_scores["pricing_power"]
+        - 0.014 * risk_score
+    )
+    scenario_spread = _clamp(
+        0.020
+        + ANALYST_PARAMETER_IMPACT_SCALE
+        * (0.020 * risk_score + 0.012 * disagreement_avg + 0.012 * unknown_ratio),
+        0.015,
+        0.080,
+    )
+    return {
+        "source": "latest_successful_008_analyst_view_runs",
+        "has_signals": bool(analyst_rows),
+        "analyst_parameter_impact_scale": ANALYST_PARAMETER_IMPACT_SCALE,
+        "analyst_method_weight_impact_scale": ANALYST_METHOD_WEIGHT_IMPACT_SCALE,
+        "status_score_policy": dict(STATUS_SCORES),
+        "analyst_weights": [
+            {key: value for key, value in item.items() if key != "rules"} for item in analyst_rows
+        ],
+        "rule_impacts": rule_audit,
+        "price_reference_rules": price_reference_rules,
+        "dimension_scores": dimension_scores,
+        "dimension_disagreement": dimension_disagreement,
+        "dimension_disagreement_avg": disagreement_avg,
+        "dimension_contributions": dimension_traces,
+        "parameter_contributions": parameter_traces,
+        "unknown_ratio": unknown_ratio,
+        "data_gap_penalty": data_gap_penalty,
+        "quality_score": quality_score,
+        "growth_score": growth_score,
+        "risk_score": risk_score,
+        "permanent_loss_risk_negative": negative("permanent_loss_risk"),
+        "delta_growth": delta_growth,
+        "delta_owner_growth": delta_owner_growth,
+        "delta_discount": delta_discount,
+        "delta_terminal": delta_terminal,
+        "scenario_spread": scenario_spread,
+        "method_multipliers": _derive_method_multipliers(
+            business_quality=dimension_scores["business_quality"],
+            moat_durability=dimension_scores["moat_durability"],
+            cash_flow_reliability=dimension_scores["cash_flow_reliability"],
+            management_capital_allocation=dimension_scores["management_quality"],
+            capital_intensity=dimension_scores["capital_intensity"],
+            cyclicality=dimension_scores["cyclicality"],
+            risk_score=risk_score,
+        ),
+    }
+
+
+def _derive_analyst_signal_adjustment(
+    *,
+    memo_inputs: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> dict[str, object]:
+    score_policy = {"pass": 1.0, "warn": -0.35, "fail": -2.0, "unknown": 0.0}
+    pack: dict[str, object] = {}
+    analysts = [item for item in _list(pack.get("analyst_signals")) if isinstance(item, dict)]
+    dimensions = [
+        "business_quality_signal",
+        "moat_durability_signal",
+        "growth_runway_signal",
+        "pricing_power_signal",
+        "capital_intensity_signal",
+        "cash_flow_reliability_signal",
+        "balance_sheet_risk_signal",
+        "management_capital_allocation_signal",
+        "cyclicality_signal",
+        "permanent_loss_risk_signal",
+    ]
+    empty = {
+        "has_signals": False,
+        "status_score_policy": score_policy,
+        "analyst_weights": [],
+        "dimension_scores": {dimension: 0.0 for dimension in dimensions},
+        "dimension_confidence": {dimension: 0.0 for dimension in dimensions},
+        "dimension_disagreement": {dimension: 0.0 for dimension in dimensions},
+        "unknown_penalty": 0.0,
+        "dimension_disagreement_avg": 0.0,
+        "data_gap_penalty": _data_gap_penalty(input_gaps, pack),
+        "quality_score": 0.0,
+        "growth_score": 0.0,
+        "risk_score": 0.0,
+        "permanent_loss_risk_negative": 0.0,
+        "delta_growth": 0.0,
+        "delta_owner_growth": 0.0,
+        "delta_discount": 0.0,
+        "delta_terminal": 0.0,
+        "scenario_spread": 0.02 + 0.01 * _data_gap_penalty(input_gaps, pack),
+        "method_multipliers": {"dcf": 1.0, "owner_earnings": 1.0},
+    }
+    if not analysts:
+        return empty
+
+    analyst_weights = _analyst_weights(analysts, dimensions)
+    if not analyst_weights:
+        return empty
+
+    dimension_scores: dict[str, float] = {}
+    dimension_confidence: dict[str, float] = {}
+    dimension_disagreement: dict[str, float] = {}
+    unknown_ratios = []
+    for dimension in dimensions:
+        scored_items = []
+        unknown_weight = 0.0
+        total_weight = 0.0
+        for weight_item in analyst_weights:
+            analyst = weight_item["analyst"]
+            weight = float(weight_item["weight"])
+            raw_signal = str(analyst.get(dimension) or "unknown")
+            score = _analyst_signal_score(raw_signal, score_policy)
+            total_weight += weight
+            if _is_unknown_signal(raw_signal):
+                unknown_weight += weight
+                continue
+            scored_items.append({"score": score, "weight": weight})
+        known_weight = sum(float(item["weight"]) for item in scored_items)
+        if known_weight > 0:
+            score = (
+                sum(float(item["score"]) * float(item["weight"]) for item in scored_items)
+                / known_weight
+            )
+        else:
+            score = 0.0
+        unknown_ratio = unknown_weight / total_weight if total_weight > 0 else 1.0
+        unknown_ratios.append(unknown_ratio)
+        dimension_scores[dimension] = _clamp(score, -2.0, 1.0)
+        dimension_confidence[dimension] = 1.0 - min(0.35, unknown_ratio * 0.35)
+        dimension_disagreement[dimension] = _weighted_std(
+            [float(item["score"]) for item in scored_items],
+            [float(item["weight"]) for item in scored_items],
+        )
+
+    disagreement_avg = (
+        sum(dimension_disagreement.values()) / len(dimension_disagreement)
+        if dimension_disagreement
+        else 0.0
+    )
+    unknown_penalty = min(0.20, (sum(unknown_ratios) / len(unknown_ratios)) * 0.20)
+    data_gap_penalty = _data_gap_penalty(input_gaps, pack)
+
+    business_quality = dimension_scores["business_quality_signal"]
+    moat_durability = dimension_scores["moat_durability_signal"]
+    growth_runway = dimension_scores["growth_runway_signal"]
+    pricing_power = dimension_scores["pricing_power_signal"]
+    capital_intensity = dimension_scores["capital_intensity_signal"]
+    cash_flow_reliability = dimension_scores["cash_flow_reliability_signal"]
+    balance_sheet_risk = dimension_scores["balance_sheet_risk_signal"]
+    management_capital_allocation = dimension_scores["management_capital_allocation_signal"]
+    cyclicality = dimension_scores["cyclicality_signal"]
+    permanent_loss_risk = dimension_scores["permanent_loss_risk_signal"]
+
+    quality_score = (
+        0.30 * business_quality
+        + 0.25 * moat_durability
+        + 0.20 * cash_flow_reliability
+        + 0.15 * management_capital_allocation
+        + 0.10 * pricing_power
+    )
+    growth_score = (
+        0.45 * growth_runway
+        + 0.25 * pricing_power
+        + 0.20 * cash_flow_reliability
+        - 0.10 * max(0.0, -capital_intensity)
+    )
+    risk_score = (
+        0.30 * max(0.0, -balance_sheet_risk)
+        + 0.25 * max(0.0, -cyclicality)
+        + 0.35 * max(0.0, -permanent_loss_risk)
+        + 0.10 * data_gap_penalty
+        + 0.10 * unknown_penalty
+    )
+
+    delta_growth = (
+        0.030 * growth_score + 0.012 * quality_score - 0.025 * risk_score - 0.006 * unknown_penalty
+    )
+    delta_owner_growth = (
+        0.024 * growth_score
+        + 0.016 * quality_score
+        - 0.024 * max(0.0, -capital_intensity)
+        - 0.022 * risk_score
+        - 0.006 * unknown_penalty
+    )
+    delta_discount = (
+        -0.014 * max(0.0, quality_score)
+        + 0.028 * risk_score
+        + 0.012 * disagreement_avg
+        + 0.008 * unknown_penalty
+    )
+    delta_terminal = (
+        0.010 * moat_durability
+        + 0.006 * pricing_power
+        - 0.014 * risk_score
+        - 0.006 * unknown_penalty
+    )
+    scenario_spread = (
+        0.020
+        + 0.020 * risk_score
+        + 0.015 * disagreement_avg
+        + 0.010 * data_gap_penalty
+        + 0.005 * unknown_penalty
+    )
+
+    return {
+        "has_signals": True,
+        "status_score_policy": score_policy,
+        "analyst_weights": [
+            {
+                "profile_id": item["profile_id"],
+                "weight": item["weight"],
+                "profile_fit_score": item["profile_fit_score"],
+                "data_confidence": item["data_confidence"],
+                "known_signal_ratio": item["known_signal_ratio"],
+            }
+            for item in analyst_weights
+        ],
+        "dimension_scores": dimension_scores,
+        "dimension_confidence": dimension_confidence,
+        "dimension_disagreement": dimension_disagreement,
+        "unknown_penalty": unknown_penalty,
+        "dimension_disagreement_avg": disagreement_avg,
+        "data_gap_penalty": data_gap_penalty,
+        "quality_score": quality_score,
+        "growth_score": growth_score,
+        "risk_score": risk_score,
+        "permanent_loss_risk_negative": max(0.0, -permanent_loss_risk),
+        "delta_growth": delta_growth,
+        "delta_owner_growth": delta_owner_growth,
+        "delta_discount": delta_discount,
+        "delta_terminal": delta_terminal,
+        "scenario_spread": scenario_spread,
+        "method_multipliers": _derive_method_multipliers(
+            business_quality=business_quality,
+            moat_durability=moat_durability,
+            cash_flow_reliability=cash_flow_reliability,
+            management_capital_allocation=management_capital_allocation,
+            capital_intensity=capital_intensity,
+            cyclicality=cyclicality,
+            risk_score=risk_score,
+        ),
+    }
+
+
+def _analyst_weights(
+    analysts: list[dict[str, object]],
+    dimensions: list[str],
+) -> list[dict[str, object]]:
+    weighted: list[dict[str, object]] = []
+    for analyst in analysts:
+        fit = _clamp(_num(analyst.get("profile_fit_score")) or 0.60, 0.20, 1.00)
+        confidence = _clamp(_num(analyst.get("data_confidence")) or 0.60, 0.20, 1.00)
+        known_count = sum(
+            1
+            for dimension in dimensions
+            if not _is_unknown_signal(str(analyst.get(dimension) or "unknown"))
+        )
+        known_ratio = known_count / len(dimensions) if dimensions else 0.0
+        raw_weight = 0.50 * confidence + 0.50 * fit
+        weighted.append(
+            {
+                "analyst": analyst,
+                "profile_id": str(analyst.get("profile_id") or ""),
+                "profile_fit_score": fit,
+                "data_confidence": confidence,
+                "known_signal_ratio": known_ratio,
+                "raw_weight": raw_weight,
+            }
+        )
+    total = sum(float(item["raw_weight"]) for item in weighted)
+    if total <= 0:
+        return []
+    return [{**item, "weight": float(item["raw_weight"]) / total} for item in weighted]
+
+
+def _analyst_signal_score(signal: str, score_policy: dict[str, float]) -> float:
+    normalized = signal.strip().lower()
+    if normalized in {"positive", "pass", "passed", "strong", "good", "通过"}:
+        return score_policy["pass"]
+    if normalized in {"warn", "watch", "mixed", "observe", "observation", "观察"}:
+        return score_policy["warn"]
+    if normalized in {"negative", "fail", "failed", "weak", "risk", "不通过"}:
+        return score_policy["fail"]
+    return score_policy["unknown"]
+
+
+def _is_unknown_signal(signal: str) -> bool:
+    normalized = signal.strip().lower()
+    return normalized in {"", "unknown", "uncertain", "insufficient", "未知"}
+
+
+def _weighted_std(values: list[float], weights: list[float]) -> float:
+    if not values or not weights:
+        return 0.0
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return 0.0
+    mean = sum(value * weight for value, weight in zip(values, weights, strict=False))
+    mean /= total_weight
+    variance = (
+        sum(weight * ((value - mean) ** 2) for value, weight in zip(values, weights, strict=False))
+        / total_weight
+    )
+    return variance**0.5
+
+
+def _data_gap_penalty(input_gaps: list[dict[str, object]], pack: dict[str, object]) -> float:
+    high = sum(1 for item in input_gaps if item.get("severity") == "high")
+    medium = sum(1 for item in input_gaps if item.get("severity") == "medium")
+    low = sum(1 for item in input_gaps if item.get("severity") == "low")
+    pack_gaps = len(_list(pack.get("data_gaps_for_valuation")))
+    return _clamp((0.25 * high) + (0.12 * medium) + (0.05 * low) + (0.04 * pack_gaps), 0.0, 1.0)
+
+
+def _derive_method_multipliers(
+    *,
+    business_quality: float,
+    moat_durability: float,
+    cash_flow_reliability: float,
+    management_capital_allocation: float,
+    capital_intensity: float,
+    cyclicality: float,
+    risk_score: float,
+) -> dict[str, float]:
+    dcf_score = (
+        0.35 * max(0.0, cash_flow_reliability)
+        + 0.20 * max(0.0, business_quality)
+        + 0.15 * max(0.0, moat_durability)
+        - 0.15 * max(0.0, -cyclicality)
+        - 0.10 * risk_score
+    )
+    owner_score = (
+        0.30 * max(0.0, management_capital_allocation)
+        + 0.25 * max(0.0, capital_intensity)
+        + 0.20 * max(0.0, cash_flow_reliability)
+        - 0.12 * risk_score
+    )
+    return {
+        "dcf": _clamp(
+            1.0 + ANALYST_METHOD_WEIGHT_IMPACT_SCALE * dcf_score,
+            ANALYST_METHOD_MULTIPLIER_MIN,
+            ANALYST_METHOD_MULTIPLIER_MAX,
+        ),
+        "owner_earnings": _clamp(
+            1.0 + ANALYST_METHOD_WEIGHT_IMPACT_SCALE * owner_score,
+            ANALYST_METHOD_MULTIPLIER_MIN,
+            ANALYST_METHOD_MULTIPLIER_MAX,
+        ),
+    }
+
+
+def _calculate_dcf(
+    valuation_inputs: dict[str, object],
+    assumptions: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> dict[str, object]:
+    base_fcf = _num(valuation_inputs.get("base_free_cash_flow"))
+    if base_fcf is None:
+        return _needs_input_method(
+            "dcf",
+            "缺少基准自由现金流，DCF 不生成估值数字。",
+            input_gaps,
+            required_fields=["base_free_cash_flow"],
+        )
+    return _cash_flow_method_result(
+        method="dcf",
+        base_cash_flow=base_fcf,
+        growth_key="cash_flow_growth_rate",
+        assumptions=assumptions,
+        valuation_inputs=valuation_inputs,
+        applicability=MODEL_BASE_WEIGHTS["dcf"],
+        reason="自由现金流口径可用，DCF 作为价值投资估值的交叉验证模型。",
+    )
+
+
+def _calculate_owner_earnings(
+    valuation_inputs: dict[str, object],
+    assumptions: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> dict[str, object]:
+    net_profit = _num(valuation_inputs.get("base_net_profit"))
+    capital_expenditure = _num(valuation_inputs.get("capital_expenditure"))
+    base_period_method = _safe_str(valuation_inputs.get("base_period_method"))
+    base_period_type = _safe_str(valuation_inputs.get("base_period_type"))
+    if base_period_type in {"half_year", "quarter"} and base_period_method != "ttm_adjusted":
+        return _needs_input_method(
+            "owner_earnings",
+            "所有者盈余必须使用 TTM 或完整年度基数，不能直接使用中报或单季数据。",
+            input_gaps,
+            required_fields=["owner_earnings_annualized_base"],
+        )
+    if net_profit is None or capital_expenditure is None:
+        required = []
+        if net_profit is None:
+            required.append("base_net_profit")
+        if capital_expenditure is None:
+            required.append("capital_expenditure")
+        return _needs_input_method(
+            "owner_earnings",
+            "缺少净利润或资本开支，所有者盈余估值不生成数字。",
+            input_gaps,
+            required_fields=required,
+        )
+    depreciation = _num(valuation_inputs.get("depreciation_and_amortization")) or 0.0
+    working_capital_change = _num(valuation_inputs.get("working_capital_change")) or 0.0
+    working_capital_investment = max(-working_capital_change, 0.0)
+    owner_earnings = net_profit + depreciation - capital_expenditure - working_capital_investment
+    if owner_earnings <= 0:
+        return _needs_input_method(
+            "owner_earnings",
+            "所有者盈余基数为非正数，MVP 不强行估值。",
+            input_gaps,
+            required_fields=["owner_earnings_base"],
+        )
+    result = _cash_flow_method_result(
+        method="owner_earnings",
+        base_cash_flow=owner_earnings,
+        growth_key="owner_earnings_growth_rate",
+        assumptions=assumptions,
+        valuation_inputs=valuation_inputs,
+        applicability=MODEL_BASE_WEIGHTS["owner_earnings"],
+        reason="净利润、资本开支可用，所有者盈余作为价值投资估值的主要模型。",
+    )
+    result["calculation_basis"] = {
+        "base_cash_flow": owner_earnings,
+        "period_method": base_period_method,
+        "period_type": base_period_type,
+        "source_periods": _str_list(valuation_inputs.get("base_source_periods")),
+        "formula": (
+            "net_profit + depreciation_and_amortization - total_capex "
+            "- max(-working_capital_cash_effect, 0)"
+        ),
+        "components": {
+            "net_profit": net_profit,
+            "depreciation_and_amortization": depreciation,
+            "capital_expenditure": capital_expenditure,
+            "working_capital_cash_effect": working_capital_change,
+            "working_capital_investment_deducted": working_capital_investment,
+        },
+        "capital_expenditure_policy": "total_capex_as_conservative_maintenance_capex_proxy",
+    }
+    return result
+
+
+def _cash_flow_method_result(
+    *,
+    method: str,
+    base_cash_flow: float,
+    growth_key: str,
+    assumptions: dict[str, object],
+    valuation_inputs: dict[str, object],
+    applicability: float,
+    reason: str,
+) -> dict[str, object]:
+    scenario_values: dict[str, float | None] = {}
+    per_share_values: dict[str, float | None] = {}
+    scenarios = _dict(assumptions.get("scenarios"))
+    shares = _num(valuation_inputs.get("shares_outstanding"))
+    for scenario_name in ("conservative", "base", "optimistic"):
+        scenario = _dict(scenarios.get(scenario_name))
+        value = _discount_cash_flow(
+            base_cash_flow=base_cash_flow,
+            growth_rate=_num(scenario.get(growth_key)) or 0.0,
+            discount_rate=_num(scenario.get("discount_rate")) or 0.1,
+            terminal_growth_rate=min(_num(scenario.get("terminal_growth_rate")) or 0.0, 0.035),
+            cash=_num(valuation_inputs.get("cash_and_equivalents")),
+            debt=_num(valuation_inputs.get("interest_bearing_debt")),
+        )
+        scenario_values[scenario_name] = value
+        per_share_values[scenario_name] = value / shares if shares and shares > 0 else None
+    return {
+        "method": method,
+        "status": "success",
+        "applicability": applicability,
+        "reason": reason,
+        "scenario_values": scenario_values,
+        "per_share_values": per_share_values,
+        "key_assumptions": scenarios,
+        "input_gaps": [],
+        "source_refs": {"financial_periods": [_safe_str(valuation_inputs.get("latest_period"))]},
+    }
+
+
+def _discount_cash_flow(
+    *,
+    base_cash_flow: float,
+    growth_rate: float,
+    discount_rate: float,
+    terminal_growth_rate: float,
+    cash: float | None,
+    debt: float | None,
+) -> float:
+    discount_rate = max(discount_rate, terminal_growth_rate + 0.01)
+    present_value = 0.0
+    cash_flow = base_cash_flow
+    for year in range(1, FORECAST_YEARS + 1):
+        cash_flow *= 1 + growth_rate
+        present_value += cash_flow / ((1 + discount_rate) ** year)
+    terminal_cash_flow = cash_flow * (1 + terminal_growth_rate)
+    terminal_value = terminal_cash_flow / (discount_rate - terminal_growth_rate)
+    present_value += terminal_value / ((1 + discount_rate) ** FORECAST_YEARS)
+    return present_value + (cash or 0.0) - (debt or 0.0)
+
+
+def _combine_method_results(
+    method_results: list[dict[str, object]],
+    valuation_inputs: dict[str, object],
+    input_gaps: list[dict[str, object]],
+    assumptions: dict[str, object],
+) -> tuple[dict[str, object], list[dict[str, object]], dict[str, object] | None]:
+    successful = [item for item in method_results if item.get("status") == "success"]
+    weights = []
+    total_weight = 0.0
+    available_baseline_total = sum(float(item.get("applicability") or 0.0) for item in successful)
+    constraints = _dict(assumptions.get("weighting_constraints"))
+    analyst_method_multipliers = _dict(constraints.get("analyst_method_multipliers"))
+    for item in successful:
+        method = str(item.get("method") or "")
+        applicability = float(item.get("applicability") or 0.0)
+        available_baseline_weight = (
+            applicability / available_baseline_total if available_baseline_total > 0 else 0.0
+        )
+        analyst_signal_multiplier = _num(analyst_method_multipliers.get(method)) or 1.0
+        input_completeness = _method_input_completeness(
+            method,
+            valuation_inputs,
+            input_gaps,
+        )
+        data_quality_multiplier = _method_data_quality_weight_multiplier(
+            method,
+            constraints,
+            valuation_inputs,
+            input_gaps,
+        )
+        risk_multiplier = _method_risk_constraint_weight_multiplier(
+            method,
+            constraints,
+            input_gaps,
+        )
+        effective_factors = {
+            "input_completeness": input_completeness
+            ** MODEL_WEIGHT_FACTOR_EXPONENTS["input_completeness"],
+            "data_quality": data_quality_multiplier
+            ** MODEL_WEIGHT_FACTOR_EXPONENTS["data_quality"],
+            "risk_constraint": risk_multiplier ** MODEL_WEIGHT_FACTOR_EXPONENTS["risk_constraint"],
+            "analyst_signal": analyst_signal_multiplier
+            ** MODEL_WEIGHT_FACTOR_EXPONENTS["analyst_signal"],
+        }
+        weight = (
+            available_baseline_weight
+            * effective_factors["input_completeness"]
+            * effective_factors["data_quality"]
+            * effective_factors["risk_constraint"]
+            * effective_factors["analyst_signal"]
+        )
+        total_weight += weight
+        weights.append(
+            {
+                "method": item.get("method"),
+                "weight": weight,
+                "components": {
+                    "applicability": applicability,
+                    "baseline_weight": applicability,
+                    "available_baseline_weight": available_baseline_weight,
+                    "input_completeness": input_completeness,
+                    "data_quality": data_quality_multiplier,
+                    "risk_constraint": risk_multiplier,
+                    "analyst_signal": analyst_signal_multiplier,
+                    "impact_exponents": dict(MODEL_WEIGHT_FACTOR_EXPONENTS),
+                    "effective_factors": effective_factors,
+                },
+                "reason": (
+                    "缺失模型剔除后按基准权重重新分配，"
+                    "再结合输入完整度、数据质量、风险约束和分析师信号综合。"
+                ),
+            }
+        )
+    normalized_weights = (
+        [{**item, "weight": item["weight"] / total_weight} for item in weights]
+        if total_weight > 0
+        else []
+    )
+    total_values: dict[str, float | None] = {}
+    per_share_values: dict[str, float | None] = {}
+    shares = _num(valuation_inputs.get("shares_outstanding"))
+    for scenario_name in ("conservative", "base", "optimistic"):
+        weighted = 0.0
+        for item in successful:
+            method_weight = next(
+                weight["weight"]
+                for weight in normalized_weights
+                if weight["method"] == item.get("method")
+            )
+            scenario_values = _dict(item.get("scenario_values"))
+            weighted += float(scenario_values.get(scenario_name) or 0.0) * method_weight
+        total_values[scenario_name] = weighted if successful else None
+        per_share_values[scenario_name] = (
+            weighted / shares if successful and shares and shares > 0 else None
+        )
+    dispersion_warning = _build_dispersion_warning(successful)
+    return (
+        {
+            "total_equity_value": total_values,
+            "per_share_value": per_share_values,
+            "unit": "CNY",
+            "per_share_status": "success" if shares else "needs_input",
+        },
+        normalized_weights,
+        dispersion_warning,
+    )
+
+
+def _method_input_completeness(
+    method: str,
+    valuation_inputs: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> float:
+    required_fields, supporting_fields = _method_weight_fields(method)
+    if not required_fields:
+        return 0.5
+
+    required_score = _field_presence_score(required_fields, valuation_inputs)
+    supporting_score = _field_presence_score(supporting_fields, valuation_inputs)
+    method_gap_penalty = 0.04 * len(
+        [
+            gap
+            for gap in input_gaps
+            if str(gap.get("field") or "") in required_fields + supporting_fields
+        ],
+    )
+    raw_score = (0.75 * required_score) + (0.25 * supporting_score) - method_gap_penalty
+    return _clamp(raw_score, 0.1, 1.0)
+
+
+def _field_presence_score(fields: list[str], valuation_inputs: dict[str, object]) -> float:
+    if not fields:
+        return 1.0
+    present = sum(1 for field in fields if _num(valuation_inputs.get(field)) is not None)
+    return present / len(fields)
+
+
+def _method_weight_fields(method: str) -> tuple[list[str], list[str]]:
+    required_fields = {
+        "dcf": ["base_free_cash_flow", "shares_outstanding"],
+        "owner_earnings": ["base_net_profit", "capital_expenditure", "shares_outstanding"],
+    }.get(method, [])
+    supporting_fields = {
+        "dcf": ["cash_and_equivalents", "interest_bearing_debt"],
+        "owner_earnings": ["depreciation_and_amortization", "working_capital_change"],
+    }.get(method, [])
+    return required_fields, supporting_fields
+
+
+def _method_gap_fields(method: str) -> set[str]:
+    required_fields, supporting_fields = _method_weight_fields(method)
+    extra_fields = {
+        "dcf": {
+            "normalized_free_cash_flow_history",
+            "ttm_free_cash_flow",
+            "normalized_fcf_to_net_profit",
+        },
+        "owner_earnings": {"owner_earnings_base", "owner_earnings_annualized_base"},
+    }.get(method, set())
+    return set(required_fields + supporting_fields) | extra_fields
+
+
+def _method_data_quality_weight_multiplier(
+    method: str,
+    constraints: dict[str, object],
+    valuation_inputs: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> float:
+    multiplier = _data_quality_weight_multiplier(constraints)
+    related_fields = _method_gap_fields(method)
+    related_gap_count = sum(
+        1 for gap in input_gaps if _safe_str(gap.get("field")) in related_fields
+    )
+    multiplier -= 0.05 * related_gap_count
+    if method == "dcf":
+        confidence_penalty = {
+            "high": 0.0,
+            "medium": 0.05,
+            "low": 0.12,
+        }.get(_safe_str(valuation_inputs.get("normalization_confidence")), 0.12)
+        warning_penalty = min(
+            0.08,
+            0.02 * len(_str_list(valuation_inputs.get("normalization_warnings"))),
+        )
+        multiplier -= confidence_penalty + warning_penalty
+    return _clamp(multiplier, 0.50, 1.0)
+
+
+def _method_risk_constraint_weight_multiplier(
+    method: str,
+    constraints: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> float:
+    multiplier = _risk_constraint_weight_multiplier(constraints)
+    related_fields = _method_gap_fields(method)
+    severity_penalty = {"high": 0.12, "medium": 0.07, "low": 0.03}
+    multiplier -= sum(
+        severity_penalty.get(_safe_str(gap.get("severity")), 0.03)
+        for gap in input_gaps
+        if _safe_str(gap.get("field")) in related_fields
+    )
+    return _clamp(multiplier, 0.50, 1.0)
+
+
+def _data_quality_weight_multiplier(constraints: dict[str, object]) -> float:
+    penalty_count = int(_num(constraints.get("data_quality_penalty_count")) or 0)
+    flag_count = int(_num(constraints.get("financial_flag_count")) or 0)
+    return _clamp(1.0 - (0.025 * penalty_count) - (0.015 * flag_count), 0.72, 1.0)
+
+
+def _risk_constraint_weight_multiplier(constraints: dict[str, object]) -> float:
+    memo_risk_count = int(_num(constraints.get("memo_risk_count")) or 0)
+    input_gap_count = int(_num(constraints.get("input_gap_count")) or 0)
+    return _clamp(1.0 - (0.02 * memo_risk_count) - (0.01 * input_gap_count), 0.72, 1.0)
+
+
+def _build_dispersion_warning(
+    successful: list[dict[str, object]],
+) -> dict[str, object] | None:
+    base_values = []
+    for item in successful:
+        scenario_values = _dict(item.get("scenario_values"))
+        value = _num(scenario_values.get("base"))
+        if value is not None and value > 0:
+            base_values.append(value)
+    if len(base_values) < 2:
+        return None
+    low = min(base_values)
+    high = max(base_values)
+    if low <= 0 or high / low <= 1.35:
+        return None
+    return {
+        "level": "medium",
+        "message": "可用估值模型的中性结果分歧较大，综合区间已降低置信度。",
+        "base_value_spread": high / low,
+    }
+
+
+def _build_confidence_summary(
+    *,
+    input_gaps: list[dict[str, object]],
+    method_results: list[dict[str, object]],
+    dispersion_warning: dict[str, object] | None,
+) -> tuple[float, dict[str, object]]:
+    confidence = 0.78
+    reasons = ["估值数字来自服务层确定性公式，且保留单模型结果。"]
+    high_gaps = _high_severity_gaps(input_gaps)
+    low_gaps = [item for item in input_gaps if item.get("severity") == "low"]
+    medium_gaps = [item for item in input_gaps if item.get("severity") == "medium"]
+    confidence -= 0.16 * len(high_gaps)
+    confidence -= 0.06 * len(medium_gaps)
+    confidence -= 0.03 * len(low_gaps)
+    successful_methods = [item for item in method_results if item.get("status") == "success"]
+    if len(successful_methods) < 2:
+        confidence -= 0.12
+        reasons.append("可参与综合的成功估值模型少于 2 个。")
+    if high_gaps:
+        reasons.append("存在高严重度输入缺口，锁定估值会被阻止。")
+    elif medium_gaps or low_gaps:
+        reasons.append("存在中低严重度输入缺口，允许形成草稿但降低置信度。")
+    if dispersion_warning:
+        confidence -= 0.08
+        reasons.append(str(dispersion_warning["message"]))
+    confidence = _clamp(confidence, 0.1, 0.9)
+    if confidence >= 0.72:
+        level = "high"
+    elif confidence >= 0.45:
+        level = "medium"
+    else:
+        level = "low"
+    return confidence, {"level": level, "reasons": reasons}
+
+
+def _build_sensitivity(
+    valuation_inputs: dict[str, object],
+    assumptions: dict[str, object],
+) -> dict[str, object]:
+    base_fcf = _num(valuation_inputs.get("base_free_cash_flow"))
+    if base_fcf is None:
+        return {"status": "needs_input", "items": []}
+    base = _dict(_dict(assumptions.get("scenarios")).get("base"))
+    discount_rate = _num(base.get("discount_rate")) or 0.1
+    terminal_growth_rate = _num(base.get("terminal_growth_rate")) or 0.02
+    rows = []
+    for growth_delta in (-0.02, 0.0, 0.02):
+        row = []
+        for discount_delta in (-0.01, 0.0, 0.01):
+            row.append(
+                _discount_cash_flow(
+                    base_cash_flow=base_fcf,
+                    growth_rate=(_num(base.get("cash_flow_growth_rate")) or 0.0) + growth_delta,
+                    discount_rate=discount_rate + discount_delta,
+                    terminal_growth_rate=terminal_growth_rate,
+                    cash=_num(valuation_inputs.get("cash_and_equivalents")),
+                    debt=_num(valuation_inputs.get("interest_bearing_debt")),
+                )
+            )
+        rows.append({"growth_delta": growth_delta, "values": row})
+    return {
+        "status": "success",
+        "axes": {
+            "growth_delta": [-0.02, 0.0, 0.02],
+            "discount_delta": [-0.01, 0.0, 0.01],
+        },
+        "items": rows,
+    }
+
+
+def _needs_input_method(
+    method: str,
+    reason: str,
+    input_gaps: list[dict[str, object]],
+    *,
+    required_fields: list[str],
+) -> dict[str, object]:
+    method_gaps = [item for item in input_gaps if str(item.get("field")) in set(required_fields)]
+    return {
+        "method": method,
+        "status": "needs_input",
+        "applicability": MODEL_BASE_WEIGHTS.get(method, 0.0),
+        "reason": reason,
+        "scenario_values": {"conservative": None, "base": None, "optimistic": None},
+        "per_share_values": {"conservative": None, "base": None, "optimistic": None},
+        "key_assumptions": {},
+        "input_gaps": method_gaps,
+        "source_refs": {},
+    }
+
+
+def _skipped_method(method: str, reason: str) -> dict[str, object]:
+    return {
+        "method": method,
+        "status": "skipped",
+        "applicability": MODEL_BASE_WEIGHTS.get(method, 0.0),
+        "reason": reason,
+        "scenario_values": {"conservative": None, "base": None, "optimistic": None},
+        "per_share_values": {"conservative": None, "base": None, "optimistic": None},
+        "key_assumptions": {},
+        "input_gaps": [],
+        "source_refs": {},
+    }
+
+
+def _high_severity_gaps(value: object) -> list[dict[str, object]]:
+    return [
+        item for item in _list(value) if isinstance(item, dict) and item.get("severity") == "high"
+    ]
+
+
+def _hash_snapshot(snapshot: dict[str, object]) -> str:
+    payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class _PriceBlindScrubber:
+    def __init__(self) -> None:
+        self.scrubbed_items: list[dict[str, object]] = []
+
+    def scrub(self, value: object, path: str = "$") -> object:
+        if isinstance(value, dict):
+            cleaned: dict[str, object] = {}
+            for key, nested in value.items():
+                normalized_key = str(key)
+                if _is_forbidden_key(normalized_key):
+                    self.scrubbed_items.append({"path": f"{path}.{normalized_key}", "kind": "key"})
+                    continue
+                cleaned[normalized_key] = self.scrub(nested, f"{path}.{normalized_key}")
+            return cleaned
+        if isinstance(value, list):
+            cleaned_list = []
+            for index, nested in enumerate(value):
+                cleaned = self.scrub(nested, f"{path}[{index}]")
+                if cleaned is not None:
+                    cleaned_list.append(cleaned)
+            return cleaned_list
+        if isinstance(value, str) and _contains_forbidden_term(value):
+            self.scrubbed_items.append({"path": path, "kind": "text"})
+            return None
+        return value
+
+
+def _is_forbidden_key(key: str) -> bool:
+    normalized = key.strip().lower()
+    return normalized in FORBIDDEN_PRICE_FIELDS or any(
+        field in normalized for field in FORBIDDEN_PRICE_FIELDS
+    )
+
+
+def _contains_forbidden_term(value: str) -> bool:
+    return any(term in value for term in FORBIDDEN_PRICE_TERMS)
+
+
+def _deep_merge(base: dict[str, object], updates: dict[str, object]) -> dict[str, object]:
+    merged = deepcopy(base)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(_dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _first_number(*values: object, default: float) -> float:
+    for value in values:
+        number = _num(value)
+        if number is not None:
+            return number
+    return default
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return min(high, max(low, value))
+
+
+def _dict(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
+
+
+def _str_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _num(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _safe_str(value: object) -> str:
+    return str(value) if value is not None else ""

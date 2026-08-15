@@ -4,7 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { StatusPill } from "../components/StatusPill";
 import { getHealth, type HealthResponse } from "../services/api";
 import { CompanySearchView } from "./CompanySearchView";
-import { CompanyWorkspaceView } from "./CompanyWorkspaceView";
+import {
+  CompanyWorkspaceView,
+  type CompanyWorkspaceSection
+} from "./CompanyWorkspaceView";
 import { DashboardView } from "./DashboardView";
 import { navigationItems } from "./dashboardData";
 
@@ -15,16 +18,20 @@ type ApiState =
   | { status: "online"; label: string }
   | { status: "offline"; label: "API 未连接" };
 
-const navigationViewMap: Record<string, WorkbenchView | null> = {
-  Dashboard: "dashboard",
-  "Company Search": "company-search",
-  "Company Workspace": "company-workspace",
-  Financials: null,
-  Announcements: null,
-  "Analyst Views": null,
-  "Valuation Lab": null,
+const navigationViewMap: Record<
+  string,
+  { view: WorkbenchView; section?: CompanyWorkspaceSection } | null
+> = {
+  Dashboard: { view: "dashboard" },
+  "Company Search": { view: "company-search" },
+  "Company Workspace": { view: "company-workspace", section: "overview" },
+  Financials: { view: "company-workspace", section: "financials" },
+  Announcements: { view: "company-workspace", section: "announcements" },
+  Evidence: { view: "company-workspace", section: "evidence" },
+  "Analyst Views": { view: "company-workspace", section: "analyst-views" },
+  "Valuation Lab": { view: "company-workspace", section: "valuation-lab" },
   Portfolio: null,
-  Memo: null,
+  Memo: { view: "company-workspace", section: "memo" },
   Settings: null
 };
 
@@ -57,6 +64,8 @@ function formatApiState(health: HealthResponse | null, failed: boolean): ApiStat
 
 export function App() {
   const [activeView, setActiveView] = useState<WorkbenchView>("dashboard");
+  const [activeCompanySection, setActiveCompanySection] =
+    useState<CompanyWorkspaceSection>("overview");
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -88,6 +97,7 @@ export function App() {
 
   function openCompany(companyId: number) {
     setSelectedCompanyId(companyId);
+    setActiveCompanySection("overview");
     setActiveView("company-workspace");
   }
 
@@ -110,20 +120,27 @@ export function App() {
         <nav className="nav-list">
           {navigationItems.map((item) => {
             const Icon = item.icon;
-            const targetView = navigationViewMap[item.label];
-            const isActive = targetView === activeView;
+            const target = navigationViewMap[item.label];
+            const isActive =
+              target?.view === activeView &&
+              (target.view !== "company-workspace" ||
+                target.section === activeCompanySection ||
+                (!target.section && activeView === "company-workspace"));
 
             return (
               <button
                 key={item.label}
                 className={isActive ? "nav-item nav-item--active" : "nav-item"}
                 type="button"
-                title={targetView ? item.label : "模块待接入"}
-                disabled={!targetView}
+                title={target ? item.label : "模块待接入"}
+                disabled={!target}
                 aria-current={isActive ? "page" : undefined}
                 onClick={() => {
-                  if (targetView) {
-                    setActiveView(targetView);
+                  if (target) {
+                    if (target.section) {
+                      setActiveCompanySection(target.section);
+                    }
+                    setActiveView(target.view);
                   }
                 }}
               >
@@ -165,6 +182,8 @@ export function App() {
         {activeView === "company-workspace" ? (
           <CompanyWorkspaceView
             companyId={selectedCompanyId}
+            activeSection={activeCompanySection}
+            onSectionChange={setActiveCompanySection}
             onBackToSearch={() => setActiveView("company-search")}
             onCompanyUnavailable={handleCompanyUnavailable}
             refreshToken={refreshToken}

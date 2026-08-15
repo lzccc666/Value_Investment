@@ -264,6 +264,7 @@ REAL_COMPANY_SEEDS: list[CompanySeed] = [
     },
 ]
 
+
 def init_db(database_engine: Engine = engine) -> None:
     Base.metadata.create_all(bind=database_engine)
     run_schema_migrations(database_engine)

@@ -68,10 +68,7 @@ SQLITE_COLUMN_MIGRATIONS: tuple[ColumnMigration, ...] = (
     ColumnMigration(
         "evidence",
         "use_scope",
-        (
-            "JSON DEFAULT '[\"fundamental_analysis\",\"analyst_view\","
-            "\"intrinsic_valuation\"]' NOT NULL"
-        ),
+        ('JSON DEFAULT \'["fundamental_analysis","analyst_view","intrinsic_valuation"]\' NOT NULL'),
     ),
 )
 
@@ -85,9 +82,149 @@ def run_schema_migrations(database_engine: Engine) -> None:
 
 def _run_sqlite_schema_migrations(database_engine: Engine) -> None:
     with database_engine.begin() as connection:
+        _ensure_sqlite_investment_memos_table(connection)
+        _ensure_sqlite_valuation_runs_table(connection)
         _ensure_sqlite_columns(connection, SQLITE_COLUMN_MIGRATIONS)
         _normalize_legacy_evidence_analysis_status(connection)
         _set_sqlite_schema_version(connection)
+
+
+def _ensure_sqlite_investment_memos_table(connection: Connection) -> None:
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS investment_memos (
+                id INTEGER PRIMARY KEY,
+                company_id INTEGER NOT NULL,
+                generation_run_id INTEGER NOT NULL,
+                parent_memo_id INTEGER,
+                version_no INTEGER NOT NULL,
+                editor_type VARCHAR(40) DEFAULT 'model' NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                conclusion VARCHAR(40) NOT NULL,
+                sections JSON DEFAULT '{}' NOT NULL,
+                markdown TEXT,
+                source_analyst_run_ids JSON DEFAULT '[]' NOT NULL,
+                source_snapshot_hash VARCHAR(120),
+                change_note TEXT,
+                status VARCHAR(40) DEFAULT 'draft' NOT NULL,
+                is_latest BOOLEAN DEFAULT 0 NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(company_id) REFERENCES companies (id),
+                FOREIGN KEY(generation_run_id) REFERENCES analysis_runs (id),
+                FOREIGN KEY(parent_memo_id) REFERENCES investment_memos (id)
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_investment_memos_company_id
+            ON investment_memos (company_id)
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_investment_memos_generation_run_id
+            ON investment_memos (generation_run_id)
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_investment_memos_parent_memo_id
+            ON investment_memos (parent_memo_id)
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_investment_memos_company_latest
+            ON investment_memos (company_id, is_latest)
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_investment_memos_company_created
+            ON investment_memos (company_id, created_at)
+            """
+        )
+    )
+
+
+def _ensure_sqlite_valuation_runs_table(connection: Connection) -> None:
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS valuation_runs (
+                id INTEGER PRIMARY KEY,
+                company_id INTEGER NOT NULL,
+                memo_id INTEGER,
+                run_version VARCHAR(40) DEFAULT '010_v1' NOT NULL,
+                status VARCHAR(40) DEFAULT 'draft' NOT NULL,
+                price_blind BOOLEAN DEFAULT 1 NOT NULL,
+                forbidden_price_inputs JSON DEFAULT '{}' NOT NULL,
+                input_snapshot JSON DEFAULT '{}' NOT NULL,
+                input_snapshot_hash VARCHAR(120),
+                valuation_inputs JSON DEFAULT '{}' NOT NULL,
+                model_suggested_assumptions JSON DEFAULT '{}' NOT NULL,
+                user_adjusted_assumptions JSON DEFAULT '{}' NOT NULL,
+                assumptions JSON DEFAULT '{}' NOT NULL,
+                methods JSON DEFAULT '{}' NOT NULL,
+                results JSON DEFAULT '{}' NOT NULL,
+                sensitivity JSON DEFAULT '{}' NOT NULL,
+                confidence FLOAT,
+                confidence_summary JSON DEFAULT '{}' NOT NULL,
+                source_map JSON DEFAULT '{}' NOT NULL,
+                user_note TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(company_id) REFERENCES companies (id),
+                FOREIGN KEY(memo_id) REFERENCES investment_memos (id)
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_valuation_runs_company_id
+            ON valuation_runs (company_id)
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_valuation_runs_memo_id
+            ON valuation_runs (memo_id)
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_valuation_runs_company_created
+            ON valuation_runs (company_id, created_at)
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_valuation_runs_company_status
+            ON valuation_runs (company_id, status)
+            """
+        )
+    )
 
 
 def _ensure_sqlite_columns(
@@ -131,9 +268,7 @@ def _existing_sqlite_tables(connection: Connection, table_names: set[str]) -> se
 
 
 def _existing_sqlite_columns(connection: Connection, table_name: str) -> set[str]:
-    return {
-        str(row[1]) for row in connection.execute(text(f"PRAGMA table_info({table_name})"))
-    }
+    return {str(row[1]) for row in connection.execute(text(f"PRAGMA table_info({table_name})"))}
 
 
 def _normalize_legacy_evidence_analysis_status(connection: Connection) -> None:

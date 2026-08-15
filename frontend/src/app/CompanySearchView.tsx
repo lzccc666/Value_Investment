@@ -178,7 +178,7 @@ export function CompanySearchView({
         </label>
       </div>
 
-      {!selectedCompanyId ? (
+      {!selectedCompanyId && !normalizedQuery ? (
         <NewCompanyPanel
           form={newCompanyForm}
           createState={createState}
@@ -196,7 +196,7 @@ export function CompanySearchView({
       ) : null}
 
       {companiesState.status === "ready" && companies.length === 0 ? (
-        <StateNotice title="没有匹配结果" description="当前关键词没有匹配公司，可以直接在上方新增。" />
+        <StateNotice title="没有匹配结果" description="当前关键词没有匹配公司，清空搜索后可以新增。" />
       ) : null}
 
       {companies.length > 0 ? (

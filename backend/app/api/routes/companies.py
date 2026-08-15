@@ -56,6 +56,7 @@ from app.services.companies import (
     list_company_announcements_for_deep_summary,
     list_company_announcements_for_summary,
     list_company_financials,
+    list_company_financials_by_periods,
     refresh_company_market_snapshot,
     refresh_company_profile,
     sync_company_announcements,
@@ -93,9 +94,7 @@ def create_company_record(
 
 
 @router.get("/{company_id}", response_model=CompanyRead)
-def get_company_detail(
-    company_id: int, db: Annotated[Session, Depends(get_db)]
-) -> CompanyRead:
+def get_company_detail(company_id: int, db: Annotated[Session, Depends(get_db)]) -> CompanyRead:
     company = _get_company_or_404(db, company_id)
     if company.listed_date is None or _should_refresh_company_description(company):
         try:
@@ -136,8 +135,21 @@ def get_company_financials(
     db: Annotated[Session, Depends(get_db)],
     limit: Annotated[int, Query(ge=1, le=100)] = 60,
     offset: Annotated[int, Query(ge=0)] = 0,
+    period_limit: Annotated[int | None, Query(ge=1, le=60)] = None,
+    period_offset: Annotated[int, Query(ge=0)] = 0,
 ) -> FinancialStatementListResponse:
     _get_company_or_404(db, company_id)
+    if period_limit is not None:
+        items, total = list_company_financials_by_periods(
+            db,
+            company_id=company_id,
+            period_limit=period_limit,
+            period_offset=period_offset,
+        )
+        return FinancialStatementListResponse(
+            items=items, total=total, limit=len(items), offset=period_offset
+        )
+
     items, total = list_company_financials(db, company_id=company_id, limit=limit, offset=offset)
     return FinancialStatementListResponse(items=items, total=total, limit=limit, offset=offset)
 
@@ -151,7 +163,9 @@ def get_company_financial_evidence_pack(
     db: Annotated[Session, Depends(get_db)],
 ) -> FinancialEvidencePackRead:
     _get_company_or_404(db, company_id)
-    items, _ = list_company_financials(db, company_id=company_id, limit=60, offset=0)
+    items, _ = list_company_financials_by_periods(
+        db, company_id=company_id, period_limit=60, period_offset=0
+    )
     return FinancialEvidencePackRead(**build_financial_evidence_pack(items))
 
 
@@ -209,9 +223,7 @@ def get_company_announcements(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> AnnouncementListResponse:
     _get_company_or_404(db, company_id)
-    items, total = list_company_announcements(
-        db, company_id=company_id, limit=limit, offset=offset
-    )
+    items, total = list_company_announcements(db, company_id=company_id, limit=limit, offset=offset)
     return AnnouncementListResponse(items=items, total=total, limit=limit, offset=offset)
 
 

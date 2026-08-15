@@ -40,9 +40,7 @@ class ModelGateway:
         self.model_name = model_name if model_name is not None else settings.model_name
         self.wire_api = wire_api or settings.model_wire_api
         self.reasoning_effort = (
-            reasoning_effort
-            if reasoning_effort is not None
-            else settings.model_reasoning_effort
+            reasoning_effort if reasoning_effort is not None else settings.model_reasoning_effort
         )
         self.disable_response_storage = (
             disable_response_storage

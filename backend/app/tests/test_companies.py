@@ -1,4 +1,4 @@
-﻿import json
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +24,9 @@ from app.data_sources.eastmoney_company_profile import FetchedCompanyProfile
 from app.data_sources.eastmoney_financials import (
     EastmoneyFinancialClient,
     FetchedFinancialStatement,
+    _map_eastmoney_balance_sheet_row,
+    _map_eastmoney_cash_flow_row,
+    _map_eastmoney_income_statement_row,
 )
 from app.data_sources.eastmoney_market_snapshot import (
     EastmoneyMarketSnapshotClient,
@@ -491,6 +494,166 @@ def test_eastmoney_financial_client_normalizes_main_indicator_fields(monkeypatch
     assert statements[0].fields["operating_cash_flow_to_revenue"] == pytest.approx(0.4862)
 
 
+def test_eastmoney_financial_client_keeps_cash_flow_to_revenue_ratio_input(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "RPT_F10_FINANCE_MAINFINADATA" in str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "result": {
+                    "data": [
+                        {
+                            "SECUCODE": "600519.SH",
+                            "SECURITY_NAME_ABBR": "贵州茅台",
+                            "REPORT_DATE_NAME": "2025年报",
+                            "REPORT_DATE": "2025-12-31 00:00:00",
+                            "TOTALOPERATEREVE": "172054171890.91",
+                            "PARENTNETPROFIT": "82320067101.68",
+                            "JYXJLYYSR": "0.4862",
+                        }
+                    ]
+                },
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_get(url: str, **kwargs):
+        with httpx.Client(transport=transport) as client:
+            return client.get(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    statements = EastmoneyFinancialClient().fetch_main_financials("600519.SH", limit=60)
+
+    assert statements[0].fields["operating_cash_flow_to_revenue"] == pytest.approx(0.4862)
+
+
+def test_eastmoney_cash_flow_mapper_derives_free_cash_flow() -> None:
+    statement = _map_eastmoney_cash_flow_row(
+        {
+            "SECUCODE": "600519.SH",
+            "SECURITY_NAME_ABBR": "贵州茅台",
+            "REPORT_DATE_NAME": "2025年报",
+            "REPORT_DATE": "2025-12-31",
+            "NETCASH_OPERATE": "1000",
+            "CONSTRUCT_LONG_ASSET": "-260",
+            "LPE_AMORTIZE": "12",
+            "IA_AMORTIZE": "3",
+            "OPERATE_RECE_REDUCE": "5",
+            "INVENTORY_REDUCE": "-2",
+            "OPERATE_PAYABLE_ADD": "7",
+            "ASSIGN_DIVIDEND_PORFIT": "600",
+        },
+        "eastmoney_f10_cash_flow",
+        "https://example.test/cash-flow",
+    )
+
+    assert statement.period == "2025年报"
+    assert statement.statement_type == "cash_flow_statement"
+    assert statement.fields["operating_cash_flow"] == 1000.0
+    assert statement.fields["purchase_fixed_assets_cash_paid"] == -260.0
+    assert statement.fields["capital_expenditure"] == 260.0
+    assert statement.fields["free_cash_flow"] == 740.0
+    assert statement.fields["depreciation_and_amortization"] == 15.0
+    assert statement.fields["working_capital_change"] == 10.0
+    assert statement.fields["dividend"] == 600.0
+
+
+def test_eastmoney_income_statement_mapper_standardizes_profit_fields() -> None:
+    statement = _map_eastmoney_income_statement_row(
+        {
+            "SECUCODE": "600519.SH",
+            "SECURITY_NAME_ABBR": "贵州茅台",
+            "REPORT_DATE_NAME": "2025年报",
+            "REPORT_DATE": "2025-12-31",
+            "REPORT_TYPE": "年报",
+            "NOTICE_DATE": "2026-03-29",
+            "CURRENCY": "CNY",
+            "TOTAL_OPERATE_INCOME": "1720",
+            "OPERATE_COST": "150",
+            "OPERATE_TAX_ADD": "280",
+            "SALE_EXPENSE": "60",
+            "MANAGE_EXPENSE": "70",
+            "RESEARCH_EXPENSE": "8",
+            "FINANCE_EXPENSE": "-5",
+            "OTHER_INCOME": "2",
+            "INVEST_INCOME": "3",
+            "FAIRVALUE_CHANGE_INCOME": "1",
+            "CREDIT_IMPAIRMENT_LOSS": "-4",
+            "ASSET_IMPAIRMENT_LOSS": "-6",
+            "OPERATE_PROFIT": "1100",
+            "NONBUSINESS_INCOME": "9",
+            "NONBUSINESS_EXPENSE": "4",
+            "TOTAL_PROFIT": "1105",
+            "INCOME_TAX": "275",
+            "NETPROFIT": "830",
+            "PARENT_NETPROFIT": "823",
+            "MINORITY_INTEREST": "7",
+            "DEDUCT_PARENT_NETPROFIT": "810",
+            "BASIC_EPS": "65.5",
+        },
+        "eastmoney_f10_income_statement",
+        "https://example.test/income",
+    )
+
+    assert statement.period == "2025年报"
+    assert statement.statement_type == "income_statement"
+    assert statement.currency == "CNY"
+    assert statement.fields["revenue"] == 1720.0
+    assert statement.fields["operating_cost"] == 150.0
+    assert statement.fields["gross_profit"] == 1570.0
+    assert statement.fields["taxes_and_surcharges"] == 280.0
+    assert statement.fields["selling_expense"] == 60.0
+    assert statement.fields["admin_expense"] == 70.0
+    assert statement.fields["r_and_d_expense"] == 8.0
+    assert statement.fields["finance_expense"] == -5.0
+    assert statement.fields["operating_profit"] == 1100.0
+    assert statement.fields["parent_net_profit"] == 823.0
+    assert statement.fields["deducted_net_profit"] == 810.0
+
+
+def test_eastmoney_balance_sheet_mapper_sums_debt_and_net_cash() -> None:
+    statement = _map_eastmoney_balance_sheet_row(
+        {
+            "SECUCODE": "600519.SH",
+            "SECURITY_NAME_ABBR": "贵州茅台",
+            "REPORT_DATE_NAME": "2025年报",
+            "REPORT_DATE": "2025-12-31",
+            "MONETARYFUNDS": "1000",
+            "SHORT_LOAN": "100",
+            "NONCURRENT_LIAB_1YEAR": "20",
+            "LONG_LOAN": "200",
+            "BOND_PAYABLE": "30",
+            "LEASE_LIAB": "10",
+            "TOTAL_ASSETS": "5000",
+            "TOTAL_LIABILITIES": "1500",
+            "TOTAL_PARENT_EQUITY": "3300",
+            "GOODWILL": "50",
+            "ACCOUNTS_RECE": "70",
+            "NOTE_RECE": "20",
+            "OTHER_RECE": "10",
+            "INVENTORY": "120",
+            "SHARE_CAPITAL": "1256",
+            "TREASURY_SHARES": "8",
+        },
+        "eastmoney_f10_balance_sheet",
+        "https://example.test/balance-sheet",
+    )
+
+    assert statement.statement_type == "balance_sheet"
+    assert statement.fields["cash_and_equivalents"] == 1000.0
+    assert statement.fields["short_term_interest_bearing_debt"] == 120.0
+    assert statement.fields["long_term_interest_bearing_debt"] == 240.0
+    assert statement.fields["interest_bearing_debt"] == 360.0
+    assert statement.fields["net_cash"] == 640.0
+    assert statement.fields["receivables"] == 100.0
+    assert statement.fields["shares_outstanding"] == 1256.0
+    assert statement.fields["buyback_amount_proxy"] == 8.0
+
+
 def test_create_company_adds_new_company(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     app = create_app(initialize_database=False)
@@ -692,6 +855,81 @@ def test_company_financial_evidence_pack_summarizes_facts_metrics_and_trends(
                 ),
                 FinancialStatement(
                     company_id=company.id,
+                    period="2025年报",
+                    statement_type="income_statement",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2025-12-31",
+                        "report_type": "年度报告",
+                        "revenue": 172.0,
+                        "operating_cost": 20.0,
+                        "gross_profit": 152.0,
+                        "taxes_and_surcharges": 12.0,
+                        "selling_expense": 6.0,
+                        "admin_expense": 5.0,
+                        "r_and_d_expense": 2.0,
+                        "finance_expense": -1.0,
+                        "other_income": 0.6,
+                        "investment_income": 1.0,
+                        "fair_value_change_income": 0.4,
+                        "credit_impairment_loss": 0.2,
+                        "asset_impairment_loss": 0.3,
+                        "operating_profit": 108.0,
+                        "non_operating_income": 0.5,
+                        "non_operating_expense": 0.2,
+                        "total_profit": 108.3,
+                        "income_tax_expense": 26.3,
+                        "net_profit": 82.0,
+                        "parent_net_profit": 82.0,
+                        "minority_interest": 0.0,
+                        "deducted_net_profit": 80.0,
+                        "eps": 6.5,
+                    },
+                    source="test_fixture",
+                ),
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2025年报",
+                    statement_type="cash_flow_statement",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2025-12-31",
+                        "report_type": "年度报告",
+                        "operating_cash_flow": 92.0,
+                        "capital_expenditure": 18.0,
+                        "free_cash_flow": 74.0,
+                        "depreciation_and_amortization": 5.0,
+                        "working_capital_change": -2.0,
+                        "dividend": 58.0,
+                    },
+                    source="test_fixture",
+                ),
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2025年报",
+                    statement_type="balance_sheet",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2025-12-31",
+                        "report_type": "年度报告",
+                        "cash_and_equivalents": 120.0,
+                        "short_term_interest_bearing_debt": 8.0,
+                        "long_term_interest_bearing_debt": 12.0,
+                        "interest_bearing_debt": 20.0,
+                        "total_assets": 420.0,
+                        "total_liabilities": 76.0,
+                        "shareholders_equity": 300.0,
+                        "goodwill": 0.0,
+                        "receivables": 6.0,
+                        "inventory": 12.0,
+                        "shares_outstanding": 12.56,
+                        "treasury_shares": 1.0,
+                        "buyback_amount_proxy": 1.0,
+                    },
+                    source="test_fixture",
+                ),
+                FinancialStatement(
+                    company_id=company.id,
                     period="2024年报",
                     statement_type="main_financial_indicators",
                     currency="CNY",
@@ -755,15 +993,84 @@ def test_company_financial_evidence_pack_summarizes_facts_metrics_and_trends(
         "period": "2025年报",
         "value": 82.0,
     }
+    assert pack["financial_facts"]["latest"]["free_cash_flow"] == 74.0
+    assert pack["financial_facts"]["latest"]["cash_and_equivalents"] == 120.0
+    assert pack["financial_facts"]["latest"]["interest_bearing_debt"] == 20.0
+    assert pack["financial_facts"]["latest"]["net_cash"] == 100.0
+    assert pack["financial_facts"]["latest"]["dividend"] == 58.0
+    assert pack["financial_facts"]["latest"]["shares_outstanding"] == 12.56
+    assert pack["financial_facts"]["latest"]["operating_cost"] == 20.0
+    assert pack["financial_facts"]["latest"]["selling_expense"] == 6.0
+    assert pack["financial_facts"]["latest"]["operating_profit"] == 108.0
+    assert pack["financial_facts"]["latest"]["income_tax_expense"] == 26.3
     assert pack["financial_metrics"]["profitability"]["roe"] == 0.32
+    assert pack["financial_metrics"]["profit_structure"]["operating_margin"] == pytest.approx(
+        108.0 / 172.0
+    )
+    assert pack["financial_metrics"]["profit_structure"][
+        "deducted_net_profit_to_net_profit"
+    ] == pytest.approx(80.0 / 82.0)
+    assert pack["financial_metrics"]["expense_control"]["period_expense_ratio"] == pytest.approx(
+        (6.0 + 5.0 + 2.0 - 1.0) / 172.0
+    )
+    assert pack["financial_metrics"]["cash_quality"]["operating_cash_flow_to_revenue"] == 0.42
     assert pack["financial_metrics"]["cash_quality"][
-        "operating_cash_flow_to_revenue"
-    ] == 0.42
+        "free_cash_flow_to_net_profit"
+    ] == pytest.approx(74.0 / 82.0)
+    assert pack["financial_metrics"]["balance_sheet_safety"][
+        "cash_to_interest_bearing_debt"
+    ] == pytest.approx(6.0)
+    assert pack["financial_metrics"]["shareholder_return"][
+        "dividend_payout_ratio"
+    ] == pytest.approx(58.0 / 82.0)
+    assert pack["cash_flow_coverage"] == {
+        "has_operating_cash_flow": True,
+        "has_cash_flow_proxy": True,
+        "proxy_fields": [
+            "operating_cash_flow_per_share",
+            "operating_cash_flow_to_revenue",
+        ],
+        "note": None,
+    }
+    assert pack["cash_flow_quality"]["free_cash_flow"] == 74.0
+    assert pack["balance_sheet_adjustment"]["net_cash"] == 100.0
+    assert pack["capital_allocation"]["dividend"] == 58.0
+    assert pack["income_statement_quality"]["operating_profit"] == 108.0
+    assert pack["quality_matrix"]["profit_structure"]["metrics"][
+        "operating_margin"
+    ] == pytest.approx(108.0 / 172.0)
+    assert pack["quality_matrix"]["expense_control"]["metrics"][
+        "period_expense_ratio"
+    ] == pytest.approx((6.0 + 5.0 + 2.0 - 1.0) / 172.0)
+    assert "accounting_quality" in pack["quality_matrix"]
+    assert "profit_composition" in pack["analyst_summary"]
+    assert pack["valuation_readiness"]["dcf_ready"] is True
+    assert pack["valuation_readiness"]["asset_value_ready"] is True
+    assert "analyst_summary" in pack
+    assert "quality_matrix" in pack
+    assert "data_quality" in pack
     assert pack["financial_trends"]["revenue_cagr_3y"] == pytest.approx(
         (172.0 / 100.0) ** (1 / 3) - 1
     )
     assert pack["financial_trends"]["roe_stability"] == "stable"
-    assert "缺少资本开支，无法计算严格自由现金流。" in pack["financial_data_gaps"]
+    gap_fields = {item["field"] for item in pack["financial_data_gaps"]}
+    assert "operating_cash_flow" not in gap_fields
+    assert "capital_expenditure" not in gap_fields
+    assert "free_cash_flow" not in gap_fields
+    assert "interest_bearing_debt" not in gap_fields
+    assert "cash_and_equivalents" not in gap_fields
+    assert "income_statement" not in gap_fields
+    assert "expense_breakdown" not in gap_fields
+    assert "operating_profit" not in gap_fields
+    assert "impairment_losses" not in gap_fields
+    assert "non_operating_items" not in gap_fields
+    assert "income_tax_expense" not in gap_fields
+    assert "buyback_amount" in gap_fields
+    buyback_gap = next(
+        item for item in pack["financial_data_gaps"] if item["field"] == "buyback_amount"
+    )
+    assert buyback_gap["replacement_available"] is True
+    assert buyback_gap["proxy_fields"] == ["buyback_amount_proxy", "treasury_shares"]
 
 
 def test_company_financial_evidence_pack_reports_flags_and_missing_data(
@@ -800,9 +1107,98 @@ def test_company_financial_evidence_pack_reports_flags_and_missing_data(
     assert "profit_growth_lags_revenue" in flag_codes
     assert "high_asset_liability_ratio" in flag_codes
     assert "low_operating_cash_flow_to_revenue" in flag_codes
-    assert "缺少经营现金流绝对值，无法计算经营现金流/净利润。" in pack[
-        "financial_data_gaps"
-    ]
+    operating_cash_flow_gap = next(
+        item for item in pack["financial_data_gaps"] if item["field"] == "operating_cash_flow"
+    )
+    assert operating_cash_flow_gap["replacement_available"] is True
+    assert "代理口径" in operating_cash_flow_gap["reason"]
+    income_statement_gap = next(
+        item for item in pack["financial_data_gaps"] if item["field"] == "income_statement"
+    )
+    assert income_statement_gap["replacement_available"] is True
+    assert "利润构成明细" in income_statement_gap["reason"]
+
+
+def test_company_financial_evidence_pack_reports_income_statement_quality_flags(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        session.add_all(
+            [
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2025年报",
+                    statement_type="income_statement",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2025-12-31",
+                        "report_type": "年度报告",
+                        "revenue": 100.0,
+                        "operating_cost": 40.0,
+                        "selling_expense": 8.0,
+                        "admin_expense": 6.0,
+                        "r_and_d_expense": 2.0,
+                        "finance_expense": 5.0,
+                        "operating_profit": 30.0,
+                        "investment_income": 12.0,
+                        "fair_value_change_income": 7.0,
+                        "credit_impairment_loss": -4.0,
+                        "asset_impairment_loss": -3.0,
+                        "non_operating_income": 6.0,
+                        "non_operating_expense": 1.0,
+                        "total_profit": 35.0,
+                        "income_tax_expense": 14.0,
+                        "net_profit": 20.0,
+                        "deducted_net_profit": 12.0,
+                    },
+                    source="test_fixture",
+                ),
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2024年报",
+                    statement_type="income_statement",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2024-12-31",
+                        "report_type": "年度报告",
+                        "revenue": 100.0,
+                        "operating_cost": 25.0,
+                        "selling_expense": 4.0,
+                        "admin_expense": 4.0,
+                        "r_and_d_expense": 1.0,
+                        "finance_expense": 1.0,
+                        "operating_profit": 40.0,
+                        "total_profit": 40.0,
+                        "income_tax_expense": 8.0,
+                        "net_profit": 32.0,
+                        "deducted_net_profit": 31.0,
+                    },
+                    source="test_fixture",
+                ),
+            ]
+        )
+        session.commit()
+        statements = session.scalars(
+            select(FinancialStatement)
+            .where(FinancialStatement.company_id == company.id)
+            .order_by(FinancialStatement.fields["report_date"].as_string().desc())
+        ).all()
+
+    pack = build_financial_evidence_pack(statements)
+    flag_codes = {item["code"] for item in pack["financial_flags"]}
+
+    assert "high_investment_income_to_profit" in flag_codes
+    assert "high_fair_value_change_to_profit" in flag_codes
+    assert "high_impairment_loss_to_profit" in flag_codes
+    assert "high_non_operating_profit_to_profit" in flag_codes
+    assert "abnormal_effective_tax_rate" in flag_codes
+    assert "deducted_profit_lags_parent_profit" in flag_codes
+    assert "operating_margin_decline" in flag_codes
+    assert "period_expense_ratio_rise" in flag_codes
+    assert "finance_expense_ratio_rise" in flag_codes
 
 
 def test_company_financial_evidence_pack_api_returns_local_pack(tmp_path: Path) -> None:
@@ -846,6 +1242,58 @@ def test_company_financial_evidence_pack_api_returns_local_pack(tmp_path: Path) 
     assert payload["financial_metrics"]["profitability"]["roe"] == 0.32
 
 
+def test_company_financials_can_list_sixty_periods_with_all_statement_types(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    statement_types = (
+        "main_financial_indicators",
+        "income_statement",
+        "cash_flow_statement",
+        "balance_sheet",
+    )
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        for index in range(60):
+            period = f"P{index:02d}"
+            report_date = f"{2060 - index}-12-31"
+            for statement_type in statement_types:
+                session.add(
+                    FinancialStatement(
+                        company_id=company.id,
+                        period=period,
+                        statement_type=statement_type,
+                        currency="CNY",
+                        fields={"report_date": report_date, "revenue": 1000 - index},
+                        source="test_fixture",
+                    )
+                )
+        session.commit()
+
+    app = create_app(initialize_database=False)
+
+    def override_get_db():
+        with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    with TestClient(app) as client:
+        company_id = _get_company_id(client, "贵州茅台")
+        response = client.get(
+            f"/api/companies/{company_id}/financials?period_limit=60&period_offset=0"
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 240
+    assert payload["limit"] == 240
+    assert len(payload["items"]) == 240
+    assert len({item["period"] for item in payload["items"]}) == 60
+    assert {item["statement_type"] for item in payload["items"][:4]} == set(statement_types)
+
+
 def test_delete_company_financial_statement_removes_record(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
@@ -873,9 +1321,7 @@ def test_delete_company_financial_statement_removes_record(tmp_path: Path) -> No
 
     with TestClient(app) as client:
         company_id = _get_company_id(client, "贵州茅台")
-        delete_response = client.delete(
-            f"/api/companies/{company_id}/financials/{statement_id}"
-        )
+        delete_response = client.delete(f"/api/companies/{company_id}/financials/{statement_id}")
         list_response = client.get(f"/api/companies/{company_id}/financials")
 
     assert delete_response.status_code == 200
@@ -967,6 +1413,30 @@ def test_company_financial_sync_creates_and_updates_statements(
     list_payload = list_response.json()
     assert list_payload["total"] == 2
     assert list_payload["items"][0]["source"] == "fake_financial_source"
+
+
+def test_company_financial_sync_uses_expanded_statement_fetcher(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+
+        items, fetched, created, updated = sync_company_financials(
+            session,
+            company,
+            data_client=FakeExpandedFinancialClient(),
+            limit=60,
+        )
+
+    assert fetched == 4
+    assert created == 4
+    assert updated == 0
+    assert {item.statement_type for item in items} == {
+        "main_financial_indicators",
+        "income_statement",
+        "cash_flow_statement",
+        "balance_sheet",
+    }
 
 
 def test_company_announcements_return_seed_announcement(tmp_path: Path) -> None:
@@ -1404,17 +1874,11 @@ def test_eastmoney_announcement_client_fetches_announcements_in_last_year(
         calls.append((page_index, page_size))
         pages: dict[int, list[object]] = {
             1: [
-                _eastmoney_announcement_row(
-                    "AN1", "贵州茅台:一年内公告一", "2026-07-18 00:00:00"
-                ),
-                _eastmoney_announcement_row(
-                    "AN2", "贵州茅台:一年内公告二", "2025-08-10 00:00:00"
-                ),
+                _eastmoney_announcement_row("AN1", "贵州茅台:一年内公告一", "2026-07-18 00:00:00"),
+                _eastmoney_announcement_row("AN2", "贵州茅台:一年内公告二", "2025-08-10 00:00:00"),
             ],
             2: [
-                _eastmoney_announcement_row(
-                    "AN3", "贵州茅台:边界内公告", "2025-08-09 00:00:00"
-                ),
+                _eastmoney_announcement_row("AN3", "贵州茅台:边界内公告", "2025-08-09 00:00:00"),
                 _eastmoney_announcement_row(
                     "AN4", "贵州茅台:一年前更早公告", "2025-08-08 00:00:00"
                 ),
@@ -2096,9 +2560,7 @@ def test_announcement_deep_batch_summary_api_returns_per_announcement_results(
 
     with TestClient(app) as client:
         company_id = _get_company_id(client, "贵州茅台")
-        response = client.post(
-            f"/api/companies/{company_id}/announcements/summarize-all-deep"
-        )
+        response = client.post(f"/api/companies/{company_id}/announcements/summarize-all-deep")
 
     assert response.status_code == 200
     payload = response.json()
@@ -2306,6 +2768,46 @@ class FakeFinancialClient:
         ]
 
 
+class FakeExpandedFinancialClient:
+    def fetch_financials(self, secucode: str, limit: int = 60) -> list[FetchedFinancialStatement]:
+        assert secucode == "600519.SH"
+        assert limit == 60
+        return [
+            FetchedFinancialStatement(
+                period="2025年报",
+                statement_type="main_financial_indicators",
+                currency="CNY",
+                fields={"revenue": 100.0, "net_profit": 24.0},
+                source="fake_financial_source",
+                source_url="https://example.test/main",
+            ),
+            FetchedFinancialStatement(
+                period="2025年报",
+                statement_type="income_statement",
+                currency="CNY",
+                fields={"operating_cost": 30.0, "operating_profit": 40.0},
+                source="fake_income_statement_source",
+                source_url="https://example.test/income",
+            ),
+            FetchedFinancialStatement(
+                period="2025年报",
+                statement_type="cash_flow_statement",
+                currency="CNY",
+                fields={"operating_cash_flow": 28.0, "capital_expenditure": 6.0},
+                source="fake_cash_flow_source",
+                source_url="https://example.test/cash-flow",
+            ),
+            FetchedFinancialStatement(
+                period="2025年报",
+                statement_type="balance_sheet",
+                currency="CNY",
+                fields={"cash_and_equivalents": 50.0, "interest_bearing_debt": 10.0},
+                source="fake_balance_sheet_source",
+                source_url="https://example.test/balance-sheet",
+            ),
+        ]
+
+
 class FakeAnnouncementClient:
     def fetch_announcements(
         self,
@@ -2403,13 +2905,10 @@ class FakeUnconfiguredAnnouncementGateway:
         raise ModelNotConfiguredError("模型未配置，请先在 .env 中设置：MODEL_API_KEY")
 
 
-def _eastmoney_announcement_row(
-    art_code: str, title: str, notice_date: str
-) -> dict[str, object]:
+def _eastmoney_announcement_row(art_code: str, title: str, notice_date: str) -> dict[str, object]:
     return {
         "art_code": art_code,
         "title_ch": title,
         "notice_date": notice_date,
         "columns": [{"column_name": "其他"}],
     }
-

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -17,10 +18,16 @@ from app.analysis.prompts.evidence import (
     build_evidence_prompt,
     build_query_prompt,
 )
+from app.data_sources.announcement_content import (
+    AnnouncementContentFetcher,
+    AnnouncementContentFetchError,
+    looks_like_eastmoney_page_shell,
+)
 from app.data_sources.web_search_provider import (
     AShareCompanyDisclosureSearchProvider,
     CompositeWebSearchProvider,
     HttpWebPageSnapshotFetcher,
+    PageSnapshot,
     WebPageSnapshotFetcher,
     WebSearchError,
     WebSearchProvider,
@@ -281,9 +288,7 @@ def get_model_config_status(gateway: ModelGateway | None = None) -> dict[str, ob
 def run_model_smoke_test(gateway: ModelGateway | None = None) -> dict[str, object]:
     model_gateway = gateway or ModelGateway()
     output = model_gateway.generate_structured(
-        system_prompt=(
-            "你是模型连通性自检器。只输出合法 JSON，不要输出 Markdown。"
-        ),
+        system_prompt=("你是模型连通性自检器。只输出合法 JSON，不要输出 Markdown。"),
         user_prompt=(
             '请返回 {"ok": true, "message": "model gateway ok"}，'
             "用于验证 API key、base_url、model_name 和 JSON 输出能力。"
@@ -302,9 +307,7 @@ def list_company_evidence(
     session: Session, company_id: int, limit: int = 20, offset: int = 0
 ) -> tuple[list[Evidence], int]:
     base_stmt = select(Evidence).where(Evidence.company_id == company_id)
-    total_stmt = select(func.count()).select_from(Evidence).where(
-        Evidence.company_id == company_id
-    )
+    total_stmt = select(func.count()).select_from(Evidence).where(Evidence.company_id == company_id)
 
     items = session.scalars(
         base_stmt.order_by(
@@ -345,9 +348,13 @@ def search_company_evidence(
     search_provider: WebSearchProvider | None = None,
     fallback_search_provider: WebSearchProvider | None = None,
     page_fetcher: WebPageSnapshotFetcher | None = None,
+    announcement_content_fetcher: AnnouncementContentFetcher | None = None,
 ) -> tuple[list[Evidence], AnalysisRun]:
     model_gateway = gateway or ModelGateway()
     provider = search_provider or CompositeWebSearchProvider()
+    content_fetcher = announcement_content_fetcher or (
+        AnnouncementContentFetcher() if search_provider is None else None
+    )
     fallback_provider = fallback_search_provider or _default_fallback_search_provider(
         provider=provider,
         search_provider_was_injected=search_provider is not None,
@@ -355,7 +362,9 @@ def search_company_evidence(
     snapshot_fetcher = (
         page_fetcher
         if page_fetcher is not None
-        else HttpWebPageSnapshotFetcher()
+        else AnnouncementAwareWebPageSnapshotFetcher(
+            announcement_content_fetcher=content_fetcher,
+        )
         if search_provider is None
         else None
     )
@@ -393,9 +402,7 @@ def search_company_evidence(
                 temperature=0.2,
             )
         except (ModelGatewayError, ModelOutputValidationError, ValueError):
-            query_plan = SearchQueryPlan(
-                queries=_expand_queries([], company, payload.keywords)[:4]
-            )
+            query_plan = SearchQueryPlan(queries=_expand_queries([], company, payload.keywords)[:4])
         executed_queries = _expand_queries(query_plan.queries, company, payload.keywords)
         raw_results, search_stats = _collect_search_results(
             provider,
@@ -425,25 +432,36 @@ def search_company_evidence(
                 session,
                 company=company,
                 keywords=payload.keywords,
+                announcement_content_fetcher=content_fetcher,
             )
             if deterministic_leads and search_stats.get("fallback_triggered"):
                 search_stats = _with_deterministic_lead_stats(
                     search_stats,
                     lead_stats=lead_stats,
                 )
-                evidence_items = _create_fallback_evidence_items(
-                    session, company.id, deterministic_leads
-                )
-                _complete_search_run(
-                    session,
-                    run,
-                    queries=executed_queries,
-                    raw_results=deterministic_leads,
-                    search_stats=search_stats,
-                    evidence_items=evidence_items,
-                    fallback_reason=_no_candidate_message(search_stats),
-                )
-                return evidence_items, run
+                model_ready_leads = _model_ready_deterministic_leads(deterministic_leads)
+                if model_ready_leads:
+                    raw_results = model_ready_leads
+                    search_stats["sent_to_model_count"] = len(model_ready_leads)
+                    search_stats["deterministic_model_candidate_count"] = len(model_ready_leads)
+                else:
+                    search_stats["deterministic_model_candidate_count"] = 0
+                    evidence_items = _create_fallback_evidence_items(
+                        session, company.id, deterministic_leads
+                    )
+                    _complete_search_run(
+                        session,
+                        run,
+                        queries=executed_queries,
+                        raw_results=deterministic_leads,
+                        search_stats=search_stats,
+                        evidence_items=evidence_items,
+                        fallback_reason=_no_candidate_message(search_stats),
+                    )
+                    return evidence_items, run
+            else:
+                raise EvidenceSearchError(_no_candidate_message(search_stats))
+        if not raw_results:
             raise EvidenceSearchError(_no_candidate_message(search_stats))
         extraction = model_gateway.generate_structured(
             system_prompt=EVIDENCE_SYSTEM_PROMPT,
@@ -473,9 +491,7 @@ def search_company_evidence(
                 validation_error=exc,
             )
             if repaired is not None:
-                evidence_items = _create_evidence_items(
-                    session, company.id, repaired.evidences
-                )
+                evidence_items = _create_evidence_items(session, company.id, repaired.evidences)
                 fallback_query_plan = locals().get("query_plan")
                 repaired_queries = (
                     fallback_query_plan.queries
@@ -516,9 +532,7 @@ def search_company_evidence(
         evidence_items = _create_fallback_evidence_items(session, company.id, raw_results)
         fallback_query_plan = locals().get("query_plan")
         fallback_queries = (
-            fallback_query_plan.queries
-            if isinstance(fallback_query_plan, SearchQueryPlan)
-            else []
+            fallback_query_plan.queries if isinstance(fallback_query_plan, SearchQueryPlan) else []
         )
         _complete_search_run(
             session,
@@ -625,6 +639,60 @@ def _default_fallback_search_provider(
     else:
         providers.append(provider)
     return CompositeWebSearchProvider(providers=providers)
+
+
+class AnnouncementAwareWebPageSnapshotFetcher(WebPageSnapshotFetcher):
+    def __init__(
+        self,
+        *,
+        announcement_content_fetcher: AnnouncementContentFetcher | None = None,
+        web_page_fetcher: WebPageSnapshotFetcher | None = None,
+        max_excerpt_chars: int = 1800,
+    ) -> None:
+        self.announcement_content_fetcher = announcement_content_fetcher
+        self.web_page_fetcher = web_page_fetcher or HttpWebPageSnapshotFetcher(
+            max_excerpt_chars=max_excerpt_chars
+        )
+        self.max_excerpt_chars = max_excerpt_chars
+
+    def fetch(self, url: str) -> PageSnapshot | None:
+        if self.announcement_content_fetcher is not None and _is_announcement_like_url(url):
+            try:
+                content, source_url = self.announcement_content_fetcher.fetch_text(
+                    source_url=url,
+                    raw_url=url if _is_pdf_like_url(url) else None,
+                )
+            except AnnouncementContentFetchError:
+                pass
+            else:
+                excerpt = _truncate_lead_text(
+                    content,
+                    max_length=self.max_excerpt_chars,
+                )
+                if excerpt:
+                    return PageSnapshot(
+                        url=source_url,
+                        page_title=None,
+                        page_description=None,
+                        content_excerpt=excerpt,
+                        fetched_at=datetime.now(UTC).isoformat(),
+                    )
+
+        return self.web_page_fetcher.fetch(url)
+
+
+def _is_announcement_like_url(url: str) -> bool:
+    normalized = url.lower()
+    return (
+        "data.eastmoney.com/notices/detail/" in normalized
+        or "pdf.dfcfw.com/pdf/" in normalized
+        or normalized.endswith(".pdf")
+    )
+
+
+def _is_pdf_like_url(url: str) -> bool:
+    normalized = url.lower()
+    return normalized.endswith(".pdf") or "pdf.dfcfw.com/pdf/" in normalized
 
 
 def _build_fallback_queries(company: Company, keywords: list[str]) -> list[str]:
@@ -737,8 +805,13 @@ def _build_deterministic_search_leads(
     *,
     company: Company,
     keywords: list[str],
+    announcement_content_fetcher: AnnouncementContentFetcher | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    local_leads = _build_local_announcement_search_leads(session, company)
+    local_leads = _build_local_announcement_search_leads(
+        session,
+        company,
+        announcement_content_fetcher=announcement_content_fetcher,
+    )
     seed_leads = _build_seed_source_leads(company, keywords)
     final_leads = _build_official_fallback_leads(company, keywords)
 
@@ -768,15 +841,15 @@ def _build_deterministic_search_leads(
         "seed_source_lead_count": len(seed_leads),
         "final_search_lead_count": len(final_leads) if not local_leads and not seed_leads else 0,
         "final_search_lead_triggered": bool(final_leads and not local_leads and not seed_leads),
-        "final_search_lead_queries": _string_list(
-            [lead.get("query") for lead in final_leads]
-        ),
+        "final_search_lead_queries": _string_list([lead.get("query") for lead in final_leads]),
     }
 
 
 def _build_local_announcement_search_leads(
     session: Session,
     company: Company,
+    *,
+    announcement_content_fetcher: AnnouncementContentFetcher | None = None,
 ) -> list[dict[str, object]]:
     announcements = session.scalars(
         select(Announcement)
@@ -788,7 +861,13 @@ def _build_local_announcement_search_leads(
     for announcement in announcements:
         if not _is_local_announcement_lead_candidate(announcement):
             continue
-        leads.append(_local_announcement_lead_snapshot(company, announcement))
+        leads.append(
+            _local_announcement_lead_snapshot(
+                company,
+                announcement,
+                announcement_content_fetcher=announcement_content_fetcher,
+            )
+        )
         if len(leads) >= 5:
             break
     return leads
@@ -820,22 +899,20 @@ def _is_local_announcement_lead_candidate(announcement: Announcement) -> bool:
 def _local_announcement_lead_snapshot(
     company: Company,
     announcement: Announcement,
+    *,
+    announcement_content_fetcher: AnnouncementContentFetcher | None = None,
 ) -> dict[str, object]:
     source_url = announcement.source_url or announcement.raw_url
     published_at = (
-        announcement.published_at.isoformat()
-        if announcement.published_at is not None
-        else None
+        announcement.published_at.isoformat() if announcement.published_at is not None else None
     )
-    return {
+    lead = {
         "query": f"{company.name} {announcement.title} 原文复核",
         "title": announcement.title,
         "url": source_url,
         "source": announcement.source or "local_announcement",
         "snippet": _truncate_lead_text(
-            announcement.summary
-            or _join_text_parts(announcement.key_facts)
-            or announcement.title,
+            announcement.summary or _join_text_parts(announcement.key_facts) or announcement.title,
             max_length=360,
         ),
         "published_at": published_at,
@@ -847,6 +924,76 @@ def _local_announcement_lead_snapshot(
             "search_lead，需要人工追到原始公告、监管文件或政府公开数据复核。"
         ),
     }
+    page_snapshot = _announcement_page_snapshot(
+        announcement,
+        announcement_content_fetcher=announcement_content_fetcher,
+    )
+    if page_snapshot is not None:
+        lead["page_snapshot"] = page_snapshot.to_snapshot()
+        lead["content_read_status"] = "success"
+    elif announcement_content_fetcher is not None:
+        lead["content_read_status"] = "failed"
+    return lead
+
+
+def _announcement_page_snapshot(
+    announcement: Announcement,
+    *,
+    announcement_content_fetcher: AnnouncementContentFetcher | None,
+) -> PageSnapshot | None:
+    content = _valid_announcement_body_text(announcement)
+    source_url = announcement.source_url or announcement.raw_url
+
+    if not content and announcement_content_fetcher is not None:
+        try:
+            content, fetched_source_url = announcement_content_fetcher.fetch_text(
+                source_url=announcement.source_url,
+                raw_url=announcement.raw_url,
+            )
+        except AnnouncementContentFetchError:
+            content = None
+        else:
+            source_url = fetched_source_url or source_url
+
+    if not content:
+        return None
+
+    excerpt = _truncate_lead_text(content, max_length=1800)
+    if not excerpt:
+        return None
+
+    return PageSnapshot(
+        url=source_url or "",
+        page_title=announcement.title,
+        page_description=announcement.summary,
+        content_excerpt=excerpt,
+        fetched_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def _valid_announcement_body_text(announcement: Announcement) -> str | None:
+    for value in (announcement.raw_content, announcement.content):
+        text = " ".join(str(value or "").split())
+        if not text:
+            continue
+        if looks_like_eastmoney_page_shell(text):
+            continue
+        return text
+    return None
+
+
+def _model_ready_deterministic_leads(
+    leads: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return [lead for lead in leads if _has_content_excerpt(lead)]
+
+
+def _has_content_excerpt(snapshot: dict[str, object]) -> bool:
+    page_snapshot = snapshot.get("page_snapshot")
+    if not isinstance(page_snapshot, dict):
+        return False
+    content_excerpt = page_snapshot.get("content_excerpt")
+    return bool(isinstance(content_excerpt, str) and content_excerpt.strip())
 
 
 def _build_seed_source_leads(
@@ -918,8 +1065,7 @@ def _build_seed_source_leads(
                     "url": "https://www.miit.gov.cn/",
                     "source": "www.miit.gov.cn",
                     "snippet": (
-                        f"用于追溯 {industry_term} 行业政策、监管要求、"
-                        "供需变化和产业公开信息。"
+                        f"用于追溯 {industry_term} 行业政策、监管要求、供需变化和产业公开信息。"
                     ),
                     "analysis_note": note,
                 },
@@ -936,8 +1082,7 @@ def _build_seed_source_leads(
                     "url": "https://www.gov.cn/",
                     "source": "www.gov.cn",
                     "snippet": (
-                        f"用于追溯 {normalized} 相关政策、监管、"
-                        "政府公开数据和行业公开信息。"
+                        f"用于追溯 {normalized} 相关政策、监管、政府公开数据和行业公开信息。"
                     ),
                     "analysis_note": note,
                 }
@@ -994,9 +1139,7 @@ def _with_no_fallback_stats(stats: dict[str, object]) -> dict[str, object]:
     stats["final_search_lead_queries"] = []
     stats["fallback_queries"] = []
     stats["no_candidate_reason"] = (
-        _no_candidate_reason(stats)
-        if int(stats.get("sent_to_model_count") or 0) <= 0
-        else None
+        _no_candidate_reason(stats) if int(stats.get("sent_to_model_count") or 0) <= 0 else None
     )
     return stats
 
@@ -1013,13 +1156,9 @@ def _with_deterministic_lead_stats(
     stats["fallback_candidate_count"] = local_count + seed_count + final_count
     stats["local_announcement_lead_count"] = local_count
     stats["seed_source_lead_count"] = seed_count
-    stats["final_search_lead_triggered"] = bool(
-        lead_stats.get("final_search_lead_triggered")
-    )
+    stats["final_search_lead_triggered"] = bool(lead_stats.get("final_search_lead_triggered"))
     stats["final_search_lead_count"] = final_count
-    stats["final_search_lead_queries"] = _string_list(
-        lead_stats.get("final_search_lead_queries")
-    )
+    stats["final_search_lead_queries"] = _string_list(lead_stats.get("final_search_lead_queries"))
     stats["no_candidate_reason"] = _no_candidate_reason(stats)
     return stats
 
@@ -1073,9 +1212,7 @@ def _merge_search_stats(
         "fallback_search_stats": fallback_stats,
     }
     merged["no_candidate_reason"] = (
-        _no_candidate_reason(merged)
-        if int(merged.get("sent_to_model_count") or 0) <= 0
-        else None
+        _no_candidate_reason(merged) if int(merged.get("sent_to_model_count") or 0) <= 0 else None
     )
     return merged
 
@@ -1346,9 +1483,7 @@ def _fundamental_relevance_score(
     if _is_secondary_source(snapshot):
         score -= 1.0
 
-    substantive_matches = _matched_patterns(
-        content_text, FUNDAMENTAL_SUBSTANTIVE_PATTERNS
-    )
+    substantive_matches = _matched_patterns(content_text, FUNDAMENTAL_SUBSTANTIVE_PATTERNS)
     if substantive_matches:
         score += min(6.0, len(substantive_matches) * 1.2)
 
@@ -1361,9 +1496,7 @@ def _fundamental_relevance_score(
         return 0
 
     if relevance_terms and not relevance_matches:
-        source_is_official = any(
-            pattern in source_text for pattern in OFFICIAL_SOURCE_PATTERNS
-        )
+        source_is_official = any(pattern in source_text for pattern in OFFICIAL_SOURCE_PATTERNS)
         industry_term = (company.industry or "").strip().lower() if company else ""
         is_industry_material = bool(industry_term and industry_term in title_snippet_text)
         if not source_is_official and not is_industry_material:
@@ -1386,8 +1519,7 @@ def _search_text(snapshot: dict[str, object]) -> str:
 
 def _search_content_text(snapshot: dict[str, object]) -> str:
     return " ".join(
-        str(snapshot.get(key) or "").lower()
-        for key in ("title", "source", "url", "snippet")
+        str(snapshot.get(key) or "").lower() for key in ("title", "source", "url", "snippet")
     )
 
 
@@ -1436,9 +1568,7 @@ def _search_relevance_basis(snapshot: dict[str, object], company: Company) -> di
         "matched_fundamental_terms": _matched_patterns(
             content_text, FUNDAMENTAL_SUBSTANTIVE_PATTERNS
         )[:10],
-        "official_source": any(
-            pattern in source_text for pattern in OFFICIAL_SOURCE_PATTERNS
-        ),
+        "official_source": any(pattern in source_text for pattern in OFFICIAL_SOURCE_PATTERNS),
         "secondary_source": _is_secondary_source(snapshot),
     }
 
@@ -1705,8 +1835,7 @@ def _create_fallback_evidence_items(
         source_url = raw_result.get("url")
         analysis_note = raw_result.get("analysis_note")
         snippet = str(
-            raw_result.get("snippet")
-            or "模型结构化暂时失败，已保留原始搜索线索供人工复核。"
+            raw_result.get("snippet") or "模型结构化暂时失败，已保留原始搜索线索供人工复核。"
         )
         outputs.append(
             EvidenceModelOutput(

@@ -10,8 +10,7 @@ def sanitize_result_payload(result: dict[str, object]) -> dict[str, object]:
             sanitized[key] = sanitize_error_text(value)
         elif isinstance(value, list):
             sanitized[key] = [
-                sanitize_error_text(item) if isinstance(item, str) else item
-                for item in value
+                sanitize_error_text(item) if isinstance(item, str) else item for item in value
             ]
         elif isinstance(value, dict):
             sanitized[key] = sanitize_result_payload(value)

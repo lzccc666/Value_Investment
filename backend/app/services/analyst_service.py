@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -24,6 +25,7 @@ from app.analysis.prompts.analyst import (
     build_analyst_prompt,
 )
 from app.analysis.result_sanitizer import sanitize_error_text
+from app.analysis.valuation_parameter_matrix import derive_valuation_parameter_matrix
 from app.db.models import (
     AnalysisRun,
     Announcement,
@@ -40,7 +42,7 @@ from app.services.financial_metrics import (
 
 RUN_TYPE_ANALYST_VIEW = "analyst_view"
 RUN_VERSION = "008_v1"
-MAX_FINANCIAL_SNAPSHOT_ITEMS = 40
+MAX_FINANCIAL_SNAPSHOT_PERIODS = 40
 MAX_ANNOUNCEMENT_SNAPSHOT_ITEMS = 20
 MAX_EVIDENCE_SNAPSHOT_ITEMS = 10
 MAX_ANNOUNCEMENT_SELECTION_POOL = 80
@@ -112,6 +114,28 @@ EVIDENCE_SOURCE_PRIORITY = {
     "web": 0.1,
     "company_news": 0.08,
     "industry_news": 0.06,
+}
+INCOME_STATEMENT_FLAG_OBSERVATIONS = {
+    "high_investment_income_to_profit": "投资收益占净利润较高，需要复核利润可持续性。",
+    "high_fair_value_change_to_profit": "公允价值变动占净利润较高，需要复核利润质量。",
+    "high_impairment_loss_to_profit": "减值损失占净利润较高，需要复核资产质量。",
+    "high_non_operating_profit_to_profit": "营业外收支占净利润较高，需要识别非经常性利润贡献。",
+    "deducted_profit_lags_parent_profit": (
+        "扣非净利润显著弱于归母净利润，需要识别非经常性利润贡献。"
+    ),
+    "period_expense_ratio_rise": "期间费用率连续上升，费用纪律需要关注。",
+    "finance_expense_ratio_rise": "财务费用率上升，融资成本或杠杆压力需要关注。",
+    "operating_margin_decline": "营业利润率下滑，需要复核主营盈利能力。",
+    "abnormal_effective_tax_rate": "有效税率异常，需要复核所得税费用和利润口径。",
+}
+INCOME_STATEMENT_GAP_FIELDS = {
+    "income_statement",
+    "operating_cost",
+    "expense_breakdown",
+    "operating_profit",
+    "impairment_losses",
+    "non_operating_items",
+    "income_tax_expense",
 }
 
 CONSUMER_BRAND_TERMS = (
@@ -207,11 +231,17 @@ ACCOUNTING_KEYWORDS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
 ACCOUNTING_SELECTION_TERMS = tuple(
     sorted({keyword for _, _, _, keywords in ACCOUNTING_KEYWORDS for keyword in keywords})
 )
+
+
 class AnalystProfileNotFoundError(ValueError):
     pass
 
 
 class AnalysisRunNotFoundError(ValueError):
+    pass
+
+
+class AnalysisRuleCheckNotFoundError(ValueError):
     pass
 
 
@@ -324,6 +354,40 @@ def delete_company_analysis_run(
     return run_id
 
 
+def update_analysis_run_rule_status(
+    session: Session,
+    *,
+    company_id: int,
+    run_id: int,
+    rule_id: str,
+    status: Literal["pass", "warn", "fail", "unknown"],
+) -> AnalysisRun:
+    run = session.get(AnalysisRun, run_id)
+    if run is None or run.company_id != company_id or run.run_type != RUN_TYPE_ANALYST_VIEW:
+        raise AnalysisRunNotFoundError("Analysis run not found")
+
+    result = deepcopy(run.result) if isinstance(run.result, dict) else {}
+    rule_checks = result.get("rule_checks")
+    if not isinstance(rule_checks, list):
+        raise AnalysisRuleCheckNotFoundError("Rule check not found")
+
+    for check in rule_checks:
+        if isinstance(check, dict) and check.get("rule_id") == rule_id:
+            check["status"] = status
+            profile = _get_profile_or_raise(str(run.analyst_profile or ""))
+            result["valuation_parameter_matrix"] = derive_valuation_parameter_matrix(
+                source_run_id=run.id,
+                profile=profile,
+                result=result,
+            )
+            run.result = result
+            session.commit()
+            session.refresh(run)
+            return run
+
+    raise AnalysisRuleCheckNotFoundError("Rule check not found")
+
+
 def run_company_analyst_view(
     session: Session,
     company: Company,
@@ -414,11 +478,7 @@ def build_company_analysis_snapshot(
     *,
     profile: AnalystProfile,
 ) -> dict[str, object]:
-    financials = session.scalars(
-        order_financial_statement_query(
-            select(FinancialStatement).where(FinancialStatement.company_id == company.id)
-        ).limit(MAX_FINANCIAL_SNAPSHOT_ITEMS)
-    ).all()
+    financials = _select_financial_snapshot_statements(session, company_id=company.id)
     announcements = session.scalars(
         select(Announcement)
         .where(Announcement.company_id == company.id)
@@ -427,9 +487,7 @@ def build_company_analysis_snapshot(
     ).all()
     evidence_count = (
         session.scalar(
-            select(func.count())
-            .select_from(Evidence)
-            .where(Evidence.company_id == company.id)
+            select(func.count()).select_from(Evidence).where(Evidence.company_id == company.id)
         )
         or 0
     )
@@ -453,8 +511,7 @@ def build_company_analysis_snapshot(
         all_external_evidence_snapshots
     )
     external_evidence_snapshots = [
-        _project_external_evidence_snapshot(item)
-        for item in selected_external_evidence_snapshots
+        _project_external_evidence_snapshot(item) for item in selected_external_evidence_snapshots
     ]
     intrinsic_valuation_evidence_snapshots = [
         _project_external_evidence_snapshot(item)
@@ -501,21 +558,21 @@ def build_company_analysis_snapshot(
                 "每次 analyst_view 生成完全独立，不读取历史 run，不把历史结论作为输入。"
             ),
             "snapshot_limits": {
-                "financial_statements": MAX_FINANCIAL_SNAPSHOT_ITEMS,
+                "financial_statement_periods": MAX_FINANCIAL_SNAPSHOT_PERIODS,
                 "announcements": MAX_ANNOUNCEMENT_SNAPSHOT_ITEMS,
                 "evidence": MAX_EVIDENCE_SNAPSHOT_ITEMS,
             },
             "selection_policy": {
                 "financial_statements": (
-                    "按 fields.report_date、period、id 倒序读取最近 40 条。"
+                    "按 fields.report_date、period、id 倒序选最近 40 个财务期间；"
+                    "每个期间保留已入库的主要财务指标、利润表（income_statement）、现金流量表、"
+                    "资产负债表以及其他后续扩展分表记录。"
                 ),
                 "announcements": (
                     "从最近公告候选池按公告类型、会计口径/治理/分红回购/"
                     "重大事项信号和可复核内容排序，选 20 条。"
                 ),
-                "external_evidence": (
-                    "按重要性和可信度排序，最多选 10 条。"
-                ),
+                "external_evidence": ("按重要性和可信度排序，最多选 10 条。"),
             },
             "price_sensitive_policy": {
                 "rule": (
@@ -558,10 +615,9 @@ def build_company_analysis_snapshot(
         },
         "data_counts": {
             "financial_statements": len(financials),
+            "financial_statement_periods": len(_financial_periods(financial_snapshots)),
             "financial_flags": len(financial_evidence_pack.get("financial_flags", [])),
-            "financial_data_gaps": len(
-                financial_evidence_pack.get("financial_data_gaps", [])
-            ),
+            "financial_data_gaps": len(financial_evidence_pack.get("financial_data_gaps", [])),
             "announcements": len(announcement_snapshots),
             "external_evidence": len(external_evidence_snapshots),
             "evidence": len(external_evidence_snapshots),
@@ -570,9 +626,7 @@ def build_company_analysis_snapshot(
             "price_sensitive_external_evidence": sum(
                 1 for item in selected_external_evidence_snapshots if item.get("price_sensitive")
             ),
-            "intrinsic_valuation_external_evidence": len(
-                intrinsic_valuation_evidence_snapshots
-            ),
+            "intrinsic_valuation_external_evidence": len(intrinsic_valuation_evidence_snapshots),
         },
     }
 
@@ -594,6 +648,30 @@ def _normalize_batch_profile_ids(profile_ids: list[str]) -> list[str]:
         if profile.id not in normalized:
             normalized.append(profile.id)
     return normalized
+
+
+def _select_financial_snapshot_statements(
+    session: Session,
+    *,
+    company_id: int,
+) -> list[FinancialStatement]:
+    statements = session.scalars(
+        order_financial_statement_query(
+            select(FinancialStatement).where(FinancialStatement.company_id == company_id)
+        )
+    ).all()
+    selected_periods: list[str] = []
+    selected_statements: list[FinancialStatement] = []
+
+    for statement in statements:
+        if statement.period not in selected_periods:
+            if len(selected_periods) >= MAX_FINANCIAL_SNAPSHOT_PERIODS:
+                continue
+            selected_periods.append(statement.period)
+        if statement.period in selected_periods:
+            selected_statements.append(statement)
+
+    return selected_statements
 
 
 def _create_running_run(
@@ -690,7 +768,14 @@ def _complete_run(
     output: AnalystAnalysisOutput,
 ) -> None:
     run.status = "success"
-    run.result = output.model_dump(mode="json")
+    result = output.model_dump(mode="json")
+    profile = _get_profile_or_raise(str(run.analyst_profile or ""))
+    result["valuation_parameter_matrix"] = derive_valuation_parameter_matrix(
+        source_run_id=run.id,
+        profile=profile,
+        result=result,
+    )
+    run.result = result
     run.confidence = output.confidence
     run.is_latest = True
     session.commit()
@@ -736,9 +821,7 @@ def _validate_output_references(
     announcement_ids = _snapshot_ids(data_snapshot.get("announcements"))
     financial_periods = _snapshot_periods(data_snapshot.get("financial_statements"))
 
-    invalid_supporting_evidence = sorted(
-        set(output.supporting_evidence_ids) - evidence_ids
-    )
+    invalid_supporting_evidence = sorted(set(output.supporting_evidence_ids) - evidence_ids)
     if invalid_supporting_evidence:
         raise ModelOutputValidationError(
             "模型输出引用了不存在的 Evidence："
@@ -765,8 +848,7 @@ def _validate_output_references(
         )
     if invalid_rule_periods:
         raise ModelOutputValidationError(
-            "模型规则检查引用了不存在的财务期间："
-            + ", ".join(sorted(invalid_rule_periods))
+            "模型规则检查引用了不存在的财务期间：" + ", ".join(sorted(invalid_rule_periods))
         )
 
 
@@ -808,31 +890,36 @@ def _apply_fact_ledger_overrides(
 
 
 def _select_announcement_snapshots(items: list[Announcement]) -> list[dict[str, object]]:
-    snapshots = [_announcement_snapshot(item) for item in items]
-    return sorted(
-        snapshots,
+    selected_items = sorted(
+        items,
         key=_announcement_selection_key,
         reverse=True,
     )[:MAX_ANNOUNCEMENT_SNAPSHOT_ITEMS]
+    return [_announcement_snapshot(item) for item in selected_items]
 
 
-def _announcement_selection_key(snapshot: dict[str, object]) -> tuple[float, str]:
+def _announcement_selection_key(item: Announcement) -> tuple[int, float, str]:
     text = _join_text_parts(
-        snapshot.get("title"),
-        snapshot.get("category"),
-        snapshot.get("summary"),
+        item.title,
+        item.category,
+        item.summary,
     )
     score = 0.0
-    category = str(snapshot.get("category") or "").lower()
+    category = str(item.category or "").lower()
     if any(term.lower() in category for term in ANNOUNCEMENT_PRIORITY_CATEGORIES):
         score += 0.26
     if _contains_any(text, ACCOUNTING_SELECTION_TERMS):
         score += 0.24
     matched_terms = sum(1 for term in ANNOUNCEMENT_PRIORITY_TERMS if term in text)
     score += min(0.22, matched_terms * 0.04)
-    if snapshot.get("summary"):
+    if item.summary:
         score += 0.06
-    return (score, str(snapshot.get("published_at") or ""))
+    return (_deep_summary_rank(item), score, item.published_at.isoformat())
+
+
+def _deep_summary_rank(item: Announcement) -> int:
+    model_name = (item.summary_model_name or "").strip()
+    return int(bool(model_name and model_name != "metadata_keyword"))
 
 
 def _select_external_evidence_snapshots(
@@ -979,6 +1066,9 @@ def _build_source_coverage_matrix(
     )
     important_topics = {
         "profitability",
+        "profit_structure",
+        "expense_control",
+        "accounting_quality",
         "cash_flow",
         "balance_sheet",
         "growth",
@@ -986,6 +1076,9 @@ def _build_source_coverage_matrix(
         "regulatory",
         "industry_supply_demand",
         "consumer_channel",
+        "capital_allocation",
+        "shareholder_return",
+        "valuation_inputs",
     }
     return {
         **matrix,
@@ -1012,12 +1105,29 @@ def _add_financial_coverage(
     trends = financial_evidence_pack.get("financial_trends")
     facts = financial_evidence_pack.get("financial_facts")
     data_gaps = financial_evidence_pack.get("financial_data_gaps")
+    cash_flow_quality = financial_evidence_pack.get("cash_flow_quality")
+    balance_sheet_adjustment = financial_evidence_pack.get("balance_sheet_adjustment")
+    capital_allocation = financial_evidence_pack.get("capital_allocation")
+    valuation_readiness = financial_evidence_pack.get("valuation_readiness")
+    quality_matrix = financial_evidence_pack.get("quality_matrix")
+    income_statement_quality = financial_evidence_pack.get("income_statement_quality")
+    profit_composition = financial_evidence_pack.get("profit_composition")
 
     if isinstance(facts, dict) and _has_nested_number(facts.get("latest")):
         _mark_topic(topics, "profitability", latest_period, "财务事实包含收入或利润字段。")
     if isinstance(metrics, dict):
         if _has_nested_number(metrics.get("profitability")):
             _mark_topic(topics, "profitability", latest_period, "财务指标包含盈利能力字段。")
+        if _has_nested_number(metrics.get("profit_structure")):
+            _mark_topic(topics, "profit_structure", latest_period, "财务证据包包含利润构成指标。")
+            _mark_topic(topics, "accounting_quality", latest_period, "利润构成可辅助识别利润质量。")
+        if _has_nested_number(metrics.get("expense_control")):
+            _mark_topic(
+                topics,
+                "expense_control",
+                latest_period,
+                "财务证据包包含费用率和费用纪律指标。",
+            )
         if _has_nested_number(metrics.get("cash_quality")):
             _mark_topic(topics, "cash_flow", latest_period, "财务指标包含现金质量字段。")
         if _has_nested_number(metrics.get("growth_quality")):
@@ -1026,6 +1136,30 @@ def _add_financial_coverage(
             _mark_topic(topics, "balance_sheet", latest_period, "财务指标包含资产负债字段。")
         if _has_nested_number(metrics.get("efficiency")):
             _mark_topic(topics, "operating_efficiency", latest_period, "财务指标包含周转效率字段。")
+        if _has_nested_number(metrics.get("shareholder_return")):
+            _mark_topic(topics, "shareholder_return", latest_period, "财务指标包含股东回报字段。")
+        if _has_nested_number(metrics.get("capital_allocation")):
+            _mark_topic(topics, "capital_allocation", latest_period, "财务指标包含资本配置字段。")
+    if isinstance(cash_flow_quality, dict) and _has_nested_number(cash_flow_quality):
+        _mark_topic(topics, "cash_flow", latest_period, "财务证据包包含现金流质量底稿。")
+    if isinstance(balance_sheet_adjustment, dict) and _has_nested_number(balance_sheet_adjustment):
+        _mark_topic(topics, "balance_sheet", latest_period, "财务证据包包含资产负债调整底稿。")
+    if isinstance(capital_allocation, dict) and _has_nested_number(capital_allocation):
+        _mark_topic(topics, "capital_allocation", latest_period, "财务证据包包含资本配置底稿。")
+    if isinstance(valuation_readiness, dict) and valuation_readiness.get("ready_methods"):
+        _mark_topic(topics, "valuation_inputs", latest_period, "财务证据包包含估值准备度判断。")
+    if isinstance(income_statement_quality, dict) and _has_nested_number(income_statement_quality):
+        _mark_topic(topics, "accounting_quality", latest_period, "财务证据包包含利润表质量底稿。")
+        _mark_topic(topics, "profit_structure", latest_period, "利润表质量底稿包含利润构成。")
+    if isinstance(profit_composition, dict) and _has_nested_number(profit_composition):
+        _mark_topic(topics, "profit_structure", latest_period, "财务证据包包含利润构成摘要。")
+    if isinstance(quality_matrix, dict):
+        for topic in ("profit_structure", "expense_control", "accounting_quality"):
+            topic_payload = quality_matrix.get(topic)
+            if _has_nested_number(topic_payload) or (
+                isinstance(topic_payload, dict) and bool(topic_payload)
+            ):
+                _mark_topic(topics, topic, latest_period, f"quality_matrix 包含 {topic} 覆盖。")
     if isinstance(trends, dict) and any(value is not None for value in trends.values()):
         _mark_topic(topics, "growth", latest_period, "财务证据包包含趋势指标。")
     if isinstance(data_gaps, list) and data_gaps:
@@ -1089,13 +1223,40 @@ def _build_pre_model_observations(
     observations: list[str] = []
     flags = financial_evidence_pack.get("financial_flags")
     if isinstance(flags, list):
+        observations.extend(_income_statement_flag_observations(flags))
+
+    income_statement_observation = _income_statement_structured_observation(financial_evidence_pack)
+    if income_statement_observation:
+        observations.append(income_statement_observation)
+    if isinstance(flags, list):
         for flag in flags[:3]:
             if isinstance(flag, dict) and flag.get("message"):
                 observations.append(f"财务旗标：{flag.get('message')}")
 
     data_gaps = financial_quality.get("data_gaps")
     if isinstance(data_gaps, list) and data_gaps:
-        observations.append(f"财务证据包存在 {len(data_gaps)} 项数据缺口，估值假设需要补充。")
+        first_gap = data_gaps[0]
+        if isinstance(first_gap, dict) and first_gap.get("reason"):
+            observations.append(
+                f"财务证据包存在 {len(data_gaps)} 项结构化数据缺口；"
+                f"首要缺口：{first_gap.get('reason')}"
+            )
+        else:
+            observations.append(f"财务证据包存在 {len(data_gaps)} 项数据缺口，估值假设需要补充。")
+
+    valuation_readiness = financial_quality.get("valuation_readiness")
+    if isinstance(valuation_readiness, dict):
+        ready_methods = valuation_readiness.get("ready_methods")
+        if isinstance(ready_methods, list) and ready_methods:
+            observations.append(
+                "估值准备度：已具备 "
+                + "、".join(str(item) for item in ready_methods[:3])
+                + " 的部分基础输入。"
+            )
+
+    cash_flow_coverage = financial_quality.get("cash_flow_coverage")
+    if isinstance(cash_flow_coverage, dict) and cash_flow_coverage.get("note"):
+        observations.append(str(cash_flow_coverage["note"]))
 
     status_counts = external_evidence_quality.get("status_counts")
     if isinstance(status_counts, dict) and status_counts.get("search_lead"):
@@ -1111,11 +1272,55 @@ def _build_pre_model_observations(
         missing_topics = summary.get("missing_core_topics")
         if isinstance(missing_topics, list) and missing_topics:
             observations.append(
-                "核心主题仍有缺口："
-                + "、".join(str(topic) for topic in missing_topics[:4])
+                "核心主题仍有缺口：" + "、".join(str(topic) for topic in missing_topics[:4])
             )
 
     return _unique_strings(observations)[:8]
+
+
+def _income_statement_flag_observations(flags: list[object]) -> list[str]:
+    observations: list[str] = []
+    for flag in flags:
+        if not isinstance(flag, dict):
+            continue
+        code = flag.get("code")
+        if isinstance(code, str) and code in INCOME_STATEMENT_FLAG_OBSERVATIONS:
+            observations.append("利润表确定性提示：" + INCOME_STATEMENT_FLAG_OBSERVATIONS[code])
+    return observations
+
+
+def _income_statement_structured_observation(
+    financial_evidence_pack: dict[str, object],
+) -> str | None:
+    metrics = financial_evidence_pack.get("financial_metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    quality_matrix = financial_evidence_pack.get("quality_matrix")
+    if not isinstance(quality_matrix, dict):
+        quality_matrix = {}
+    analyst_summary = financial_evidence_pack.get("analyst_summary")
+    if not isinstance(analyst_summary, dict):
+        analyst_summary = {}
+
+    available_parts: list[str] = []
+    if _has_nested_number(metrics.get("profit_structure")):
+        available_parts.append("profit_structure")
+    if _has_nested_number(metrics.get("expense_control")):
+        available_parts.append("expense_control")
+    if _has_nested_number(quality_matrix.get("accounting_quality")) or isinstance(
+        analyst_summary.get("income_statement_quality"), (dict, str)
+    ):
+        available_parts.append("accounting_quality")
+    if isinstance(analyst_summary.get("profit_composition"), (dict, str)):
+        available_parts.append("profit_composition")
+
+    if not available_parts:
+        return None
+    return (
+        "利润表结构化字段可用："
+        + "、".join(_unique_strings(available_parts))
+        + "；财务质量判断应优先使用 financial_evidence_pack，不要从原始 JSON 现场猜公式。"
+    )
 
 
 def _detect_accounting_events(
@@ -1226,6 +1431,11 @@ def _build_financial_quality_summary(
     pack = financial_evidence_pack or {}
     financial_flags = pack.get("financial_flags")
     financial_data_gaps = pack.get("financial_data_gaps")
+    cash_flow_coverage = pack.get("cash_flow_coverage")
+    valuation_readiness = pack.get("valuation_readiness")
+    balance_sheet_adjustment = pack.get("balance_sheet_adjustment")
+    capital_allocation = pack.get("capital_allocation")
+    data_quality = pack.get("data_quality")
     statement_types = sorted(
         {
             str(item.get("statement_type"))
@@ -1254,7 +1464,23 @@ def _build_financial_quality_summary(
         "comparability_notes": comparability_notes,
         "has_accounting_event": bool(accounting_events),
         "flags_count": len(financial_flags) if isinstance(financial_flags, list) else 0,
+        "structured_gaps_count": (
+            len(financial_data_gaps) if isinstance(financial_data_gaps, list) else 0
+        ),
         "data_gaps": financial_data_gaps if isinstance(financial_data_gaps, list) else [],
+        "cash_flow_coverage": cash_flow_coverage if isinstance(cash_flow_coverage, dict) else {},
+        "valuation_readiness": valuation_readiness if isinstance(valuation_readiness, dict) else {},
+        "balance_sheet_safety": balance_sheet_adjustment
+        if isinstance(balance_sheet_adjustment, dict)
+        else {},
+        "shareholder_return_coverage": capital_allocation
+        if isinstance(capital_allocation, dict)
+        else {},
+        "data_quality": data_quality if isinstance(data_quality, dict) else {},
+        "income_statement_coverage": _build_income_statement_coverage(
+            statement_types=statement_types,
+            financial_evidence_pack=pack,
+        ),
     }
 
 
@@ -1278,9 +1504,7 @@ def _build_external_evidence_quality_summary(
             credibility_scores.append(float(credibility))
 
     average_credibility = (
-        round(sum(credibility_scores) / len(credibility_scores), 2)
-        if credibility_scores
-        else None
+        round(sum(credibility_scores) / len(credibility_scores), 2) if credibility_scores else None
     )
     return {
         "total": len(external_evidence),
@@ -1288,6 +1512,67 @@ def _build_external_evidence_quality_summary(
         "source_type_counts": source_type_counts,
         "requires_review_count": review_required_count,
         "average_credibility": average_credibility,
+    }
+
+
+def _build_income_statement_coverage(
+    *,
+    statement_types: list[str],
+    financial_evidence_pack: dict[str, object],
+) -> dict[str, object]:
+    metrics = financial_evidence_pack.get("financial_metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    income_statement_quality = financial_evidence_pack.get("income_statement_quality")
+    if not isinstance(income_statement_quality, dict):
+        income_statement_quality = {}
+    profit_structure = metrics.get("profit_structure")
+    if not isinstance(profit_structure, dict):
+        profit_structure = {}
+    expense_control = metrics.get("expense_control")
+    if not isinstance(expense_control, dict):
+        expense_control = {}
+    data_gaps = financial_evidence_pack.get("financial_data_gaps")
+    gap_fields = _financial_gap_fields(data_gaps)
+
+    has_income_statement = "income_statement" in statement_types or _has_nested_number(
+        income_statement_quality
+    )
+    has_expense_breakdown = _has_nested_number(expense_control) or _has_nested_number(
+        income_statement_quality.get("expense_control")
+    )
+    has_operating_profit = _is_number(
+        income_statement_quality.get("operating_profit")
+    ) or _is_number(profit_structure.get("operating_margin"))
+    has_impairment_items = any(
+        _is_number(income_statement_quality.get(field))
+        for field in ("credit_impairment_loss", "asset_impairment_loss")
+    ) or _is_number(profit_structure.get("impairment_loss_to_net_profit"))
+    has_non_operating_items = any(
+        _is_number(income_statement_quality.get(field))
+        for field in ("non_operating_income", "non_operating_expense")
+    ) or _is_number(profit_structure.get("non_operating_profit_to_net_profit"))
+    has_tax_expense = _is_number(income_statement_quality.get("income_tax_expense")) or _is_number(
+        profit_structure.get("effective_tax_rate")
+    )
+
+    missing_fields = sorted(INCOME_STATEMENT_GAP_FIELDS & gap_fields)
+    if has_income_statement:
+        note = "已接入利润表或利润表质量结构化字段，利润质量判断优先使用 evidence_pack。"
+    elif missing_fields:
+        note = "利润表明细仍有缺口，利润构成和费用纪律判断需要降置信度。"
+    else:
+        note = "未识别到利润表明细覆盖，必要时只能使用主财务指标中的结果项。"
+
+    return {
+        "has_income_statement": has_income_statement,
+        "has_expense_breakdown": has_expense_breakdown,
+        "has_operating_profit": has_operating_profit,
+        "has_impairment_items": has_impairment_items,
+        "has_non_operating_items": has_non_operating_items,
+        "has_tax_expense": has_tax_expense,
+        "missing_fields": missing_fields,
+        "note": note,
     }
 
 
@@ -1349,7 +1634,14 @@ def _compute_profile_relevance(
         "tech_growth": _contains_any(text, TECH_GROWTH_TERMS),
         "cyclical_macro": _contains_any(text, CYCLICAL_MACRO_TERMS),
         "asset_heavy": _contains_any(text, ASSET_HEAVY_TERMS),
-        "has_cash_flow": _has_financial_field(financials, "operating_cash_flow"),
+        "has_cash_flow": _has_any_financial_field(
+            financials,
+            (
+                "operating_cash_flow",
+                "operating_cash_flow_per_share",
+                "operating_cash_flow_to_revenue",
+            ),
+        ),
         "has_brand_term": _contains_any(text, ("品牌", "高端", "渠道", "复购", "消费心智")),
     }
 
@@ -1377,7 +1669,9 @@ def _compute_profile_relevance(
             reasons.append("消费品牌生意较容易映射到业务质量、增长兑现和能力圈框架。")
         elif profile.id == "ray_dalio":
             score -= 0.08
-            reasons.append("消费品牌公司的一阶问题通常不是宏观周期暴露，宏观视角更适合作为风险补充。")
+            reasons.append(
+                "消费品牌公司的一阶问题通常不是宏观周期暴露，宏观视角更适合作为风险补充。"
+            )
         elif profile.id == "george_soros":
             score += 0.02
             reasons.append("消费品牌可用反身性视角检查叙事偏差，但主要结论仍应回到商业质量。")
@@ -1395,8 +1689,8 @@ def _compute_profile_relevance(
         score += 0.12
         reasons.append("资产较重或金融地产属性更适合做资产保护和保守假设检查。")
     if signals["has_cash_flow"] and profile.id in {"buffett", "lin_yuan", "duan_yongping"}:
-            score += 0.06
-            reasons.append("快照含经营现金流字段，可支持现金创造和长期质量判断。")
+        score += 0.06
+        reasons.append("快照含经营现金流字段，可支持现金创造和长期质量判断。")
     if not reasons:
         reasons.append("当前仅基于行业、标签、文本和可用财务字段给出基础适配度。")
 
@@ -1405,9 +1699,7 @@ def _compute_profile_relevance(
     covered_topics = _coverage_topics(source_coverage_matrix)
     covered_topics.update(_inferred_company_topics(signals, financials))
     covered_required_topics = sorted(set(required_topics) & covered_topics)
-    rule_coverage = (
-        len(covered_required_topics) / len(required_topics) if required_topics else 0.5
-    )
+    rule_coverage = len(covered_required_topics) / len(required_topics) if required_topics else 0.5
     evidence_support = _profile_evidence_support(
         profile.id,
         financials=financials,
@@ -1694,18 +1986,26 @@ def _score_tier(score: float) -> str:
 def _project_external_evidence_snapshot(
     snapshot: dict[str, object],
 ) -> dict[str, object]:
-    return {
-        key: snapshot.get(key)
-        for key in ANALYST_EXTERNAL_EVIDENCE_FIELDS
-    }
+    return {key: snapshot.get(key) for key in ANALYST_EXTERNAL_EVIDENCE_FIELDS}
 
 
 def _has_financial_field(financials: list[dict[str, object]], field_name: str) -> bool:
     for item in financials:
         fields = item.get("fields")
-        if isinstance(fields, dict) and field_name in fields:
+        if (
+            isinstance(fields, dict)
+            and (value := fields.get(field_name)) is not None
+            and value != ""
+        ):
             return True
     return False
+
+
+def _has_any_financial_field(
+    financials: list[dict[str, object]],
+    field_names: tuple[str, ...],
+) -> bool:
+    return any(_has_financial_field(financials, field_name) for field_name in field_names)
 
 
 def _has_nested_number(value: object) -> bool:
@@ -1718,6 +2018,22 @@ def _has_nested_number(value: object) -> bool:
     if isinstance(value, list):
         return any(_has_nested_number(item) for item in value)
     return False
+
+
+def _is_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float))
+
+
+def _financial_gap_fields(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    fields: set[str] = set()
+    for item in value:
+        if isinstance(item, dict) and isinstance(item.get("field"), str):
+            fields.add(str(item["field"]))
+        elif isinstance(item, str):
+            fields.add(item)
+    return fields
 
 
 def _financial_periods(financials: list[dict[str, object]]) -> list[str]:
@@ -1835,6 +2151,20 @@ def _company_snapshot(company: Company) -> dict[str, Any]:
         "listed_date": company.listed_date.isoformat() if company.listed_date else None,
         "status": company.status,
         "tags": company.tags,
+        "market_cap": company.market_cap,
+        "current_price": company.current_price,
+        "pe_ttm": company.pe_ttm,
+        "pe_dynamic": company.pe_dynamic,
+        "pe_static": company.pe_static,
+        "pb_ratio": company.pb_ratio,
+        "ps_ratio": company.ps_ratio,
+        "dividend_yield_ttm": company.dividend_yield_ttm,
+        "dividend_yield_static": company.dividend_yield_static,
+        "market_data_source": company.market_data_source,
+        "market_data_source_url": company.market_data_source_url,
+        "market_data_updated_at": (
+            company.market_data_updated_at.isoformat() if company.market_data_updated_at else None
+        ),
     }
 
 

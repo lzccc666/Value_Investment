@@ -388,9 +388,7 @@ def _build_metadata_keyword_summary(
     if source_url:
         key_facts.append(f"来源链接：{source_url}")
 
-    review_questions = [
-        "公告正文未读取成功，请打开来源链接复核原文后再用于深度分析。"
-    ]
+    review_questions = ["公告正文未读取成功，请打开来源链接复核原文后再用于深度分析。"]
     if content_error:
         review_questions.append(f"正文读取失败原因：{content_error[:160]}")
 
@@ -556,7 +554,7 @@ def _truncate_summary(value: str) -> str:
     normalized = " ".join(value.strip().split())
     if len(normalized) <= MAX_KEYWORD_SUMMARY_CHARS:
         return normalized
-    return f"{normalized[:MAX_KEYWORD_SUMMARY_CHARS - 3]}..."
+    return f"{normalized[: MAX_KEYWORD_SUMMARY_CHARS - 3]}..."
 
 
 def _clean_tags(*tag_groups: list[str] | str | None) -> list[str]:

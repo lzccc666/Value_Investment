@@ -78,6 +78,12 @@ class Company(Base):
     analysis_runs: Mapped[list[AnalysisRun]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
+    investment_memos: Mapped[list[InvestmentMemo]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
+    valuation_runs: Mapped[list[ValuationRun]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
 
 
 class FinancialStatement(Base):
@@ -212,3 +218,88 @@ class AnalysisRun(Base):
     )
 
     company: Mapped[Company] = relationship(back_populates="analysis_runs")
+
+
+class InvestmentMemo(Base):
+    __tablename__ = "investment_memos"
+    __table_args__ = (
+        Index("ix_investment_memos_company_latest", "company_id", "is_latest"),
+        Index("ix_investment_memos_company_created", "company_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True, nullable=False)
+    generation_run_id: Mapped[int] = mapped_column(
+        ForeignKey("analysis_runs.id"), index=True, nullable=False
+    )
+    parent_memo_id: Mapped[int | None] = mapped_column(
+        ForeignKey("investment_memos.id"), index=True, nullable=True
+    )
+    version_no: Mapped[int] = mapped_column(default=1, nullable=False)
+    editor_type: Mapped[str] = mapped_column(String(40), default="model", nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    conclusion: Mapped[str] = mapped_column(String(40), nullable=False)
+    sections: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_analyst_run_ids: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    source_snapshot_hash: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="draft", nullable=False)
+    is_latest: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    company: Mapped[Company] = relationship(back_populates="investment_memos")
+    generation_run: Mapped[AnalysisRun] = relationship()
+
+
+class ValuationRun(Base):
+    __tablename__ = "valuation_runs"
+    __table_args__ = (
+        Index("ix_valuation_runs_company_created", "company_id", "created_at"),
+        Index("ix_valuation_runs_company_status", "company_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True, nullable=False)
+    memo_id: Mapped[int | None] = mapped_column(
+        ForeignKey("investment_memos.id"), index=True, nullable=True
+    )
+    run_version: Mapped[str] = mapped_column(String(40), default="010_v1", nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="draft", nullable=False)
+    price_blind: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    forbidden_price_inputs: Mapped[dict[str, object]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    input_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    input_snapshot_hash: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    valuation_inputs: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    model_suggested_assumptions: Mapped[dict[str, object]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    user_adjusted_assumptions: Mapped[dict[str, object]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    assumptions: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    methods: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    results: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    sensitivity: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence_summary: Mapped[dict[str, object]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    source_map: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    user_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    company: Mapped[Company] = relationship(back_populates="valuation_runs")
+    memo: Mapped[InvestmentMemo | None] = relationship()

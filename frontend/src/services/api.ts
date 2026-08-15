@@ -74,9 +74,18 @@ export type FinancialEvidencePack = {
   periods: string[];
   financial_facts: Record<string, unknown>;
   financial_metrics: Record<string, unknown>;
+  cash_flow_coverage?: Record<string, unknown>;
   financial_trends: Record<string, unknown>;
   financial_flags: Array<Record<string, unknown>>;
-  financial_data_gaps: string[];
+  financial_data_gaps: Array<Record<string, unknown>>;
+  financial_data_gap_messages?: string[];
+  cash_flow_quality?: Record<string, unknown>;
+  balance_sheet_adjustment?: Record<string, unknown>;
+  capital_allocation?: Record<string, unknown>;
+  valuation_readiness?: Record<string, unknown>;
+  quality_matrix?: Record<string, unknown>;
+  analyst_summary?: Record<string, unknown>;
+  data_quality?: Record<string, unknown>;
 };
 
 export type FinancialStatementSyncResponse = {
@@ -277,9 +286,11 @@ export type AnalystProfileListResponse = {
   items: AnalystProfile[];
 };
 
+export type AnalystRuleStatus = "pass" | "warn" | "fail" | "unknown";
+
 export type AnalystRuleCheck = {
   rule_id: string;
-  status: "pass" | "warn" | "fail" | "unknown";
+  status: AnalystRuleStatus;
   summary: string;
   evidence_ids: number[];
   financial_periods: string[];
@@ -395,9 +406,101 @@ export type AnalysisRunDeleteResponse = {
   deleted: boolean;
 };
 
+export type InvestmentMemo = {
+  id: number;
+  company_id: number;
+  generation_run_id: number | null;
+  parent_memo_id: number | null;
+  version_no: number;
+  editor_type: string;
+  title: string;
+  conclusion: string;
+  sections: Record<string, unknown>;
+  markdown: string;
+  source_analyst_run_ids: number[];
+  source_snapshot_hash: string | null;
+  change_note: string | null;
+  status: string;
+  is_latest: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InvestmentMemoLatestResponse = {
+  company_id: number;
+  item: InvestmentMemo | null;
+};
+
+export type InvestmentMemoListResponse = {
+  items: InvestmentMemo[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type InvestmentMemoGenerateResponse = {
+  company_id: number;
+  run: AnalysisRun;
+  memo: InvestmentMemo;
+};
+
+export type InvestmentMemoDeleteResponse = {
+  id: number;
+  deleted: boolean;
+  latest_memo_id: number | null;
+};
+
+export type InvestmentMemoArchiveResponse = {
+  id: number;
+  archived: boolean;
+  latest_memo_id: number | null;
+};
+
+export type ValuationRun = {
+  id: number;
+  company_id: number;
+  memo_id: number | null;
+  run_version: string;
+  status: "draft" | "locked" | "archived" | "failed";
+  price_blind: boolean;
+  forbidden_price_inputs: Record<string, unknown>;
+  input_snapshot: Record<string, unknown>;
+  input_snapshot_hash: string | null;
+  valuation_inputs: Record<string, unknown>;
+  model_suggested_assumptions: Record<string, unknown>;
+  user_adjusted_assumptions: Record<string, unknown>;
+  assumptions: Record<string, unknown>;
+  methods: Record<string, unknown>;
+  results: Record<string, unknown>;
+  sensitivity: Record<string, unknown>;
+  confidence: number | null;
+  confidence_summary: Record<string, unknown>;
+  source_map: Record<string, unknown>;
+  user_note: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ValuationRunLatestResponse = {
+  company_id: number;
+  item: ValuationRun | null;
+};
+
+export type ValuationRunListResponse = {
+  items: ValuationRun[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type ValuationRunMutationResponse = {
+  company_id: number;
+  item: ValuationRun;
+};
+
 type RequestJsonOptions = {
   signal?: AbortSignal;
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
 };
 
@@ -509,9 +612,15 @@ export async function refreshCompanyProfile(companyId: number): Promise<Company>
 
 export async function getCompanyFinancials(
   companyId: number,
-  params: { limit?: number; offset?: number; signal?: AbortSignal } = {}
+  params: {
+    limit?: number;
+    offset?: number;
+    period_limit?: number;
+    period_offset?: number;
+    signal?: AbortSignal;
+  } = {}
 ): Promise<FinancialStatementListResponse> {
-  const queryString = buildPaginationQuery(params);
+  const queryString = buildFinancialStatementQuery(params);
   return fetchJson<FinancialStatementListResponse>(
     `/companies/${companyId}/financials${queryString}`,
     {
@@ -838,9 +947,194 @@ export async function deleteCompanyAnalysisRun(
   });
 }
 
+export async function updateAnalysisRunRuleStatus(
+  companyId: number,
+  runId: number,
+  ruleId: string,
+  status: AnalystRuleStatus,
+  signal?: AbortSignal
+): Promise<AnalysisRun> {
+  return fetchJson<AnalysisRun>(
+    `/companies/${companyId}/analysis/runs/${runId}/rule-checks/${encodeURIComponent(ruleId)}`,
+    {
+      method: "PATCH",
+      body: { status },
+      signal
+    }
+  );
+}
+
+export async function getLatestInvestmentMemo(
+  companyId: number,
+  signal?: AbortSignal
+): Promise<InvestmentMemoLatestResponse> {
+  return fetchJson<InvestmentMemoLatestResponse>(
+    `/companies/${companyId}/investment-memos/latest`,
+    { signal }
+  );
+}
+
+export async function getInvestmentMemos(
+  companyId: number,
+  params: {
+    limit?: number;
+    offset?: number;
+    include_deleted?: boolean;
+    signal?: AbortSignal;
+  } = {}
+): Promise<InvestmentMemoListResponse> {
+  const searchParams = new URLSearchParams();
+
+  if (typeof params.limit === "number") {
+    searchParams.set("limit", String(params.limit));
+  }
+  if (typeof params.offset === "number") {
+    searchParams.set("offset", String(params.offset));
+  }
+  if (typeof params.include_deleted === "boolean") {
+    searchParams.set("include_deleted", String(params.include_deleted));
+  }
+
+  const queryString = searchParams.toString();
+  return fetchJson<InvestmentMemoListResponse>(
+    `/companies/${companyId}/investment-memos${queryString ? `?${queryString}` : ""}`,
+    { signal: params.signal }
+  );
+}
+
+export async function getInvestmentMemo(
+  memoId: number,
+  signal?: AbortSignal
+): Promise<InvestmentMemo> {
+  return fetchJson<InvestmentMemo>(`/investment-memos/${memoId}`, { signal });
+}
+
+export async function generateInvestmentMemo(
+  companyId: number,
+  params: { user_note?: string | null; signal?: AbortSignal } = {}
+): Promise<InvestmentMemoGenerateResponse> {
+  return fetchJson<InvestmentMemoGenerateResponse>(
+    `/companies/${companyId}/investment-memos/generate`,
+    {
+      method: "POST",
+      body: {
+        user_note: params.user_note ?? null
+      },
+      signal: params.signal
+    }
+  );
+}
+
+export async function archiveInvestmentMemo(
+  memoId: number,
+  signal?: AbortSignal
+): Promise<InvestmentMemoArchiveResponse> {
+  return fetchJson<InvestmentMemoArchiveResponse>(`/investment-memos/${memoId}/archive`, {
+    method: "POST",
+    signal
+  });
+}
+
+export async function deleteInvestmentMemo(
+  memoId: number,
+  signal?: AbortSignal
+): Promise<InvestmentMemoDeleteResponse> {
+  return fetchJson<InvestmentMemoDeleteResponse>(`/investment-memos/${memoId}`, {
+    method: "DELETE",
+    signal
+  });
+}
+
+export async function getLatestValuationRun(
+  companyId: number,
+  signal?: AbortSignal
+): Promise<ValuationRunLatestResponse> {
+  return fetchJson<ValuationRunLatestResponse>(
+    `/companies/${companyId}/valuation-runs/latest`,
+    { signal }
+  );
+}
+
+export async function getValuationRuns(
+  companyId: number,
+  params: { limit?: number; offset?: number; signal?: AbortSignal } = {}
+): Promise<ValuationRunListResponse> {
+  const queryString = buildPaginationQuery(params);
+  return fetchJson<ValuationRunListResponse>(
+    `/companies/${companyId}/valuation-runs${queryString}`,
+    { signal: params.signal }
+  );
+}
+
+export async function createValuationDraft(
+  companyId: number,
+  params: { assumptions?: Record<string, unknown>; user_note?: string | null; signal?: AbortSignal } = {}
+): Promise<ValuationRunMutationResponse> {
+  return fetchJson<ValuationRunMutationResponse>(
+    `/companies/${companyId}/valuation-runs/draft`,
+    {
+      method: "POST",
+      body: {
+        assumptions: params.assumptions ?? null,
+        user_note: params.user_note ?? null
+      },
+      signal: params.signal
+    }
+  );
+}
+
+export async function recalculateValuationRun(
+  runId: number,
+  params: { assumptions: Record<string, unknown>; user_note?: string | null; signal?: AbortSignal }
+): Promise<ValuationRunMutationResponse> {
+  return fetchJson<ValuationRunMutationResponse>(`/valuation-runs/${runId}/recalculate`, {
+    method: "POST",
+    body: {
+      assumptions: params.assumptions,
+      user_note: params.user_note ?? null
+    },
+    signal: params.signal
+  });
+}
+
+export async function lockValuationRun(
+  runId: number,
+  signal?: AbortSignal
+): Promise<ValuationRunMutationResponse> {
+  return fetchJson<ValuationRunMutationResponse>(`/valuation-runs/${runId}/lock`, {
+    method: "POST",
+    signal
+  });
+}
+
 function buildPaginationQuery(params: { limit?: number; offset?: number }): string {
   const searchParams = new URLSearchParams();
 
+  if (typeof params.limit === "number") {
+    searchParams.set("limit", String(params.limit));
+  }
+  if (typeof params.offset === "number") {
+    searchParams.set("offset", String(params.offset));
+  }
+
+  const queryString = searchParams.toString();
+  return queryString ? `?${queryString}` : "";
+}
+
+function buildFinancialStatementQuery(params: {
+  limit?: number;
+  offset?: number;
+  period_limit?: number;
+  period_offset?: number;
+}): string {
+  const searchParams = new URLSearchParams();
+
+  if (typeof params.period_limit === "number") {
+    searchParams.set("period_limit", String(params.period_limit));
+  }
+  if (typeof params.period_offset === "number") {
+    searchParams.set("period_offset", String(params.period_offset));
+  }
   if (typeof params.limit === "number") {
     searchParams.set("limit", String(params.limit));
   }

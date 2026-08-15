@@ -247,16 +247,14 @@ def _a_share_official_results(query: str, stock_code: str) -> list[SearchResult]
         disclosure_url = "https://www.szse.cn/disclosure/listed/notice/index.html"
         disclosure_source = "www.szse.cn"
         disclosure_snippet = (
-            "深圳证券交易所上市公司公告检索入口，"
-            "用于复核公司公告、定期报告和重大事项披露原文。"
+            "深圳证券交易所上市公司公告检索入口，用于复核公司公告、定期报告和重大事项披露原文。"
         )
     else:
         disclosure_title = f"{display_name} 上交所上市公司公告检索入口"
         disclosure_url = "https://www.sse.com.cn/disclosure/listedinfo/announcement/"
         disclosure_source = "www.sse.com.cn"
         disclosure_snippet = (
-            "上海证券交易所上市公司公告检索入口，"
-            "用于复核公司公告、定期报告和重大事项披露原文。"
+            "上海证券交易所上市公司公告检索入口，用于复核公司公告、定期报告和重大事项披露原文。"
         )
 
     return [
@@ -335,9 +333,7 @@ def _us_official_results(query: str, ticker: str) -> list[SearchResult]:
     ]
 
 
-def _announcement_to_search_result(
-    query: str, announcement: FetchedAnnouncement
-) -> SearchResult:
+def _announcement_to_search_result(query: str, announcement: FetchedAnnouncement) -> SearchResult:
     published_at = announcement.published_at.isoformat()
     snippet = (
         f"{announcement.category}，发布时间 {published_at}。"

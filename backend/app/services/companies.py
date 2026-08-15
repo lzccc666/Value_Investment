@@ -54,9 +54,7 @@ def list_companies(
     if filters:
         total_stmt = total_stmt.where(*filters)
 
-    items = session.scalars(
-        base_stmt.order_by(Company.name).offset(offset).limit(limit)
-    ).all()
+    items = session.scalars(base_stmt.order_by(Company.name).offset(offset).limit(limit)).all()
     total = session.scalar(total_stmt) or 0
     return items, total
 
@@ -166,8 +164,10 @@ def list_company_financials(
     session: Session, company_id: int, limit: int = 60, offset: int = 0
 ) -> tuple[list[FinancialStatement], int]:
     base_stmt = select(FinancialStatement).where(FinancialStatement.company_id == company_id)
-    total_stmt = select(func.count()).select_from(FinancialStatement).where(
-        FinancialStatement.company_id == company_id
+    total_stmt = (
+        select(func.count())
+        .select_from(FinancialStatement)
+        .where(FinancialStatement.company_id == company_id)
     )
     items = session.scalars(
         order_financial_statement_query(base_stmt).offset(offset).limit(limit)
@@ -176,9 +176,32 @@ def list_company_financials(
     return items, total
 
 
-def delete_company_financial_statement(
-    session: Session, statement: FinancialStatement
-) -> None:
+def list_company_financials_by_periods(
+    session: Session, company_id: int, period_limit: int = 60, period_offset: int = 0
+) -> tuple[list[FinancialStatement], int]:
+    statements = session.scalars(
+        order_financial_statement_query(
+            select(FinancialStatement).where(FinancialStatement.company_id == company_id)
+        )
+    ).all()
+    selected_periods: list[str] = []
+
+    for statement in statements:
+        if statement.period in selected_periods:
+            continue
+        if len(selected_periods) < period_offset:
+            selected_periods.append(statement.period)
+            continue
+        if len(selected_periods) >= period_offset + period_limit:
+            break
+        selected_periods.append(statement.period)
+
+    visible_periods = set(selected_periods[period_offset : period_offset + period_limit])
+    items = [statement for statement in statements if statement.period in visible_periods]
+    return items, len(statements)
+
+
+def delete_company_financial_statement(session: Session, statement: FinancialStatement) -> None:
     session.delete(statement)
     session.commit()
 
@@ -190,16 +213,18 @@ def sync_company_financials(
     limit: int = 60,
 ) -> tuple[list[FinancialStatement], int, int, int]:
     client = data_client or EastmoneyFinancialClient()
-    fetched_statements = client.fetch_main_financials(company.ticker, limit=limit)
+    fetch_financials = getattr(client, "fetch_financials", None)
+    if callable(fetch_financials):
+        fetched_statements = fetch_financials(company.ticker, limit=limit)
+    else:
+        fetched_statements = client.fetch_main_financials(company.ticker, limit=limit)
 
     changed_items: list[FinancialStatement] = []
     created = 0
     updated = 0
 
     for fetched_statement in fetched_statements:
-        statement, was_created = _upsert_financial_statement(
-            session, company.id, fetched_statement
-        )
+        statement, was_created = _upsert_financial_statement(session, company.id, fetched_statement)
         changed_items.append(statement)
         if was_created:
             created += 1
@@ -248,8 +273,8 @@ def list_company_announcements(
     session: Session, company_id: int, limit: int | None = 20, offset: int = 0
 ) -> tuple[list[Announcement], int]:
     base_stmt = select(Announcement).where(Announcement.company_id == company_id)
-    total_stmt = select(func.count()).select_from(Announcement).where(
-        Announcement.company_id == company_id
+    total_stmt = (
+        select(func.count()).select_from(Announcement).where(Announcement.company_id == company_id)
     )
 
     items_stmt = base_stmt.order_by(Announcement.published_at.desc()).offset(offset)
@@ -306,14 +331,8 @@ def list_company_announcements_for_deep_summary(
     limit: int,
 ) -> tuple[list[Announcement], int]:
     stale_page_shell_filter = or_(
-        *[
-            Announcement.raw_content.ilike(f"%{marker}%")
-            for marker in EASTMONEY_PAGE_SHELL_MARKERS
-        ],
-        *[
-            Announcement.content.ilike(f"%{marker}%")
-            for marker in EASTMONEY_PAGE_SHELL_MARKERS
-        ],
+        *[Announcement.raw_content.ilike(f"%{marker}%") for marker in EASTMONEY_PAGE_SHELL_MARKERS],
+        *[Announcement.content.ilike(f"%{marker}%") for marker in EASTMONEY_PAGE_SHELL_MARKERS],
     )
     filters = [
         Announcement.company_id == company_id,
@@ -375,9 +394,7 @@ def sync_company_announcements(
 
     for fetched_announcement in fetched_announcements:
         try:
-            announcement, action = _upsert_announcement(
-                session, company.id, fetched_announcement
-            )
+            announcement, action = _upsert_announcement(session, company.id, fetched_announcement)
         except ValueError as exc:
             skipped += 1
             errors.append(str(exc))
@@ -505,10 +522,7 @@ def _reset_stale_eastmoney_page_shell_announcement(
 ) -> bool:
     if not (
         looks_like_eastmoney_page_shell(announcement.raw_content)
-        or (
-            not announcement.raw_content
-            and looks_like_eastmoney_page_shell(announcement.content)
-        )
+        or (not announcement.raw_content and looks_like_eastmoney_page_shell(announcement.content))
     ):
         return False
 

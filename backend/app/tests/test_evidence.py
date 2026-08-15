@@ -493,10 +493,7 @@ def test_evidence_search_filters_financial_report_content_even_from_secondary_so
     assert run is not None
     assert run.status == "failed"
     assert run.result["search_stats"]["sent_to_model_count"] == 0
-    assert (
-        run.result["search_stats"]["filtered_out_by_reason"]["company_disclosure_duplicate"]
-        == 1
-    )
+    assert run.result["search_stats"]["filtered_out_by_reason"]["company_disclosure_duplicate"] == 1
 
 
 def test_evidence_search_triggers_a_share_fallback_when_primary_results_are_filtered(
@@ -527,12 +524,7 @@ def test_evidence_search_triggers_a_share_fallback_when_primary_results_are_filt
     assert run.result["search_stats"]["fallback_stage"] == "a_share_disclosure"
     assert run.result["search_stats"]["fallback_candidate_count"] == 1
     assert run.result["search_stats"]["filtered_out_by_reason"]["price_sensitive"] > 0
-    assert (
-        run.result["search_stats"]["filtered_out_by_reason"][
-            "company_disclosure_duplicate"
-        ]
-        >= 2
-    )
+    assert run.result["search_stats"]["filtered_out_by_reason"]["company_disclosure_duplicate"] >= 2
     assert not any("年度报告" in title for title in gateway.seen_titles)
     assert not any("利润分配" in title for title in gateway.seen_titles)
 
@@ -706,6 +698,64 @@ def test_evidence_search_creates_wuliangye_local_announcement_search_leads(
     assert run.result["search_stats"]["seed_source_lead_count"] > 0
     assert run.result["search_stats"]["fallback_candidate_count"] >= len(items)
     assert run.result["search_stats"]["no_candidate_reason"] == "all_filtered"
+
+
+def test_evidence_search_analyzes_local_announcement_lead_when_body_is_read(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    gateway = FakeAnnouncementBodyAwareGateway()
+    content_fetcher = FakeAnnouncementContentFetcher(
+        "监管正文显示公司收到监管工作函，并承诺在三十日内完成渠道整改和信息披露整改。"
+    )
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "000858.SZ"))
+        assert company is not None
+        session.add(
+            Announcement(
+                company_id=company.id,
+                title="关于收到监管工作函并完成整改的公告",
+                published_at=datetime(2026, 7, 3, tzinfo=UTC),
+                category="临时公告",
+                content=None,
+                raw_content=None,
+                summary="公司收到监管工作函并披露整改措施，需要追溯原文复核。",
+                key_facts=["监管工作函", "整改措施"],
+                source="eastmoney_announcements",
+                source_url="https://data.eastmoney.com/notices/detail/000858/ANBODY.html",
+                raw_url="https://pdf.dfcfw.com/pdf/H2_ANBODY_1.pdf",
+                risk_tips=["监管要求落实风险"],
+                review_questions=["整改是否影响渠道和合规成本"],
+                tags=["监管", "整改"],
+            )
+        )
+        session.flush()
+
+        items, run = search_company_evidence(
+            session,
+            company,
+            EvidenceSearchRequest(keywords=["食品安全"], max_results=5),
+            gateway=gateway,
+            search_provider=FakeWuliangyeOnlyPriceSearchProvider(),
+            fallback_search_provider=FakeEmptySearchProvider(),
+            announcement_content_fetcher=content_fetcher,
+        )
+
+    assert run.status == "success"
+    assert len(items) == 1
+    assert items[0].analysis_status == "model_analyzed"
+    assert items[0].source_type == "regulatory"
+    assert gateway.saw_announcement_body is True
+    assert content_fetcher.calls == [
+        (
+            "https://data.eastmoney.com/notices/detail/000858/ANBODY.html",
+            "https://pdf.dfcfw.com/pdf/H2_ANBODY_1.pdf",
+        )
+    ]
+    assert run.result["search_stats"]["fallback_stage"] == "local_announcement"
+    assert run.result["search_stats"]["sent_to_model_count"] == 1
+    assert run.result["search_stats"]["deterministic_model_candidate_count"] == 1
 
 
 def test_evidence_search_creates_wuliangye_seed_source_leads_without_local_announcements(
@@ -1488,6 +1538,61 @@ class FakePageSnapshotFetcher:
         return FakePageSnapshot()
 
 
+class FakeAnnouncementContentFetcher:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls: list[tuple[str | None, str | None]] = []
+
+    def fetch_text(self, *, source_url: str | None, raw_url: str | None):
+        self.calls.append((source_url, raw_url))
+        return self.content, raw_url or source_url or "https://example.test/announcement"
+
+
+class FakeAnnouncementBodyAwareGateway:
+    model_name = "fake-model"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.saw_announcement_body = False
+
+    def generate_structured(self, **kwargs):
+        self.calls += 1
+        schema = kwargs["schema"]
+        if self.calls == 1:
+            return schema.model_validate({"queries": ["五粮液 食品安全 监管"]})
+
+        user_prompt = str(kwargs["user_prompt"])
+        self.saw_announcement_body = "三十日内完成渠道整改" in user_prompt
+        return schema.model_validate(
+            {
+                "evidences": [
+                    {
+                        "source_type": "regulatory",
+                        "title": "关于收到监管工作函并完成整改的公告",
+                        "source": "eastmoney_announcements",
+                        "source_url": (
+                            "https://data.eastmoney.com/notices/detail/000858/ANBODY.html"
+                        ),
+                        "published_at": "2026-07-03T00:00:00+00:00",
+                        "summary": "公告正文显示公司收到监管工作函并承诺完成渠道和信息披露整改。",
+                        "key_facts": ["公司收到监管工作函", "公司承诺在三十日内完成整改"],
+                        "impact_direction": "mixed",
+                        "importance_score": 0.62,
+                        "credibility_score": 0.78,
+                        "tags": ["监管", "整改"],
+                        "requires_review": True,
+                        "analysis_status": "model_analyzed",
+                        "analysis_note": "基于 006 公告正文读取结果完成结构化，仍需核对原文。",
+                        "raw_snapshot": {
+                            "title": "关于收到监管工作函并完成整改的公告",
+                            "page_snapshot": {"content_excerpt": "三十日内完成渠道整改"},
+                        },
+                    }
+                ]
+            }
+        )
+
+
 class FakePageAwareGateway:
     model_name = "fake-model"
 
@@ -1525,9 +1630,7 @@ class FakePageAwareGateway:
                             "query": "贵州茅台 渠道监管",
                             "title": "白酒行业监管政策变化",
                             "url": "https://example.test/policy",
-                            "page_snapshot": {
-                                "content_excerpt": "网页正文显示渠道监管要求。"
-                            },
+                            "page_snapshot": {"content_excerpt": "网页正文显示渠道监管要求。"},
                         },
                     }
                 ]

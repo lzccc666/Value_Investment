@@ -67,11 +67,26 @@ ANALYST_SYSTEM_PROMPT = """你是一个本地价值投资研究系统中的分�
 - 不要生成搜索 query，不要要求联网搜索，不要声称读取了快照以外的信息。
 - 如果快照中包含当前价格、历史价格、目标价、市值、估值倍数、持仓成本等信息，
   可以按当前分析师框架正常读取、引用和判断，但必须说明它来自快照。
+- company 字段可能包含基础档案中的 current_price、market_cap、pe_ttm、
+  pe_dynamic、pe_static、pb_ratio、ps_ratio、dividend_yield_ttm 等行情估值字段。
 - financial_evidence_pack 是后端确定性整理的财务证据包，
   可优先用于财务质量、风险识别、数据缺口和估值假设建议；
   financial_statements 是可追溯的原始期间财务记录。
+- financial_evidence_pack v2 可能包含 analyst_summary、quality_matrix、
+  cash_flow_quality、balance_sheet_adjustment、capital_allocation、
+  valuation_readiness 和 data_quality。除非需要追溯具体期间记录，
+  财务观察应优先读取这些结构化字段。
+- 利润表补齐后，应优先读取 financial_metrics.profit_structure、
+  financial_metrics.expense_control、quality_matrix.accounting_quality、
+  analyst_summary.income_statement_quality 或 analyst_summary.profit_composition；
+  不要从原始 income_statement JSON 现场猜公式。
+- 财务比率、自由现金流、净现金、现金/有息负债、分红率、回购率等指标
+  必须以 financial_evidence_pack 中后端已计算字段为准；不要从原始 JSON
+  临时猜公式或自行重算。
 - 可以围绕商业质量、管理层、护城河、成长质量、风险、反方证据、
   估值纪律、安全边际和估值假设建议展开。
+- 可以基于利润表结构化字段输出财务质量判断、风险、反方证据和估值假设建议；
+  不要计算内在价值，不要给买入、卖出、持有、减仓等交易动作建议。
 - “估值假设建议”应写后续估值或安全边际判断应补充哪些假设或口径，例如利润可持续性、
   现金流折现变量、资本开支、会计调整、情景变量、估值倍数或价格相关敏感性。
 - valuation_assumption_suggestions 保持中文短句列表；
@@ -134,6 +149,11 @@ def build_analyst_prompt(
                 "可以按 Profile 的分析框架正常使用，并在文字中说明依据来自快照。"
             ),
             (
+                "- 优先检查 company 字段中的基础档案行情估值字段，例如 current_price、"
+                "market_cap、pe_ttm、pe_dynamic、pe_static、pb_ratio、ps_ratio、"
+                "dividend_yield_ttm。"
+            ),
+            (
                 "- 输出应围绕商业质量、管理层、护城河、成长质量、风险、反方证据、"
                 "估值纪律、安全边际和估值假设建议。"
             ),
@@ -158,6 +178,37 @@ def build_analyst_prompt(
                 "- 如果数据快照包含 financial_evidence_pack，应优先用其中的 facts、"
                 "metrics、trends、flags 和 data_gaps 形成财务观察、风险和估值假设建议；"
                 "引用财务证据仍使用 financial_periods，不要把财务记录写入 evidence_ids。"
+            ),
+            (
+                "- 对 financial_evidence_pack v2，优先阅读 analyst_summary、quality_matrix、"
+                "cash_flow_quality、balance_sheet_adjustment、capital_allocation、"
+                "valuation_readiness 和 data_quality；除非要核对具体期间，否则不要遍历"
+                "原始 financial_statements。"
+            ),
+            (
+                "- 利润表补齐后，优先阅读 financial_metrics.profit_structure、"
+                "financial_metrics.expense_control、quality_matrix.accounting_quality、"
+                "analyst_summary.income_statement_quality 或 analyst_summary.profit_composition；"
+                "不要从原始 income_statement JSON 现场猜公式。"
+            ),
+            (
+                "- 不要从原始财务 JSON 现场推导公式；自由现金流、净现金、现金/有息负债、"
+                "经营现金流/净利润、自由现金流/净利润、分红率、回购率等指标都以"
+                "后端 financial_evidence_pack 已计算结果为准。"
+            ),
+            (
+                "- 利润表相关观察引用财务期间时，写入 rule_checks[].financial_periods "
+                "或 valuation_assumption_details[].source_refs.financial_periods；"
+                "不要把利润表或财务记录写入 evidence_ids。"
+            ),
+            (
+                "- 不要计算内在价值，不要输出买入、卖出、持有、减仓等交易动作建议；"
+                "008 只输出质量判断、风险、反方证据和估值假设建议。"
+            ),
+            (
+                "- 如果使用 valuation_readiness 或 cash_flow_quality 形成后续估值假设，"
+                "必须同步写入 valuation_assumption_details，并在 source_refs.financial_periods "
+                "中填入相关财务期间。"
             ),
             (
                 "- valuation_assumption_suggestions 写给人读的短句；"

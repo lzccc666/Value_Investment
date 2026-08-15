@@ -6,10 +6,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app.analysis.analyst_profiles import get_analyst_profile
+from app.analysis.analyst_profiles import get_analyst_profile, list_analyst_profiles
 from app.analysis.model_gateway import ModelNotConfiguredError
 from app.analysis.prompts.analyst import ANALYST_SYSTEM_PROMPT, build_analyst_prompt
 from app.analysis.providers.openai_compatible import _compact_error_response
+from app.analysis.valuation_parameter_matrix import (
+    RULE_VALUATION_MAPPINGS,
+    STATUS_SCORES,
+    derive_valuation_parameter_matrix,
+)
 from app.db.init_db import init_db
 from app.db.models import AnalysisRun, Announcement, Company, Evidence, FinancialStatement
 from app.db.session import create_sqlalchemy_engine, get_db
@@ -89,6 +94,42 @@ def test_analyst_profiles_list_includes_all_profiles_from_architecture_note(
     }
 
 
+def test_valuation_rule_mapping_covers_all_40_profile_rules() -> None:
+    expected = {
+        (profile.id, rule.id) for profile in list_analyst_profiles() for rule in profile.rules
+    }
+    assert len(expected) == 40
+    assert set(RULE_VALUATION_MAPPINGS) == expected
+    assert RULE_VALUATION_MAPPINGS[("buffett", "margin_of_safety")].calculation_role == (
+        "price_reference"
+    )
+    assert RULE_VALUATION_MAPPINGS[("graham", "valuation_discipline")].calculation_role == (
+        "price_reference"
+    )
+
+
+def test_each_profile_derives_four_rule_impacts_and_status_scores() -> None:
+    assert STATUS_SCORES == {"pass": 1.0, "warn": -0.35, "fail": -2.0, "unknown": 0.0}
+    statuses = ("pass", "warn", "fail", "unknown")
+    for profile in list_analyst_profiles():
+        result = {
+            "profile_fit_score": 0.8,
+            "confidence": 0.7,
+            "rule_checks": [
+                {"rule_id": rule.id, "status": statuses[index], "summary": rule.label}
+                for index, rule in enumerate(profile.rules)
+            ],
+        }
+        matrix = derive_valuation_parameter_matrix(
+            source_run_id=100,
+            profile=profile,
+            result=result,
+        )
+        impacts = matrix["analyst_items"][0]["rule_impacts"]
+        assert len(impacts) == 4
+        assert [item["status_score"] for item in impacts] == [1.0, -0.35, -2.0, 0.0]
+
+
 def test_analyst_prompt_allows_valuation_context_from_snapshot() -> None:
     profile = get_analyst_profile("george_soros")
     assert profile is not None
@@ -109,10 +150,22 @@ def test_analyst_prompt_allows_valuation_context_from_snapshot() -> None:
         "历史价格",
         "目标价",
         "市值",
+        "pe_ttm",
         "持仓成本",
         "估值纪律",
         "安全边际",
         "可以按 Profile 的分析框架正常使用",
+        "financial_metrics.profit_structure",
+        "financial_metrics.expense_control",
+        "quality_matrix.accounting_quality",
+        "analyst_summary.income_statement_quality",
+        "analyst_summary.profit_composition",
+        "不要从原始 income_statement JSON 现场猜公式",
+        "rule_checks[].financial_periods",
+        "source_refs.financial_periods",
+        "不要把利润表或财务记录写入 evidence_ids",
+        "不要计算内在价值",
+        "不要输出买入、卖出、持有、减仓",
     ):
         assert expected in combined_prompt
 
@@ -194,11 +247,19 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
     assert run.input_snapshot["data_counts"]["financial_statements"] == 1
     assert "financial_evidence_pack" in run.input_snapshot
     assert run.input_snapshot["financial_evidence_pack"]["latest_period"] == "2025A"
-    assert run.input_snapshot["financial_evidence_pack"]["financial_facts"]["latest"][
-        "revenue"
-    ] == 100.0
+    assert (
+        run.input_snapshot["financial_evidence_pack"]["financial_facts"]["latest"]["revenue"]
+        == 100.0
+    )
+    assert "cash_flow_quality" in run.input_snapshot["financial_evidence_pack"]
+    assert "balance_sheet_adjustment" in run.input_snapshot["financial_evidence_pack"]
+    assert "capital_allocation" in run.input_snapshot["financial_evidence_pack"]
+    assert "valuation_readiness" in run.input_snapshot["financial_evidence_pack"]
+    assert "analyst_summary" in run.input_snapshot["financial_evidence_pack"]
     assert run.input_snapshot["fact_ledger"]["financial_quality"]["latest_period"] == "2025A"
     assert run.input_snapshot["fact_ledger"]["financial_quality"]["flags_count"] == 0
+    assert run.input_snapshot["fact_ledger"]["financial_quality"]["structured_gaps_count"] >= 1
+    assert "valuation_readiness" in run.input_snapshot["fact_ledger"]["financial_quality"]
     assert "source_coverage_matrix" in run.input_snapshot
     assert "pre_model_observations" in run.input_snapshot
     assert run.input_snapshot["data_counts"]["announcements"] == 1
@@ -210,8 +271,9 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
         "source_type",
         "summary",
     }
-    assert run.input_snapshot["fact_ledger"]["profile_relevance"]["score"] == (
-        payload["result"]["profile_fit_score"]
+    assert (
+        run.input_snapshot["fact_ledger"]["profile_relevance"]["score"]
+        == (payload["result"]["profile_fit_score"])
     )
     assert run.data_snapshot_hash is not None
     assert run.parent_run_id is None
@@ -308,14 +370,13 @@ def test_analyst_fact_ledger_detects_accounting_events_and_profile_relevance(
     assert lin_ledger["profile_relevance"]["method"] == "rule_based_company_profile_fit_v2"
     assert "components" in lin_ledger["profile_relevance"]
     assert lin_ledger["profile_relevance"]["components"]["industry_framework_fit"] >= 0.8
-    assert dalio_ledger["profile_relevance"]["components"]["industry_framework_fit"] < (
-        lin_ledger["profile_relevance"]["components"]["industry_framework_fit"]
+    assert (
+        dalio_ledger["profile_relevance"]["components"]["industry_framework_fit"]
+        < (lin_ledger["profile_relevance"]["components"]["industry_framework_fit"])
     )
 
     accounting_events = lin_ledger["accounting_events"]
-    assert any(
-        item["event_type"] == "revenue_recognition_change" for item in accounting_events
-    )
+    assert any(item["event_type"] == "revenue_recognition_change" for item in accounting_events)
     assert any(item["event_type"] == "retrospective_adjustment" for item in accounting_events)
     assert lin_ledger["financial_quality"]["has_accounting_event"] is True
     assert "同比变化需区分经营变化和口径变化" in str(
@@ -424,13 +485,12 @@ def test_analyst_snapshot_uses_isolated_ranked_source_limits(tmp_path: Path) -> 
     assert len(snapshot["external_evidence"]) == 10
     assert "history_runs" not in snapshot
     assert snapshot["data_counts"]["financial_statements"] == 40
+    assert snapshot["data_counts"]["financial_statement_periods"] == 40
     assert "financial_evidence_pack" in snapshot
     assert "financial_flags" in snapshot["financial_evidence_pack"]
     assert snapshot["data_counts"]["announcements"] == 20
     assert snapshot["data_counts"]["external_evidence"] == 10
-    assert priority_announcement.id in {
-        item["id"] for item in snapshot["announcements"]
-    }
+    assert priority_announcement.id in {item["id"] for item in snapshot["announcements"]}
     assert set(snapshot["announcements"][0]) == {
         "id",
         "title",
@@ -448,9 +508,7 @@ def test_analyst_snapshot_uses_isolated_ranked_source_limits(tmp_path: Path) -> 
         "会计政策变更需要追溯复核。",
     ]
     assert priority_snapshot["tags"] == ["会计政策", "收入确认"]
-    assert priority_evidence.id in {
-        item["id"] for item in snapshot["external_evidence"]
-    }
+    assert priority_evidence.id in {item["id"] for item in snapshot["external_evidence"]}
     assert set(snapshot["external_evidence"][0]) == {
         "id",
         "title",
@@ -467,12 +525,60 @@ def test_analyst_snapshot_uses_isolated_ranked_source_limits(tmp_path: Path) -> 
     }
     assert snapshot["external_evidence"][0]["id"] == priority_evidence.id
     assert snapshot["source_boundary"]["snapshot_limits"] == {
-        "financial_statements": 40,
+        "financial_statement_periods": 40,
         "announcements": 20,
         "evidence": 10,
     }
     assert snapshot["data_counts"]["external_evidence_candidates"] > 60
     assert len(snapshot["intrinsic_valuation_input"]["external_evidence"]) <= 10
+
+
+def test_analyst_snapshot_prioritizes_deep_summarized_announcements(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        quick_announcements = [
+            Announcement(
+                company_id=company.id,
+                title=f"近期快速摘要公告 {index}",
+                published_at=datetime(2026, 2, index, tzinfo=UTC),
+                category="other",
+                source="test_fixture",
+                summary="仅有标题和元数据生成的快速摘要。",
+                summary_model_name="metadata_keyword",
+            )
+            for index in range(1, 21)
+        ]
+        deep_announcement = Announcement(
+            company_id=company.id,
+            title="较早但已深度摘要的增持进展公告",
+            published_at=datetime(2025, 1, 1, tzinfo=UTC),
+            category="控制权变化",
+            source="test_fixture",
+            summary="控股股东增持进展明确，后续仍需跟踪完成情况。",
+            key_facts=["累计增持金额已披露。"],
+            tags=["股东增持"],
+            summary_model_name="deepseek-v4-pro",
+        )
+        session.add_all([*quick_announcements, deep_announcement])
+        session.commit()
+        profile = get_analyst_profile("buffett")
+        assert profile is not None
+        snapshot = build_company_analysis_snapshot(session, company, profile=profile)
+
+    announcement_ids = [item["id"] for item in snapshot["announcements"]]
+    quick_ids = {item.id for item in quick_announcements}
+    deep_snapshot = next(
+        item for item in snapshot["announcements"] if item["id"] == deep_announcement.id
+    )
+    assert announcement_ids[0] == deep_announcement.id
+    assert len(quick_ids & set(announcement_ids)) < len(quick_ids)
+    assert deep_snapshot["key_facts"] == ["累计增持金额已披露。"]
+    assert deep_snapshot["tags"] == ["股东增持"]
+    assert "summary_model_name" not in deep_snapshot
 
 
 def test_analyst_snapshot_orders_financials_by_report_date(tmp_path: Path) -> None:
@@ -521,6 +627,219 @@ def test_analyst_snapshot_orders_financials_by_report_date(tmp_path: Path) -> No
     assert snapshot["financial_evidence_pack"]["latest_period"] == "2025三季报"
 
 
+def test_analyst_snapshot_keeps_forty_periods_when_financials_have_split_tables(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        statements = []
+        for index in range(45):
+            year = 2025 - index // 4
+            quarter = index % 4
+            period = f"{year}Q{4 - quarter}"
+            report_month_day = ("12-31", "09-30", "06-30", "03-31")[quarter]
+            report_date = f"{year}-{report_month_day}"
+            statements.extend(
+                [
+                    FinancialStatement(
+                        company_id=company.id,
+                        period=period,
+                        statement_type="main_financial_indicators",
+                        currency="CNY",
+                        fields={"report_date": report_date, "revenue": 100.0 + index},
+                        source="test_fixture",
+                    ),
+                    FinancialStatement(
+                        company_id=company.id,
+                        period=period,
+                        statement_type="income_statement",
+                        currency="CNY",
+                        fields={
+                            "report_date": report_date,
+                            "revenue": 100.0 + index,
+                            "operating_profit": 25.0,
+                            "net_profit": 20.0,
+                        },
+                        source="test_fixture",
+                    ),
+                    FinancialStatement(
+                        company_id=company.id,
+                        period=period,
+                        statement_type="cash_flow_statement",
+                        currency="CNY",
+                        fields={"report_date": report_date, "operating_cash_flow": 30.0},
+                        source="test_fixture",
+                    ),
+                    FinancialStatement(
+                        company_id=company.id,
+                        period=period,
+                        statement_type="balance_sheet",
+                        currency="CNY",
+                        fields={"report_date": report_date, "cash_and_equivalents": 50.0},
+                        source="test_fixture",
+                    ),
+                ]
+            )
+        session.add_all(statements)
+        session.commit()
+        profile = get_analyst_profile("buffett")
+        assert profile is not None
+        snapshot = build_company_analysis_snapshot(session, company, profile=profile)
+
+    periods = {item["period"] for item in snapshot["financial_statements"]}
+
+    assert len(periods) == 40
+    assert len(snapshot["financial_statements"]) == 160
+    assert snapshot["data_counts"]["financial_statement_periods"] == 40
+    assert snapshot["data_counts"]["financial_statements"] == 160
+    assert "2014Q4" not in periods
+    assert "2025Q4" in periods
+    financial_selection_policy = snapshot["source_boundary"]["selection_policy"][
+        "financial_statements"
+    ]
+    assert "利润表" in financial_selection_policy
+    assert "income_statement" in financial_selection_policy
+    assert "income_statement" in {
+        item["statement_type"] for item in snapshot["financial_statements"]
+    }
+    assert {
+        item["statement_type"]
+        for item in snapshot["financial_statements"]
+        if item["period"] == "2025Q4"
+    } == {
+        "main_financial_indicators",
+        "income_statement",
+        "cash_flow_statement",
+        "balance_sheet",
+    }
+
+
+def test_analyst_snapshot_uses_income_statement_structured_pack(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        session.add_all(
+            [
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2025A",
+                    statement_type="main_financial_indicators",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2025-12-31",
+                        "revenue": 100.0,
+                        "net_profit": 20.0,
+                        "deducted_net_profit": 10.0,
+                    },
+                    source="test_fixture",
+                ),
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2025A",
+                    statement_type="income_statement",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2025-12-31",
+                        "revenue": 100.0,
+                        "operating_cost": 50.0,
+                        "gross_profit": 50.0,
+                        "selling_expense": 8.0,
+                        "admin_expense": 7.0,
+                        "r_and_d_expense": 2.0,
+                        "finance_expense": 5.0,
+                        "investment_income": 8.0,
+                        "credit_impairment_loss": -3.0,
+                        "asset_impairment_loss": -2.0,
+                        "operating_profit": 30.0,
+                        "non_operating_income": 1.0,
+                        "non_operating_expense": 0.0,
+                        "total_profit": 26.0,
+                        "income_tax_expense": 6.0,
+                        "net_profit": 20.0,
+                        "parent_net_profit": 20.0,
+                        "deducted_net_profit": 10.0,
+                    },
+                    source="test_fixture",
+                ),
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2025A",
+                    statement_type="cash_flow_statement",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2025-12-31",
+                        "operating_cash_flow": 25.0,
+                        "capital_expenditure": 3.0,
+                        "free_cash_flow": 22.0,
+                    },
+                    source="test_fixture",
+                ),
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2025A",
+                    statement_type="balance_sheet",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2025-12-31",
+                        "cash_and_equivalents": 40.0,
+                        "interest_bearing_debt": 10.0,
+                        "shareholders_equity": 90.0,
+                    },
+                    source="test_fixture",
+                ),
+                FinancialStatement(
+                    company_id=company.id,
+                    period="2024A",
+                    statement_type="income_statement",
+                    currency="CNY",
+                    fields={
+                        "report_date": "2024-12-31",
+                        "revenue": 100.0,
+                        "selling_expense": 5.0,
+                        "admin_expense": 4.0,
+                        "r_and_d_expense": 2.0,
+                        "finance_expense": 1.0,
+                        "operating_profit": 35.0,
+                        "net_profit": 30.0,
+                        "parent_net_profit": 30.0,
+                        "deducted_net_profit": 28.0,
+                    },
+                    source="test_fixture",
+                ),
+            ]
+        )
+        session.commit()
+        profile = get_analyst_profile("buffett")
+        assert profile is not None
+        snapshot = build_company_analysis_snapshot(session, company, profile=profile)
+
+    financial_topics = snapshot["source_coverage_matrix"]["financial"]
+    assert financial_topics["profit_structure"]["covered"] is True
+    assert financial_topics["expense_control"]["covered"] is True
+    assert financial_topics["accounting_quality"]["covered"] is True
+
+    financial_quality = snapshot["fact_ledger"]["financial_quality"]
+    income_coverage = financial_quality["income_statement_coverage"]
+    assert income_coverage["has_income_statement"] is True
+    assert income_coverage["has_expense_breakdown"] is True
+    assert income_coverage["has_operating_profit"] is True
+    assert income_coverage["has_impairment_items"] is True
+    assert income_coverage["has_non_operating_items"] is True
+    assert income_coverage["has_tax_expense"] is True
+    assert "evidence_pack" in income_coverage["note"]
+
+    observations_text = "\n".join(snapshot["pre_model_observations"])
+    assert "投资收益占净利润较高" in observations_text
+    assert "期间费用率连续上升" in observations_text
+    assert "财务费用率上升" in observations_text
+    assert "减值损失占净利润较高" in observations_text
+    assert "扣非净利润显著弱于归母净利润" in observations_text
+    assert "不要从原始 JSON 现场猜公式" in observations_text
+
+
 def test_analyst_snapshot_allows_price_sensitive_inputs(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     _seed_analysis_snapshot_fixture(session_factory)
@@ -528,6 +847,18 @@ def test_analyst_snapshot_allows_price_sensitive_inputs(tmp_path: Path) -> None:
     with session_factory() as session:
         company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
         assert company is not None
+        company.market_cap = 1694223093019.29
+        company.current_price = 1355.29
+        company.pe_ttm = 20.48
+        company.pe_dynamic = 18.6
+        company.pe_static = 21.1
+        company.pb_ratio = 7.8
+        company.ps_ratio = 11.2
+        company.dividend_yield_ttm = 0.039
+        company.dividend_yield_static = 0.035
+        company.market_data_source = "eastmoney_quote"
+        company.market_data_source_url = "https://example.test/quote/600519"
+        company.market_data_updated_at = datetime(2026, 8, 15, 12, 30, tzinfo=UTC)
         price_sensitive_evidence = Evidence(
             company_id=company.id,
             source_type="web",
@@ -588,15 +919,9 @@ def test_analyst_snapshot_allows_price_sensitive_inputs(tmp_path: Path) -> None:
     assert "当前价格" in snapshot_text
     assert "历史价格" in snapshot_text
     assert "市值" in snapshot_text
-    assert any(
-        item["title"] == "目标价与持仓成本相关披露"
-        for item in snapshot["announcements"]
-    )
+    assert any(item["title"] == "目标价与持仓成本相关披露" for item in snapshot["announcements"])
     assert snapshot["data_counts"]["price_sensitive_external_evidence"] >= 1
-    assert any(
-        item["title"] == "当前价格和历史价格线索"
-        for item in snapshot["external_evidence"]
-    )
+    assert any(item["title"] == "当前价格和历史价格线索" for item in snapshot["external_evidence"])
     assert set(snapshot["external_evidence"][0]) == {
         "id",
         "title",
@@ -611,9 +936,22 @@ def test_analyst_snapshot_allows_price_sensitive_inputs(tmp_path: Path) -> None:
     assert latest_financial["fields"]["target_price"] == 120.0
     assert latest_financial["fields"]["market_cap"] == 9000.0
     assert latest_financial["fields"]["holding_cost"] == 88.0
-    assert snapshot["source_boundary"]["price_sensitive_policy"][
-        "analyst_view_allows_price_sensitive"
-    ] is True
+    assert (
+        snapshot["source_boundary"]["price_sensitive_policy"]["analyst_view_allows_price_sensitive"]
+        is True
+    )
+    assert snapshot["company"]["market_cap"] == 1694223093019.29
+    assert snapshot["company"]["current_price"] == 1355.29
+    assert snapshot["company"]["pe_ttm"] == 20.48
+    assert snapshot["company"]["pe_dynamic"] == 18.6
+    assert snapshot["company"]["pe_static"] == 21.1
+    assert snapshot["company"]["pb_ratio"] == 7.8
+    assert snapshot["company"]["ps_ratio"] == 11.2
+    assert snapshot["company"]["dividend_yield_ttm"] == 0.039
+    assert snapshot["company"]["dividend_yield_static"] == 0.035
+    assert snapshot["company"]["market_data_source"] == "eastmoney_quote"
+    assert snapshot["company"]["market_data_source_url"] == ("https://example.test/quote/600519")
+    assert snapshot["company"]["market_data_updated_at"] == "2026-08-15T12:30:00+00:00"
 
 
 def test_analyst_view_failed_model_configuration_is_recorded(tmp_path: Path) -> None:
@@ -776,6 +1114,47 @@ def test_latest_analysis_runs_return_one_latest_success_per_profile(tmp_path: Pa
     assert buffett_run.result["overview"] == "新结论"
 
 
+def test_latest_failed_analysis_runs_ignore_profiles_with_newer_success(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        stale_failed_run = AnalysisRun(
+            company_id=company.id,
+            run_type="analyst_view",
+            analyst_profile="duan_yongping",
+            result={"error": "previous failure"},
+            confidence=None,
+            is_latest=False,
+            status="failed",
+            created_at=datetime(2026, 8, 14, 8, 0, tzinfo=UTC),
+        )
+        latest_success_run = AnalysisRun(
+            company_id=company.id,
+            run_type="analyst_view",
+            analyst_profile="duan_yongping",
+            result={"overview": "new success"},
+            confidence=0.72,
+            is_latest=True,
+            status="success",
+            created_at=datetime(2026, 8, 14, 9, 0, tzinfo=UTC),
+        )
+        session.add_all([stale_failed_run, latest_success_run])
+        session.commit()
+        company_id = company.id
+
+    with session_factory() as session:
+        latest_failed_runs = list_latest_company_analysis_runs(
+            session,
+            company_id=company_id,
+            run_type="analyst_view",
+            status="failed",
+        )
+
+    assert latest_failed_runs == []
+
+
 def test_latest_analysis_runs_endpoint(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     app = create_app(initialize_database=False)
@@ -916,6 +1295,91 @@ def test_delete_company_analysis_run_is_scoped_to_company(tmp_path: Path) -> Non
 
     with session_factory() as session:
         assert session.get(AnalysisRun, run_id) is not None
+
+
+def test_update_analysis_run_rule_status_overwrites_result(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    app = create_app(initialize_database=False)
+    _override_db(app, session_factory)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        run = AnalysisRun(
+            company_id=company.id,
+            run_type="analyst_view",
+            analyst_profile="buffett",
+            result={
+                "overview": "Existing analyst output",
+                "rule_checks": [
+                    {"rule_id": "moat", "status": "warn", "summary": "Needs review"},
+                    {"rule_id": "quality", "status": "pass", "summary": "Cash backed"},
+                ],
+            },
+            is_latest=True,
+            status="success",
+        )
+        session.add(run)
+        session.commit()
+        company_id = company.id
+        run_id = run.id
+
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/companies/{company_id}/analysis/runs/{run_id}/rule-checks/moat",
+            json={"status": "fail"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    rule_checks = payload["result"]["rule_checks"]
+    assert rule_checks[0]["status"] == "fail"
+    assert rule_checks[1]["status"] == "pass"
+    matrix_rules = payload["result"]["valuation_parameter_matrix"]["analyst_items"][0][
+        "rule_impacts"
+    ]
+    moat_impact = next(item for item in matrix_rules if item["rule_id"] == "moat")
+    assert moat_impact["status"] == "fail"
+    assert moat_impact["status_score"] == -2.0
+
+    with session_factory() as session:
+        stored_run = session.get(AnalysisRun, run_id)
+        assert stored_run is not None
+        assert stored_run.result["rule_checks"][0]["status"] == "fail"
+        assert (
+            stored_run.result["valuation_parameter_matrix"]
+            == payload["result"]["valuation_parameter_matrix"]
+        )
+
+
+def test_update_analysis_run_rule_status_returns_404_for_missing_rule(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    app = create_app(initialize_database=False)
+    _override_db(app, session_factory)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        run = AnalysisRun(
+            company_id=company.id,
+            run_type="analyst_view",
+            analyst_profile="buffett",
+            result={"overview": "Existing analyst output", "rule_checks": []},
+            is_latest=True,
+            status="success",
+        )
+        session.add(run)
+        session.commit()
+        company_id = company.id
+        run_id = run.id
+
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/companies/{company_id}/analysis/runs/{run_id}/rule-checks/moat",
+            json={"status": "pass"},
+        )
+
+    assert response.status_code == 404
 
 
 def test_batch_analysis_runs_continue_after_profile_failure(

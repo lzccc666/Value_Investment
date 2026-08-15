@@ -14,6 +14,7 @@ from app.schemas.analysis import (
     AnalysisBatchRunItem,
     AnalysisBatchRunResponse,
     AnalysisLatestRunsResponse,
+    AnalysisRuleStatusUpdateRequest,
     AnalysisRunDeleteResponse,
     AnalysisRunListResponse,
     AnalysisRunRead,
@@ -23,6 +24,7 @@ from app.schemas.analysis import (
     AnalystRunRequest,
 )
 from app.services.analyst_service import (
+    AnalysisRuleCheckNotFoundError,
     AnalysisRunNotFoundError,
     AnalystProfileNotFoundError,
     delete_company_analysis_run,
@@ -31,6 +33,7 @@ from app.services.analyst_service import (
     list_profiles,
     run_company_analyst_view,
     run_company_analyst_views_batch,
+    update_analysis_run_rule_status,
 )
 from app.services.companies import get_company
 
@@ -93,6 +96,30 @@ def get_company_analysis_runs(
         offset=offset,
     )
     return AnalysisRunListResponse(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.patch(
+    "/companies/{company_id}/analysis/runs/{run_id}/rule-checks/{rule_id}",
+    response_model=AnalysisRunRead,
+)
+def update_company_analysis_run_rule_status(
+    company_id: int,
+    run_id: int,
+    rule_id: str,
+    payload: AnalysisRuleStatusUpdateRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> AnalysisRunRead:
+    _get_company_or_404(db, company_id)
+    try:
+        return update_analysis_run_rule_status(
+            db,
+            company_id=company_id,
+            run_id=run_id,
+            rule_id=rule_id,
+            status=payload.status,
+        )
+    except (AnalysisRunNotFoundError, AnalysisRuleCheckNotFoundError) as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.delete(

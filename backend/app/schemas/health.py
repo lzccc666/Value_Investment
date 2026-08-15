@@ -10,4 +10,3 @@ class HealthResponse(BaseModel):
     version: str
     environment: str
     checked_at: datetime
-

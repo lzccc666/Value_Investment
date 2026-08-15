@@ -79,9 +79,7 @@ def search_external_evidence(
         status=run.status if run.status in {"success", "partial", "failed"} else "failed",
         created=len(items),
         items=items,
-        diagnostics=run.result.get("search_stats")
-        if isinstance(run.result, dict)
-        else None,
+        diagnostics=run.result.get("search_stats") if isinstance(run.result, dict) else None,
     )
 
 
@@ -93,9 +91,7 @@ def get_company_evidence_list(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> EvidenceListResponse:
     _get_company_or_404(db, company_id)
-    items, total = list_company_evidence(
-        db, company_id=company_id, limit=limit, offset=offset
-    )
+    items, total = list_company_evidence(db, company_id=company_id, limit=limit, offset=offset)
     return EvidenceListResponse(items=items, total=total, limit=limit, offset=offset)
 
 

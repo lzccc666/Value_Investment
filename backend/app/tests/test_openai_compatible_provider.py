@@ -5,11 +5,11 @@ def test_extract_responses_output_text_prefers_output_text() -> None:
     assert (
         _extract_responses_output_text(
             {
-                "output_text": "{\"queries\":[\"贵州茅台 白酒政策\"]}",
+                "output_text": '{"queries":["贵州茅台 白酒政策"]}',
                 "output": [],
             }
         )
-        == "{\"queries\":[\"贵州茅台 白酒政策\"]}"
+        == '{"queries":["贵州茅台 白酒政策"]}'
     )
 
 
@@ -23,12 +23,12 @@ def test_extract_responses_output_text_reads_message_content() -> None:
                         "content": [
                             {
                                 "type": "output_text",
-                                "text": "{\"evidences\":[]}",
+                                "text": '{"evidences":[]}',
                             }
                         ],
                     }
                 ]
             }
         )
-        == "{\"evidences\":[]}"
+        == '{"evidences":[]}'
     )

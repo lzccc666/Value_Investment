@@ -39,10 +39,11 @@ export const navigationItems: NavItem[] = [
   { label: "Company Workspace", icon: Building2 },
   { label: "Financials", icon: BarChart3 },
   { label: "Announcements", icon: Newspaper },
+  { label: "Evidence", icon: BookOpenText },
   { label: "Analyst Views", icon: UsersRound },
+  { label: "Memo", icon: FileText },
   { label: "Valuation Lab", icon: Calculator },
   { label: "Portfolio", icon: BriefcaseBusiness },
-  { label: "Memo", icon: FileText },
   { label: "Settings", icon: Settings }
 ];
 
@@ -78,4 +79,3 @@ export const evidenceBands = [
   { label: "推理", icon: ClipboardList },
   { label: "反证", icon: Bell }
 ];
-

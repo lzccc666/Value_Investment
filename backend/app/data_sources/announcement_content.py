@@ -142,9 +142,7 @@ def _extract_pdf_text(content: bytes) -> str:
     try:
         from pypdf import PdfReader
     except ImportError as exc:
-        raise AnnouncementContentFetchError(
-            "当前环境未安装 pypdf，无法解析 PDF 公告原文"
-        ) from exc
+        raise AnnouncementContentFetchError("当前环境未安装 pypdf，无法解析 PDF 公告原文") from exc
 
     try:
         reader = PdfReader(BytesIO(content))

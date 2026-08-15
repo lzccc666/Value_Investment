@@ -17,4 +17,3 @@ def health_check() -> HealthResponse:
         environment=settings.environment,
         checked_at=datetime.now(UTC),
     )
-

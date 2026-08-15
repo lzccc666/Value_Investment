@@ -63,13 +63,11 @@ class AnalystRuleCheckOutput(BaseModel):
             )
         if "announcement_ids" not in normalized:
             normalized["announcement_ids"] = _normalize_int_list(
-                normalized.get("supporting_announcement_ids")
-                or normalized.get("announcements")
+                normalized.get("supporting_announcement_ids") or normalized.get("announcements")
             )
         if "financial_periods" not in normalized:
             normalized["financial_periods"] = _normalize_str_list(
-                normalized.get("supporting_financial_periods")
-                or normalized.get("periods")
+                normalized.get("supporting_financial_periods") or normalized.get("periods")
             )
 
         return normalized
@@ -140,9 +138,7 @@ class AnalystAnalysisOutput(BaseModel):
         if "profile_fit_score" not in normalized:
             normalized["profile_fit_score"] = _derive_profile_fit_score(rule_checks)
         else:
-            normalized["profile_fit_score"] = _normalize_score(
-                normalized.get("profile_fit_score")
-            )
+            normalized["profile_fit_score"] = _normalize_score(normalized.get("profile_fit_score"))
         if "confidence" not in normalized:
             normalized["confidence"] = _derive_confidence(normalized, rule_checks)
         else:
@@ -432,9 +428,7 @@ def _collect_rule_evidence_ids(rule_checks: list[object]) -> list[int]:
 
 def _derive_profile_fit_score(rule_checks: list[object]) -> float:
     statuses = [
-        _normalize_rule_status(item.get("status"))
-        for item in rule_checks
-        if isinstance(item, dict)
+        _normalize_rule_status(item.get("status")) for item in rule_checks if isinstance(item, dict)
     ]
     if not statuses:
         return 0.5
@@ -503,6 +497,10 @@ class AnalystBatchRunRequest(BaseModel):
             return None
         normalized = value.strip()
         return normalized or None
+
+
+class AnalysisRuleStatusUpdateRequest(BaseModel):
+    status: Literal["pass", "warn", "fail", "unknown"]
 
 
 class AnalysisRunRead(BaseModel):

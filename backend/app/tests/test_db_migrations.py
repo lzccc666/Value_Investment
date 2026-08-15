@@ -20,16 +20,16 @@ def test_init_db_migrates_legacy_sqlite_database(tmp_path: Path) -> None:
         company_columns = _table_columns(connection, "companies")
         announcement_columns = _table_columns(connection, "announcements")
         analysis_run_columns = _table_columns(connection, "analysis_runs")
+        investment_memo_columns = _table_columns(connection, "investment_memos")
+        valuation_run_columns = _table_columns(connection, "valuation_runs")
         evidence_columns = _table_columns(connection, "evidence")
         sqlite_schema_version = connection.scalar(text("PRAGMA user_version"))
 
-    assert {"market_cap", "current_price", "market_data_updated_at"}.issubset(
-        company_columns
-    )
-    assert {"raw_content", "summary_status", "summary_model_name"}.issubset(
-        announcement_columns
-    )
+    assert {"market_cap", "current_price", "market_data_updated_at"}.issubset(company_columns)
+    assert {"raw_content", "summary_status", "summary_model_name"}.issubset(announcement_columns)
     assert {"run_version", "is_latest", "status"}.issubset(analysis_run_columns)
+    assert {"version_no", "sections", "is_latest", "status"}.issubset(investment_memo_columns)
+    assert {"memo_id", "price_blind", "assumptions", "results"}.issubset(valuation_run_columns)
     assert {"analysis_status", "analysis_note", "price_sensitive", "use_scope"}.issubset(
         evidence_columns
     )

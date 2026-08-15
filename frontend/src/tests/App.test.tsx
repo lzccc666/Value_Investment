@@ -27,9 +27,39 @@ const mocks = vi.hoisted(() => {
     created_at: "2026-08-09T00:00:00Z",
     updated_at: "2026-08-09T00:00:00Z"
   };
+  const investmentMemo = {
+    id: 101,
+    company_id: 1,
+    generation_run_id: 301,
+    parent_memo_id: null,
+    version_no: 1,
+    editor_type: "model",
+    title: "综合投资备忘录",
+    conclusion: "需复核",
+    sections: {
+      executive_summary: "多视角显示公司质量较好，但估值输入仍需复核。",
+      core_thesis: ["现金流质量是后续估值的核心输入。"],
+      key_risks: ["渠道库存恶化会削弱增长质量。"],
+      valuation_assumption_queue: [
+        {
+          assumption_type: "base_free_cash_flow",
+          reason: "010 需要复核自由现金流基准。"
+        }
+      ]
+    },
+    markdown: "# 综合投资备忘录",
+    source_analyst_run_ids: [11, 13],
+    source_snapshot_hash: "memo-hash",
+    change_note: null,
+    status: "draft",
+    is_latest: true,
+    created_at: "2026-08-09T01:00:00Z",
+    updated_at: "2026-08-09T01:00:00Z"
+  };
 
   return {
     company,
+    investmentMemo,
     createdCompany: {
       ...company,
       id: 99,
@@ -79,7 +109,19 @@ const mocks = vi.hoisted(() => {
     getLatestCompanyAnalysisRuns: vi.fn(),
     runCompanyAnalysis: vi.fn(),
     runCompanyAnalysisBatch: vi.fn(),
-    deleteCompanyAnalysisRun: vi.fn()
+    deleteCompanyAnalysisRun: vi.fn(),
+    updateAnalysisRunRuleStatus: vi.fn(),
+    getLatestInvestmentMemo: vi.fn(),
+    getInvestmentMemos: vi.fn(),
+    getInvestmentMemo: vi.fn(),
+    generateInvestmentMemo: vi.fn(),
+    archiveInvestmentMemo: vi.fn(),
+    deleteInvestmentMemo: vi.fn(),
+    getLatestValuationRun: vi.fn(),
+    getValuationRuns: vi.fn(),
+    createValuationDraft: vi.fn(),
+    recalculateValuationRun: vi.fn(),
+    lockValuationRun: vi.fn()
   };
 });
 
@@ -122,7 +164,19 @@ vi.mock("../services/api", () => ({
   getLatestCompanyAnalysisRuns: mocks.getLatestCompanyAnalysisRuns,
   runCompanyAnalysis: mocks.runCompanyAnalysis,
   runCompanyAnalysisBatch: mocks.runCompanyAnalysisBatch,
-  deleteCompanyAnalysisRun: mocks.deleteCompanyAnalysisRun
+  deleteCompanyAnalysisRun: mocks.deleteCompanyAnalysisRun,
+  updateAnalysisRunRuleStatus: mocks.updateAnalysisRunRuleStatus,
+  getLatestInvestmentMemo: mocks.getLatestInvestmentMemo,
+  getInvestmentMemos: mocks.getInvestmentMemos,
+  getInvestmentMemo: mocks.getInvestmentMemo,
+  generateInvestmentMemo: mocks.generateInvestmentMemo,
+  archiveInvestmentMemo: mocks.archiveInvestmentMemo,
+  deleteInvestmentMemo: mocks.deleteInvestmentMemo,
+  getLatestValuationRun: mocks.getLatestValuationRun,
+  getValuationRuns: mocks.getValuationRuns,
+  createValuationDraft: mocks.createValuationDraft,
+  recalculateValuationRun: mocks.recalculateValuationRun,
+  lockValuationRun: mocks.lockValuationRun
 }));
 
 import { App } from "../app/App";
@@ -566,6 +620,18 @@ beforeEach(() => {
                     risk_flags: ["估值数据缺失。", "管理层证据不足。"],
                     counter_evidence: ["如果渠道库存恶化，护城河判断需要下调。"],
                     valuation_assumption_suggestions: ["后续估值模块应验证自由现金流可持续性。"],
+                    valuation_assumption_details: [
+                      {
+                        assumption_type: "利润可持续性",
+                        reason: "会计政策变更可能影响同比口径。",
+                        needed_inputs: ["会计政策变更具体影响说明"],
+                        source_refs: {
+                          financial_periods: ["2025年报"],
+                          announcement_ids: [44],
+                          external_evidence_ids: []
+                        }
+                      }
+                    ],
                     data_gaps: ["缺少估值和更长周期财务数据。", "缺少渠道库存数据。"],
                     follow_up_questions: [
                       "现金流是否能连续多年覆盖利润？",
@@ -682,6 +748,114 @@ beforeEach(() => {
     ]
   });
   mocks.deleteCompanyAnalysisRun.mockResolvedValue({ id: 11, deleted: true });
+  mocks.updateAnalysisRunRuleStatus.mockImplementation(
+    (_companyId: number, _runId: number, ruleId: string, status: string) =>
+      Promise.resolve({
+        id: 11,
+        company_id: 1,
+        run_type: "analyst_view",
+        analyst_profile: "buffett",
+        run_version: "008_v1",
+        model_name: "fake-model",
+        prompt_version: "analyst_view_v1",
+        data_snapshot_hash: "hash",
+        result: {
+          analyst_profile: "buffett",
+          overview: "现金流质量较好，但证据仍需补充。",
+          profile_fit_score: 0.68,
+          confidence: 0.73,
+          key_observations: ["种子财务显示利润和现金流匹配。"],
+          rule_checks: [
+            {
+              rule_id: "moat",
+              status: ruleId === "moat" ? status : "warn",
+              summary: "有白酒标签和行业证据，但护城河证据还不足。",
+              evidence_ids: [1],
+              financial_periods: ["2025A"],
+              announcement_ids: [1]
+            }
+          ],
+          supporting_evidence_ids: [1],
+          financial_observations: ["2025A 毛利率 58%。"],
+          announcement_observations: ["年度经营摘要已导入。"],
+          risk_flags: ["估值数据缺失。", "管理层证据不足。"],
+          counter_evidence: ["如果渠道库存恶化，护城河判断需要下调。"],
+          valuation_assumption_suggestions: ["后续估值模块应验证自由现金流可持续性。"],
+          data_gaps: ["缺少估值和更长周期财务数据。", "缺少渠道库存数据。"],
+          follow_up_questions: ["现金流是否能连续多年覆盖利润？"]
+        },
+        confidence: 0.73,
+        parent_run_id: null,
+        is_latest: true,
+        user_note: null,
+        status: "success",
+        created_at: "2026-08-09T00:00:00Z"
+      })
+  );
+  mocks.getLatestInvestmentMemo.mockResolvedValue({
+    company_id: 1,
+    item: null
+  });
+  mocks.getInvestmentMemos.mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 20,
+    offset: 0
+  });
+  mocks.getInvestmentMemo.mockResolvedValue(mocks.investmentMemo);
+  mocks.generateInvestmentMemo.mockResolvedValue({
+    company_id: 1,
+    run: {
+      id: 301,
+      company_id: 1,
+      run_type: "investment_memo",
+      analyst_profile: "investment_committee",
+      run_version: "009_v1",
+      model_name: "fake-model",
+      prompt_version: "investment_memo_v1",
+      data_snapshot_hash: "memo-hash",
+      result: mocks.investmentMemo.sections,
+      confidence: 0.65,
+      parent_run_id: null,
+      is_latest: true,
+      user_note: null,
+      status: "success",
+      created_at: "2026-08-09T01:00:00Z"
+    },
+    memo: mocks.investmentMemo
+  });
+  mocks.archiveInvestmentMemo.mockResolvedValue({
+    id: 101,
+    archived: true,
+    latest_memo_id: null
+  });
+  mocks.deleteInvestmentMemo.mockResolvedValue({
+    id: 101,
+    deleted: true,
+    latest_memo_id: null
+  });
+  mocks.getLatestValuationRun.mockResolvedValue({
+    company_id: 1,
+    item: null
+  });
+  mocks.getValuationRuns.mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 20,
+    offset: 0
+  });
+  mocks.createValuationDraft.mockResolvedValue({
+    company_id: 1,
+    item: makeValuationRun()
+  });
+  mocks.recalculateValuationRun.mockResolvedValue({
+    company_id: 1,
+    item: makeValuationRun({ id: 502 })
+  });
+  mocks.lockValuationRun.mockResolvedValue({
+    company_id: 1,
+    item: makeValuationRun({ status: "locked" })
+  });
   mocks.runCompanyAnalysis.mockResolvedValue({
     id: 12,
     company_id: 1,
@@ -737,6 +911,18 @@ beforeEach(() => {
   mocks.runCompanyAnalysis.mockClear();
   mocks.runCompanyAnalysisBatch.mockClear();
   mocks.deleteCompanyAnalysisRun.mockClear();
+  mocks.updateAnalysisRunRuleStatus.mockClear();
+  mocks.getLatestInvestmentMemo.mockClear();
+  mocks.getInvestmentMemos.mockClear();
+  mocks.getInvestmentMemo.mockClear();
+  mocks.generateInvestmentMemo.mockClear();
+  mocks.archiveInvestmentMemo.mockClear();
+  mocks.deleteInvestmentMemo.mockClear();
+  mocks.getLatestValuationRun.mockClear();
+  mocks.getValuationRuns.mockClear();
+  mocks.createValuationDraft.mockClear();
+  mocks.recalculateValuationRun.mockClear();
+  mocks.lockValuationRun.mockClear();
 });
 
 function makeSyncedFinancialStatements() {
@@ -779,6 +965,176 @@ function makeSyncedFinancialStatements() {
   };
 }
 
+function makeValuationRun(
+  overrides: Partial<{
+    id: number;
+    status: "draft" | "locked" | "archived" | "failed";
+  }> = {}
+) {
+  const id = overrides.id ?? 501;
+  const status = overrides.status ?? "draft";
+  const scenarios = {
+    conservative: {
+      cash_flow_growth_rate: 0.02,
+      owner_earnings_growth_rate: 0.015,
+      discount_rate: 0.115,
+      terminal_growth_rate: 0.01
+    },
+    base: {
+      cash_flow_growth_rate: 0.05,
+      owner_earnings_growth_rate: 0.045,
+      discount_rate: 0.1,
+      terminal_growth_rate: 0.02
+    },
+    optimistic: {
+      cash_flow_growth_rate: 0.08,
+      owner_earnings_growth_rate: 0.075,
+      discount_rate: 0.09,
+      terminal_growth_rate: 0.03
+    }
+  };
+
+  return {
+    id,
+    company_id: 1,
+    memo_id: 101,
+    run_version: "010_v1",
+    status,
+    price_blind: true,
+    forbidden_price_inputs: {
+      price_blind: true,
+      scrubbed_items: []
+    },
+    input_snapshot: {
+      latest_memo: {
+        id: 101,
+        version_no: 1
+      }
+    },
+    input_snapshot_hash: "valuation-hash",
+    valuation_inputs: {
+      base_revenue: 172054171890.91,
+      base_net_profit: 82320067101.68,
+      base_free_cash_flow: 72320067101.68,
+      capital_expenditure: 12000000000,
+      cash_and_equivalents: 150000000000,
+      interest_bearing_debt: 8000000000,
+      shares_outstanding: 1256197800,
+      latest_period: "2025年报"
+    },
+    model_suggested_assumptions: {
+      scenarios
+    },
+    user_adjusted_assumptions: {},
+    assumptions: {
+      scenarios,
+      memo_assumption_queue: [
+        {
+          assumption_type: "base_free_cash_flow",
+          reason: "010 需要复核自由现金流基准。"
+        }
+      ]
+    },
+    methods: {
+      selected_methods: ["dcf", "owner_earnings"],
+      reserved_methods: ["residual_income", "dividend_discount", "asset_value"],
+      forecast_years: 5
+    },
+    results: {
+      title: "无锚定估值实验",
+      price_blind: true,
+      method_results: [
+        {
+          method: "dcf",
+          status: "success",
+          applicability: 0.9,
+          reason: "自由现金流口径可用，DCF 作为无锚定主模型。",
+          scenario_values: {
+            conservative: 900000000000,
+            base: 1200000000000,
+            optimistic: 1500000000000
+          },
+          per_share_values: {
+            conservative: 716.45,
+            base: 955.26,
+            optimistic: 1194.07
+          },
+          input_gaps: []
+        },
+        {
+          method: "owner_earnings",
+          status: "success",
+          applicability: 0.82,
+          reason: "采用所有者盈余和 DCF 交叉验证。",
+          scenario_values: {
+            conservative: 850000000000,
+            base: 1120000000000,
+            optimistic: 1420000000000
+          },
+          per_share_values: {
+            conservative: 676.64,
+            base: 891.58,
+            optimistic: 1130.4
+          },
+          input_gaps: []
+        },
+        {
+          method: "residual_income",
+          status: "skipped",
+          reason: "MVP 预留。",
+          input_gaps: []
+        }
+      ],
+      model_weighting: [
+        {
+          method: "dcf",
+          weight: 0.5233,
+          reason: "按方法适用性和输入完整度参与综合。"
+        },
+        {
+          method: "owner_earnings",
+          weight: 0.4767,
+          reason: "按方法适用性和输入完整度参与综合。"
+        }
+      ],
+      intrinsic_value_range: {
+        total_equity_value: {
+          conservative: 876165000000,
+          base: 1161860000000,
+          optimistic: 1461850000000
+        },
+        per_share_value: {
+          conservative: 697.47,
+          base: 924.84,
+          optimistic: 1163.71
+        },
+        unit: "CNY",
+        per_share_status: "success"
+      },
+      valuation_input_gaps: [
+        {
+          field: "long_term_cash_flow_history",
+          severity: "low",
+          reason: "长周期现金流样本不足，仅降低置信度。",
+          source: "financial_evidence_pack"
+        }
+      ],
+      dispersion_warning: null
+    },
+    sensitivity: {},
+    confidence: 0.72,
+    confidence_summary: {
+      reasons: ["估值数字来自服务层确定性公式，且保留单模型结果。"]
+    },
+    source_map: {
+      memo_id: 101
+    },
+    user_note: null,
+    created_at: "2026-08-09T02:00:00Z",
+    updated_at: "2026-08-09T02:00:00Z"
+  };
+}
+
 function makeFinancialEvidencePack(
   latestPeriod = "2025A",
   facts: Record<string, number> = {
@@ -810,13 +1166,68 @@ function makeFinancialEvidencePack(
         net_profit_yoy: 0.16
       },
       balance_sheet_safety: {},
+      shareholder_return: {},
+      capital_allocation: {},
       efficiency: {},
       per_share: {}
     },
+    cash_flow_coverage: {
+      has_operating_cash_flow: false,
+      has_cash_flow_proxy: true,
+      proxy_fields: ["operating_cash_flow_to_revenue"],
+      note: "已有经营现金流代理指标，但缺少经营现金流绝对值。"
+    },
     financial_trends: {},
     financial_flags: [],
-    financial_data_gaps: ["缺少资本开支，无法计算严格自由现金流。"]
+    financial_data_gaps: [
+      {
+        field: "capital_expenditure",
+        severity: "high",
+        reason: "缺少资本开支，无法计算严格自由现金流。",
+        needed_by: ["valuation_lab", "analyst_view"],
+        replacement_available: false
+      }
+    ],
+    financial_data_gap_messages: ["缺少资本开支，无法计算严格自由现金流。"],
+    cash_flow_quality: {
+      operating_cash_flow: null,
+      capital_expenditure: null,
+      free_cash_flow: null,
+      operating_cash_flow_to_net_profit: null,
+      free_cash_flow_to_net_profit: null,
+      free_cash_flow_margin: null
+    },
+    balance_sheet_adjustment: {
+      cash_and_equivalents: null,
+      interest_bearing_debt: null,
+      net_cash: null,
+      asset_liability_ratio: null,
+      cash_to_interest_bearing_debt: null
+    },
+    capital_allocation: {
+      capital_expenditure: null,
+      dividend: null,
+      buyback_amount: null,
+      shares_outstanding: null,
+      share_dilution_rate: null
+    },
+    valuation_readiness: {
+      ready_methods: []
+    },
+    quality_matrix: {},
+    analyst_summary: {},
+    data_quality: {
+      structured_gaps: [],
+      coverage_by_topic: {},
+      proxy_fields: ["operating_cash_flow_to_revenue"],
+      confidence_penalties: []
+    }
   };
+}
+
+async function openWorkspaceSection(sectionLabel: string) {
+  const tabs = await screen.findByRole("navigation", { name: "公司工作台模块" });
+  fireEvent.click(within(tabs).getByRole("button", { name: new RegExp(sectionLabel) }));
 }
 
 describe("App", () => {
@@ -825,6 +1236,10 @@ describe("App", () => {
 
     expect(screen.getByRole("heading", { name: "价值投资研究工作台" })).toBeInTheDocument();
     expect(screen.getByRole("navigation")).toBeInTheDocument();
+    const mainNavigationText = screen.getByLabelText("主导航").textContent ?? "";
+    expect(mainNavigationText.indexOf("Memo")).toBeLessThan(
+      mainNavigationText.indexOf("Valuation Lab")
+    );
     expect(await screen.findByText("Value Investment API 0.1.0")).toBeInTheDocument();
   });
 
@@ -842,8 +1257,8 @@ describe("App", () => {
       expect(mocks.getCompany).toHaveBeenCalledWith(1, expect.any(AbortSignal));
     });
     expect(mocks.getCompanyFinancials).toHaveBeenCalledWith(1, {
-      limit: 60,
-      offset: 0,
+      period_limit: 60,
+      period_offset: 0,
       signal: expect.any(AbortSignal)
     });
     expect(mocks.getCompanyFinancialEvidencePack).toHaveBeenCalledWith(1, expect.any(AbortSignal));
@@ -858,14 +1273,24 @@ describe("App", () => {
     expect(await screen.findByText("20.48x")).toBeInTheDocument();
     expect(await screen.findByText("15.55x")).toBeInTheDocument();
     expect(screen.queryByText("研究状态")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "研究准备度" })).toBeInTheDocument();
+    expect(await screen.findByText("最新 2025A，缺口 1 项")).toBeInTheDocument();
+    expect((await screen.findAllByText("至少需要 2 个成功分析师视角")).length).toBeGreaterThan(0);
+
+    await openWorkspaceSection("Financials");
     expect(await screen.findByText("财务数据")).toBeInTheDocument();
     expect(await screen.findByText("最新期间")).toBeInTheDocument();
     expect(await screen.findByText("财务旗标")).toBeInTheDocument();
     expect(await screen.findByText("数据缺口")).toBeInTheDocument();
     expect((await screen.findAllByText("收入")).length).toBeGreaterThan(0);
+
+    await openWorkspaceSection("Announcements");
     expect((await screen.findAllByText("年度经营摘要已导入")).length).toBeGreaterThan(0);
+
+    await openWorkspaceSection("Evidence");
     expect(await screen.findByText("外部信息")).toBeInTheDocument();
     expect(await screen.findByText("测试行业证据已入库")).toBeInTheDocument();
+    expect(await screen.findByText("#1")).toBeInTheDocument();
     expect(await screen.findByText("基本面证据")).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "test_fixture" })).toHaveAttribute(
       "href",
@@ -873,6 +1298,8 @@ describe("App", () => {
     );
     expect(await screen.findByText("model_name")).toBeInTheDocument();
     expect(await screen.findByText("fake-model")).toBeInTheDocument();
+
+    await openWorkspaceSection("Analyst Views");
     expect(await screen.findByText("分析师视角")).toBeInTheDocument();
     expect(await screen.findByText("巴菲特")).toBeInTheDocument();
     expect(await screen.findByText("现金流质量较好，但证据仍需补充。")).toBeInTheDocument();
@@ -887,6 +1314,9 @@ describe("App", () => {
     expect(
       await screen.findByText("外部证据 6 条（展示 5 条：#1、#2、#3、#4、#5）")
     ).toBeInTheDocument();
+    const analysisBasis = screen.getByText("本次分析依据").closest(".analyst-basis");
+    expect(analysisBasis).toHaveTextContent("会计口径事件 1 个 缺少 007 外部信息");
+    expect(analysisBasis?.textContent).not.toContain("个缺少");
     expect(await screen.findByText("种子财务显示利润和现金流匹配")).toBeInTheDocument();
     expect(await screen.findByText("2025A 毛利率 58%")).toBeInTheDocument();
     expect(
@@ -894,10 +1324,340 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("估值数据缺失；管理层证据不足")).toBeInTheDocument();
     expect(
+      await screen.findByText(
+        /利润可持续性：会计政策变更可能影响同比口径，需补充 会计政策变更具体影响说明/
+      )
+    ).toBeInTheDocument();
+    expect(
       await screen.findByText("缺少估值和更长周期财务数据；缺少渠道库存数据")
     ).toBeInTheDocument();
+    expect(screen.queryByText(/。，/)).not.toBeInTheDocument();
     expect(screen.queryByText(/。；/)).not.toBeInTheDocument();
     expect(screen.queryByText(/？；/)).not.toBeInTheDocument();
+
+    await openWorkspaceSection("Memo");
+    expect(await screen.findByText("综合备忘录准备区")).toBeInTheDocument();
+    expect(await screen.findByText(/当前内容不是买卖或仓位建议/)).toBeInTheDocument();
+    expect(await screen.findByText("可用于综合的成功视角")).toBeInTheDocument();
+  });
+
+  it("hides the new company panel while searching companies", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+
+    expect(await screen.findByRole("heading", { name: "新增公司" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("输入代码、名称、交易所、行业或标签"), {
+      target: { value: "茅台" }
+    });
+
+    await waitFor(() => {
+      expect(mocks.getCompanies).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          q: "茅台",
+          limit: 20,
+          offset: 0,
+          signal: expect.any(AbortSignal)
+        })
+      );
+    });
+    expect(screen.queryByRole("heading", { name: "新增公司" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the company profile visible when optional workspace modules fail", async () => {
+    mocks.getLatestInvestmentMemo.mockRejectedValueOnce(new Error("Request failed: 404"));
+    mocks.getInvestmentMemos.mockRejectedValueOnce(new Error("Request failed: 404"));
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+
+    expect(await screen.findByRole("heading", { name: "公司档案", level: 1 })).toBeInTheDocument();
+    expect(await screen.findByText("基础档案")).toBeInTheDocument();
+    expect(screen.queryByText("公司档案加载失败")).not.toBeInTheDocument();
+  });
+
+  it("opens the price-blind valuation lab and recalculates editable assumptions", async () => {
+    mocks.getLatestInvestmentMemo.mockResolvedValue({
+      company_id: 1,
+      item: mocks.investmentMemo
+    });
+    mocks.getLatestValuationRun.mockResolvedValue({
+      company_id: 1,
+      item: makeValuationRun()
+    });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Valuation Lab");
+
+    expect(await screen.findByRole("heading", { name: "无锚定估值实验室" })).toBeInTheDocument();
+    const workspaceTabsText =
+      screen.getByRole("navigation", { name: "公司工作台模块" }).textContent ?? "";
+    expect(workspaceTabsText.indexOf("Memo")).toBeLessThan(
+      workspaceTabsText.indexOf("Valuation Lab")
+    );
+    expect(await screen.findByText("price_blind=true")).toBeInTheDocument();
+    expect(await screen.findByText("估值假设队列")).toBeInTheDocument();
+    expect(await screen.findByText("010 需要复核自由现金流基准。")).toBeInTheDocument();
+    expect(screen.queryByText(/base_free_cash_flow:/)).not.toBeInTheDocument();
+    expect(await screen.findByText("单模型交叉验证")).toBeInTheDocument();
+    expect(await screen.findByText("所有者盈余")).toBeInTheDocument();
+    expect(screen.queryByText("行情更新时间")).not.toBeInTheDocument();
+    expect(screen.queryByText("1,355.29")).not.toBeInTheDocument();
+
+    const discountRateInputs = screen.getAllByLabelText("折现率");
+    fireEvent.change(discountRateInputs[1], { target: { value: "10.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认参数并计算" }));
+
+    await waitFor(() => {
+      expect(mocks.recalculateValuationRun).toHaveBeenCalledWith(501, {
+        assumptions: expect.objectContaining({
+          scenarios: expect.objectContaining({
+            base: expect.objectContaining({
+              discount_rate: 0.105
+            })
+          })
+        })
+      });
+    });
+    expect(await screen.findByText("已确认参数并生成估值草稿 #502")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "锁定估值" }));
+    await waitFor(() => {
+      expect(mocks.lockValuationRun).toHaveBeenCalledWith(502);
+    });
+  });
+
+  it("generates and deletes investment memo history from the memo panel", async () => {
+    mocks.getLatestInvestmentMemo
+      .mockResolvedValueOnce({ company_id: 1, item: null })
+      .mockResolvedValueOnce({ company_id: 1, item: mocks.investmentMemo })
+      .mockResolvedValue({ company_id: 1, item: null });
+    mocks.getInvestmentMemos
+      .mockResolvedValueOnce({ items: [], total: 0, limit: 20, offset: 0 })
+      .mockResolvedValueOnce({ items: [mocks.investmentMemo], total: 1, limit: 20, offset: 0 })
+      .mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+
+    await openWorkspaceSection("Memo");
+    expect(await screen.findByText("暂无综合投资备忘录")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "生成备忘录" }));
+
+    expect(await screen.findByText("已生成综合投资备忘录 v1")).toBeInTheDocument();
+    expect(await screen.findByText("最新综合备忘录")).toBeInTheDocument();
+    expect(
+      await screen.findByText("多视角显示公司质量较好，但估值输入仍需复核。")
+    ).toBeInTheDocument();
+    expect(await screen.findAllByText("010 需要复核自由现金流基准。")).not.toHaveLength(0);
+    expect(screen.queryByText(/base_free_cash_flow:/)).not.toBeInTheDocument();
+    expect(await screen.findByText("历史分析记录")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看备忘录 v1" }));
+    expect(await screen.findByText("v1 综合投资备忘录")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除备忘录 v1" }));
+
+    expect(await screen.findByText("已删除综合投资备忘录")).toBeInTheDocument();
+    expect(await screen.findByText("暂无历史分析记录")).toBeInTheDocument();
+    expect(mocks.generateInvestmentMemo).toHaveBeenCalledWith(1);
+    expect(mocks.deleteInvestmentMemo).toHaveBeenCalledWith(101);
+  });
+
+  it("archives investment memo history without exposing edit or trade actions", async () => {
+    mocks.getLatestInvestmentMemo
+      .mockResolvedValueOnce({ company_id: 1, item: mocks.investmentMemo })
+      .mockResolvedValue({ company_id: 1, item: null });
+    mocks.getInvestmentMemos
+      .mockResolvedValueOnce({ items: [mocks.investmentMemo], total: 1, limit: 20, offset: 0 })
+      .mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+
+    await openWorkspaceSection("Memo");
+    expect(await screen.findByText(/当前内容不是买卖或仓位建议/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /编辑|保存新版本/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/买入|卖出|持有|减仓/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "归档备忘录 v1" }));
+
+    expect(await screen.findByText("已归档综合投资备忘录")).toBeInTheDocument();
+    expect(await screen.findByText("暂无历史分析记录")).toBeInTheDocument();
+    expect(mocks.archiveInvestmentMemo).toHaveBeenCalledWith(101);
+  });
+
+  it("does not show stale failed analyst labels when that profile has a successful latest run", async () => {
+    mocks.getAnalystProfiles.mockResolvedValueOnce({
+      items: [
+        {
+          id: "buffett",
+          name: "Warren Buffett",
+          display_name: "巴菲特",
+          description: "从护城河、长期盈利质量、管理层可信度和安全边际看公司。",
+          philosophy: "只在证据支持的范围内判断企业长期经济特征。",
+          rules: [{ id: "moat", label: "护城河", description: "业务是否具备可持续竞争优势。" }],
+          prompt_focus: ["长期业务质量"]
+        },
+        {
+          id: "duan_yongping",
+          name: "Duan Yongping",
+          display_name: "段永平",
+          description: "从生意质量、本分文化、消费者心智和股东回报看公司。",
+          philosophy: "好生意和好文化需要长期证据验证。",
+          rules: [{ id: "business_quality", label: "生意质量", description: "生意是否长期优秀。" }],
+          prompt_focus: ["生意质量"]
+        }
+      ]
+    });
+    mocks.getLatestCompanyAnalysisRuns.mockImplementation(
+      (_companyId: number, params: { status?: string } = {}) =>
+        Promise.resolve(
+          params.status === "failed"
+            ? {
+                company_id: 1,
+                run_type: "analyst_view",
+                analyst_profile: null,
+                status: "failed",
+                items: [
+                  {
+                    id: 21,
+                    company_id: 1,
+                    run_type: "analyst_view",
+                    analyst_profile: "duan_yongping",
+                    run_version: "008_v1",
+                    model_name: "fake-model",
+                    prompt_version: "analyst_view_v1",
+                    data_snapshot_hash: "hash-old-failed",
+                    result: { error_type: "ModelGatewayError", error: "之前生成失败" },
+                    confidence: null,
+                    parent_run_id: null,
+                    is_latest: false,
+                    user_note: null,
+                    status: "failed",
+                    created_at: "2026-08-09T00:40:00Z"
+                  }
+                ]
+              }
+            : {
+                company_id: 1,
+                run_type: "analyst_view",
+                analyst_profile: null,
+                status: "success",
+                items: [
+                  {
+                    id: 11,
+                    company_id: 1,
+                    run_type: "analyst_view",
+                    analyst_profile: "buffett",
+                    run_version: "008_v1",
+                    model_name: "fake-model",
+                    prompt_version: "analyst_view_v1",
+                    data_snapshot_hash: "hash-buffett",
+                    result: {
+                      analyst_profile: "buffett",
+                      overview: "巴菲特视角已生成。",
+                      risk_flags: [],
+                      counter_evidence: [],
+                      valuation_assumption_suggestions: [],
+                      data_gaps: []
+                    },
+                    confidence: 0.7,
+                    parent_run_id: null,
+                    is_latest: true,
+                    user_note: null,
+                    status: "success",
+                    created_at: "2026-08-09T01:00:00Z"
+                  },
+                  {
+                    id: 22,
+                    company_id: 1,
+                    run_type: "analyst_view",
+                    analyst_profile: "duan_yongping",
+                    run_version: "008_v1",
+                    model_name: "fake-model",
+                    prompt_version: "analyst_view_v1",
+                    data_snapshot_hash: "hash-duan-success",
+                    result: {
+                      analyst_profile: "duan_yongping",
+                      overview: "段永平视角已重新生成。",
+                      risk_flags: [],
+                      counter_evidence: [],
+                      valuation_assumption_suggestions: [],
+                      data_gaps: []
+                    },
+                    confidence: 0.72,
+                    parent_run_id: null,
+                    is_latest: true,
+                    user_note: null,
+                    status: "success",
+                    created_at: "2026-08-09T01:10:00Z"
+                  }
+                ]
+              }
+        )
+    );
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+
+    await openWorkspaceSection("Memo");
+
+    expect(await screen.findByText("段永平")).toBeInTheDocument();
+    expect(screen.queryByText("段永平 最近失败")).not.toBeInTheDocument();
+  });
+
+  it("shows a clear restart hint when investment memo generation returns not found", async () => {
+    mocks.generateInvestmentMemo.mockRejectedValueOnce(new Error("Not Found"));
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+
+    await openWorkspaceSection("Memo");
+    fireEvent.click(screen.getByRole("button", { name: "生成备忘录" }));
+
+    expect(
+      await screen.findByText(
+        "综合投资备忘录接口返回 not found；如果刚更新过 009，请重启后端服务后再试。"
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("opens external evidence from the sidebar", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    expect(await screen.findByRole("heading", { name: "公司档案", level: 1 })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+
+    expect(await screen.findByText("外部信息")).toBeInTheDocument();
+    expect(await screen.findByText("测试行业证据已入库")).toBeInTheDocument();
   });
 
   it("refreshes company profile market data from the workspace", async () => {
@@ -949,10 +1709,55 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Financials");
     expect(await screen.findByText("财务数据")).toBeInTheDocument();
 
     mocks.getCompanyFinancials.mockResolvedValueOnce({
       items: [
+        {
+          id: 4,
+          company_id: 1,
+          period: "2025年报",
+          statement_type: "balance_sheet",
+          currency: "CNY",
+          fields: {
+            cash_and_equivalents: 152340000000,
+            interest_bearing_debt: 12500000000
+          },
+          source: "eastmoney_f10_balance_sheet",
+          source_url: "https://example.test/financials",
+          created_at: "2026-08-09T00:00:00Z"
+        },
+        {
+          id: 5,
+          company_id: 1,
+          period: "2025年报",
+          statement_type: "cash_flow_statement",
+          currency: "CNY",
+          fields: {
+            operating_cash_flow: 101400000000,
+            capital_expenditure: 9130000000
+          },
+          source: "eastmoney_f10_cash_flow",
+          source_url: "https://example.test/financials",
+          created_at: "2026-08-09T00:00:00Z"
+        },
+        {
+          id: 6,
+          company_id: 1,
+          period: "2025年报",
+          statement_type: "income_statement",
+          currency: "CNY",
+          fields: {
+            operating_cost: 15000000000,
+            selling_expense: 6200000000,
+            operating_profit: 108000000000,
+            income_tax_expense: 26300000000
+          },
+          source: "eastmoney_f10_income_statement",
+          source_url: "https://example.test/financials",
+          created_at: "2026-08-09T00:00:00Z"
+        },
         {
           id: 2,
           company_id: 1,
@@ -961,6 +1766,7 @@ describe("App", () => {
           currency: "CNY",
           fields: {
             operating_cash_flow_to_revenue: 0.421,
+            free_cash_flow: 92278000000,
             revenue: 172054171890.91,
             net_profit: 82320067101.68,
             roe: 0.3253
@@ -985,7 +1791,7 @@ describe("App", () => {
           created_at: "2026-08-09T00:00:00Z"
         }
       ],
-      total: 2,
+      total: 5,
       limit: 60,
       offset: 0
     });
@@ -1001,11 +1807,50 @@ describe("App", () => {
     await waitFor(() => {
       expect(mocks.syncCompanyFinancials).toHaveBeenCalledWith(1, { limit: 60 });
     });
+    await waitFor(() => {
+      expect(mocks.getCompanyFinancials).toHaveBeenLastCalledWith(1, {
+        period_limit: 60,
+        period_offset: 0
+      });
+    });
 
     expect(await screen.findByText("已搜索 2 条，新增 2 条，更新 0 条")).toBeInTheDocument();
     expect((await screen.findAllByText("2025年报")).length).toBeGreaterThan(0);
-    expect(await screen.findByText("1,720.54亿 元")).toBeInTheDocument();
+    expect((await screen.findAllByText("1,720.54亿 CNY")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("922.78亿 CNY")).toBeInTheDocument();
+    expect((await screen.findAllByText("自由现金流")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("利润表")).toBeInTheDocument();
+    expect(await screen.findByText("营业成本")).toBeInTheDocument();
+    expect(await screen.findByText("150亿 CNY")).toBeInTheDocument();
+    expect((await screen.findAllByText(/东方财富 F10 利润表/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/东方财富 F10 主要财务指标/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText("401.55亿 CNY")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /2016年报/, expanded: false }));
+    expect(await screen.findByText("401.55亿 CNY")).toBeInTheDocument();
     expect(await screen.findAllByText("净资产收益率")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: /2016年报/, expanded: true }));
+    expect(screen.queryByText("401.55亿 CNY")).not.toBeInTheDocument();
+    expect(await screen.findByText("#2")).toBeInTheDocument();
+    expect(await screen.findByText("#4")).toBeInTheDocument();
+    expect(await screen.findByText("#5")).toBeInTheDocument();
+    expect(await screen.findByText("#6")).toBeInTheDocument();
+    const mainFinancialIndicatorLabel = (await screen.findAllByText("主要财务指标"))[0];
+    const incomeStatementLabel = await screen.findByText("利润表");
+    const cashFlowStatementLabel = await screen.findByText("现金流量表");
+    const balanceSheetLabel = await screen.findByText("资产负债表");
+    expect(
+      mainFinancialIndicatorLabel.compareDocumentPosition(incomeStatementLabel) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      incomeStatementLabel.compareDocumentPosition(cashFlowStatementLabel) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      cashFlowStatementLabel.compareDocumentPosition(balanceSheetLabel) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(await screen.findAllByText("净资产收益率")).toHaveLength(1);
     expect(await screen.findByText("42.1%")).toBeInTheDocument();
   });
 
@@ -1018,7 +1863,8 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
-    expect(await screen.findByText("2025年报")).toBeInTheDocument();
+    await openWorkspaceSection("Financials");
+    expect((await screen.findAllByText("2025年报")).length).toBeGreaterThan(0);
     expect(await screen.findByText("2016年报")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "删除财务数据：2025年报" }));
@@ -1028,7 +1874,7 @@ describe("App", () => {
     });
     expect(await screen.findByText("已删除财务数据")).toBeInTheDocument();
     expect(screen.queryByText("2025年报")).not.toBeInTheDocument();
-    expect(screen.getByText("2016年报")).toBeInTheDocument();
+    expect(screen.getAllByText("2016年报").length).toBeGreaterThan(0);
   });
 
   it("shows financial statement delete failures without removing the item", async () => {
@@ -1043,7 +1889,8 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
-    expect(await screen.findByText("2025年报")).toBeInTheDocument();
+    await openWorkspaceSection("Financials");
+    expect((await screen.findAllByText("2025年报")).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "删除财务数据：2025年报" }));
 
@@ -1051,7 +1898,7 @@ describe("App", () => {
       expect(mocks.deleteCompanyFinancialStatement).toHaveBeenCalledWith(1, 2);
     });
     expect(await screen.findByText("Financial statement not found")).toBeInTheDocument();
-    expect(screen.getByText("2025年报")).toBeInTheDocument();
+    expect(screen.getAllByText("2025年报").length).toBeGreaterThan(0);
   });
 
   it("searches announcements and refreshes the announcement list", async () => {
@@ -1061,6 +1908,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect(await screen.findByText("公告区块")).toBeInTheDocument();
 
     mocks.getCompanyAnnouncements.mockResolvedValueOnce({
@@ -1095,6 +1943,7 @@ describe("App", () => {
       await screen.findByText("已搜索 1 条，新增 1 条，更新 0 条，跳过 0 条，清理 0 条")
     ).toBeInTheDocument();
     expect(await screen.findByText("贵州茅台:重大事项公告")).toBeInTheDocument();
+    expect(await screen.findByText("ID #2")).toBeInTheDocument();
     expect(await screen.findByText("待后续智能摘要")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "查看来源" })).toHaveAttribute(
       "href",
@@ -1113,6 +1962,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect(await screen.findByText("公告区块")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "搜索公告" }));
@@ -1127,6 +1977,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect(await screen.findByText("公告区块")).toBeInTheDocument();
 
     mocks.getCompanyAnnouncements.mockResolvedValueOnce({
@@ -1190,6 +2041,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect(await screen.findByText("公告区块")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "一键快速摘要" }));
@@ -1210,6 +2062,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect(await screen.findByText("公告区块")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "一键快速摘要" }));
@@ -1225,6 +2078,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect((await screen.findAllByText("年度经营摘要已导入")).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "深度摘要：年度经营摘要已导入" }));
@@ -1244,6 +2098,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect(await screen.findByText("公告区块")).toBeInTheDocument();
 
     mocks.getCompanyAnnouncements.mockResolvedValueOnce({
@@ -1300,6 +2155,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect(await screen.findByText("公告区块")).toBeInTheDocument();
 
     expect(screen.getByRole("button", { name: "一键快速摘要" })).toBeInTheDocument();
@@ -1313,6 +2169,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect(await screen.findByText("公告区块")).toBeInTheDocument();
 
     expect(screen.queryByText("待复核")).not.toBeInTheDocument();
@@ -1325,6 +2182,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect((await screen.findAllByText("年度经营摘要已导入")).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "删除公告：年度经营摘要已导入" }));
@@ -1345,6 +2203,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
     expect((await screen.findAllByText("年度经营摘要已导入")).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "删除公告：年度经营摘要已导入" }));
@@ -1363,6 +2222,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Evidence");
     expect(await screen.findByText("外部信息")).toBeInTheDocument();
 
     mocks.getCompanyEvidence.mockResolvedValueOnce({
@@ -1427,6 +2287,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Evidence");
     expect(await screen.findByText("测试行业证据已入库")).toBeInTheDocument();
 
     mocks.getCompanyEvidence.mockResolvedValueOnce({
@@ -1454,6 +2315,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Evidence");
     expect(await screen.findByText("测试行业证据已入库")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "删除外部信息：测试行业证据已入库" }));
@@ -1564,6 +2426,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Evidence");
     expect(await screen.findByText("外部信息")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "搜索外部信息" }));
@@ -1590,6 +2453,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Evidence");
     expect(await screen.findByText("外部信息")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "搜索外部信息" }));
@@ -1606,6 +2470,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Evidence");
     expect(await screen.findByText("外部信息")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "模型自检" }));
@@ -1626,6 +2491,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Analyst Views");
     expect(await screen.findByText("分析师视角")).toBeInTheDocument();
 
     mocks.getLatestCompanyAnalysisRuns.mockResolvedValueOnce({
@@ -1702,6 +2568,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Analyst Views");
     expect(await screen.findByText("分析师视角")).toBeInTheDocument();
 
     mocks.getLatestCompanyAnalysisRuns.mockResolvedValueOnce({
@@ -1842,6 +2709,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Analyst Views");
 
     expect(await screen.findByText("1 个最近失败")).toBeInTheDocument();
     expect(await screen.findByText("最近生成失败")).toBeInTheDocument();
@@ -1879,6 +2747,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Analyst Views");
     expect(await screen.findByText("分析师视角")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "生成全部" }));
@@ -1896,6 +2765,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Analyst Views");
     expect(await screen.findByText("现金流质量较好，但证据仍需补充。")).toBeInTheDocument();
 
     mocks.getLatestCompanyAnalysisRuns.mockResolvedValueOnce({
@@ -1921,6 +2791,27 @@ describe("App", () => {
     expect(await screen.findByText("已删除分析记录")).toBeInTheDocument();
   });
 
+  it("allows directly correcting an analyst rule status", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Analyst Views");
+
+    const statusSelect = await screen.findByLabelText("调整巴菲特护城河结论");
+    expect(statusSelect).toHaveValue("warn");
+
+    fireEvent.change(statusSelect, { target: { value: "pass" } });
+
+    await waitFor(() => {
+      expect(mocks.updateAnalysisRunRuleStatus).toHaveBeenCalledWith(1, 11, "moat", "pass");
+    });
+    expect(await screen.findByText("已保存规则结论")).toBeInTheDocument();
+    expect(statusSelect).toHaveValue("pass");
+  });
+
   it("can stop an analyst generation request", async () => {
     mocks.runCompanyAnalysis.mockImplementation(
       (_companyId: number, params: { signal?: AbortSignal }) =>
@@ -1937,6 +2828,7 @@ describe("App", () => {
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Analyst Views");
     expect(await screen.findByText("分析师视角")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "生成巴菲特视角" }));

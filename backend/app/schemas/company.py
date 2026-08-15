@@ -126,9 +126,18 @@ class FinancialEvidencePackRead(BaseModel):
     periods: list[str] = Field(default_factory=list)
     financial_facts: dict[str, object] = Field(default_factory=dict)
     financial_metrics: dict[str, object] = Field(default_factory=dict)
+    cash_flow_coverage: dict[str, object] = Field(default_factory=dict)
     financial_trends: dict[str, object] = Field(default_factory=dict)
     financial_flags: list[dict[str, object]] = Field(default_factory=list)
-    financial_data_gaps: list[str] = Field(default_factory=list)
+    financial_data_gaps: list[dict[str, object]] = Field(default_factory=list)
+    financial_data_gap_messages: list[str] = Field(default_factory=list)
+    cash_flow_quality: dict[str, object] = Field(default_factory=dict)
+    balance_sheet_adjustment: dict[str, object] = Field(default_factory=dict)
+    capital_allocation: dict[str, object] = Field(default_factory=dict)
+    valuation_readiness: dict[str, object] = Field(default_factory=dict)
+    quality_matrix: dict[str, object] = Field(default_factory=dict)
+    analyst_summary: dict[str, object] = Field(default_factory=dict)
+    data_quality: dict[str, object] = Field(default_factory=dict)
 
 
 class FinancialStatementSyncResponse(BaseModel):

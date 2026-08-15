@@ -73,9 +73,7 @@ class EvidenceModelOutput(BaseModel):
 
     @field_validator("use_scope")
     @classmethod
-    def normalize_use_scope(
-        cls, value: list[EvidenceUseScope]
-    ) -> list[EvidenceUseScope]:
+    def normalize_use_scope(cls, value: list[EvidenceUseScope]) -> list[EvidenceUseScope]:
         items: list[EvidenceUseScope] = []
         for item in value:
             if item not in items:
