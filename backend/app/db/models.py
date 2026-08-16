@@ -29,6 +29,28 @@ def shanghai_now() -> datetime:
     return datetime.now(SHANGHAI_TZ)
 
 
+class ParameterConfigVersion(Base):
+    __tablename__ = "parameter_config_versions"
+    __table_args__ = (
+        UniqueConstraint("version_no", name="uq_parameter_config_versions_version_no"),
+        Index("ix_parameter_config_versions_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_no: Mapped[int] = mapped_column(nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="draft", nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(40), default="global", nullable=False)
+    scope_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    config_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Company(Base):
     __tablename__ = "companies"
     __table_args__ = (
@@ -211,6 +233,9 @@ class AnalysisRun(Base):
     data_snapshot_hash: Mapped[str | None] = mapped_column(String(120), nullable=True)
     input_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
     result: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    config_version: Mapped[int | None] = mapped_column(nullable=True)
+    config_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    config_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     parent_run_id: Mapped[int | None] = mapped_column(nullable=True)
     is_latest: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -246,6 +271,9 @@ class InvestmentMemo(Base):
     markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_analyst_run_ids: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
     source_snapshot_hash: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    config_version: Mapped[int | None] = mapped_column(nullable=True)
+    config_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    config_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
     change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="draft", nullable=False)
     is_latest: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -280,6 +308,9 @@ class ValuationRun(Base):
     )
     input_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
     input_snapshot_hash: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    config_version: Mapped[int | None] = mapped_column(nullable=True)
+    config_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    config_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
     valuation_inputs: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
     model_suggested_assumptions: Mapped[dict[str, object]] = mapped_column(
         JSON, default=dict, nullable=False
@@ -329,6 +360,9 @@ class PriceDecisionRun(Base):
     status: Mapped[str] = mapped_column(String(40), default="active", nullable=False)
     input_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
     input_snapshot_hash: Mapped[str] = mapped_column(String(120), nullable=False)
+    config_version: Mapped[int | None] = mapped_column(nullable=True)
+    config_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    config_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
     intrinsic_values_per_share: Mapped[dict[str, float]] = mapped_column(
         JSON, default=dict, nullable=False
     )

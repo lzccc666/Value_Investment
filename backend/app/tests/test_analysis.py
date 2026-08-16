@@ -940,7 +940,7 @@ def test_analyst_snapshot_uses_income_statement_structured_pack(tmp_path: Path) 
     assert "不要从原始 JSON 现场猜公式" in observations_text
 
 
-def test_analyst_snapshot_allows_price_sensitive_inputs(tmp_path: Path) -> None:
+def test_analyst_snapshot_excludes_price_sensitive_inputs(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     _seed_analysis_snapshot_fixture(session_factory)
 
@@ -1014,44 +1014,40 @@ def test_analyst_snapshot_allows_price_sensitive_inputs(tmp_path: Path) -> None:
         snapshot = build_company_analysis_snapshot(session, company, profile=profile)
 
     snapshot_text = str(snapshot)
-    assert "目标价" in snapshot_text
-    assert "持仓成本" in snapshot_text
-    assert "当前价格" in snapshot_text
-    assert "历史价格" in snapshot_text
-    assert "市值" in snapshot_text
-    assert any(item["title"] == "目标价与持仓成本相关披露" for item in snapshot["announcements"])
-    assert snapshot["data_counts"]["price_sensitive_external_evidence"] >= 1
-    assert any(item["title"] == "当前价格和历史价格线索" for item in snapshot["external_evidence"])
-    assert set(snapshot["external_evidence"][0]) == {
-        "id",
-        "title",
-        "published_at",
-        "source_type",
-        "summary",
-    }
+    assert "目标价" not in snapshot_text
+    assert "持仓成本" not in snapshot_text
+    assert "当前价格" not in snapshot_text
+    assert "历史价格" not in snapshot_text
+    assert "市值" not in snapshot_text
+    assert not any(
+        item["title"] == "目标价与持仓成本相关披露" for item in snapshot["announcements"]
+    )
+    assert snapshot["data_counts"]["price_sensitive_external_evidence"] == 0
+    assert not any(
+        item["title"] == "当前价格和历史价格线索" for item in snapshot["external_evidence"]
+    )
     latest_financial = next(
         item for item in snapshot["financial_statements"] if item["period"] == "2026Q1"
     )
-    assert latest_financial["fields"]["current_price"] == 100.0
-    assert latest_financial["fields"]["target_price"] == 120.0
-    assert latest_financial["fields"]["market_cap"] == 9000.0
-    assert latest_financial["fields"]["holding_cost"] == 88.0
+    assert "current_price" not in latest_financial["fields"]
+    assert "target_price" not in latest_financial["fields"]
+    assert "market_cap" not in latest_financial["fields"]
+    assert "holding_cost" not in latest_financial["fields"]
     assert (
         snapshot["source_boundary"]["price_sensitive_policy"]["analyst_view_allows_price_sensitive"]
-        is True
+        is False
     )
-    assert snapshot["company"]["market_cap"] == 1694223093019.29
-    assert snapshot["company"]["current_price"] == 1355.29
-    assert snapshot["company"]["pe_ttm"] == 20.48
-    assert snapshot["company"]["pe_dynamic"] == 18.6
-    assert snapshot["company"]["pe_static"] == 21.1
-    assert snapshot["company"]["pb_ratio"] == 7.8
-    assert snapshot["company"]["ps_ratio"] == 11.2
-    assert snapshot["company"]["dividend_yield_ttm"] == 0.039
-    assert snapshot["company"]["dividend_yield_static"] == 0.035
-    assert snapshot["company"]["market_data_source"] == "eastmoney_quote"
-    assert snapshot["company"]["market_data_source_url"] == ("https://example.test/quote/600519")
-    assert snapshot["company"]["market_data_updated_at"] == "2026-08-15T12:30:00+00:00"
+    assert set(snapshot["company"]) == {
+        "id",
+        "ticker",
+        "exchange",
+        "name",
+        "industry",
+        "description",
+        "listed_date",
+        "status",
+        "tags",
+    }
 
 
 def test_analyst_view_failed_model_configuration_is_recorded(tmp_path: Path) -> None:
@@ -1085,7 +1081,7 @@ def test_analyst_view_failed_model_configuration_is_recorded(tmp_path: Path) -> 
     assert run.is_latest is True
 
 
-def test_analyst_view_overwrites_previous_profile_run(tmp_path: Path) -> None:
+def test_analyst_view_preserves_previous_profile_runs(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     _seed_analysis_snapshot_fixture(session_factory)
 
@@ -1146,12 +1142,13 @@ def test_analyst_view_overwrites_previous_profile_run(tmp_path: Path) -> None:
         other_run = session.get(AnalysisRun, other_profile_run_id)
         stale_failed = session.get(AnalysisRun, stale_failed_run_id)
 
-    assert created.id == old_run_id
-    assert stale_failed is None
-    assert len(buffett_runs) == 1
-    assert buffett_runs[0].status == "success"
-    assert buffett_runs[0].result["overview"] == "现金流质量较好，但证据仍需补充。"
-    assert buffett_runs[0].is_latest is True
+    assert created.id != old_run_id
+    assert stale_failed is not None
+    assert len(buffett_runs) == 3
+    assert buffett_runs[0].is_latest is False
+    assert buffett_runs[-1].status == "success"
+    assert buffett_runs[-1].result["overview"] == "现金流质量较好，但证据仍需补充。"
+    assert buffett_runs[-1].is_latest is True
     assert other_run is not None
     assert other_run.result["overview"] == "芒格旧结论"
 

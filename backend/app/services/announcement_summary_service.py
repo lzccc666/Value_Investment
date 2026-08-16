@@ -13,6 +13,7 @@ from app.analysis.prompts.announcement import (
     PROMPT_VERSION,
     build_announcement_summary_prompt,
 )
+from app.configuration.runtime import parameter_value
 from app.data_sources.announcement_content import (
     AnnouncementContentFetcher,
     AnnouncementContentFetchError,
@@ -25,8 +26,6 @@ from app.schemas.announcement_summary import (
 )
 
 RUN_TYPE_ANNOUNCEMENT_SUMMARY = "announcement_summary"
-MAX_MODEL_CONTENT_CHARS = 12000
-MAX_KEYWORD_SUMMARY_CHARS = 120
 GENERIC_TAGS = {"待复核", "其他", "公告", "公司公告", "搜索线索", "智能摘要"}
 
 
@@ -84,7 +83,9 @@ def summarize_company_announcement(
                     content_truncated=content_truncated,
                 ),
                 schema=AnnouncementSummaryOutput,
-                temperature=0.1,
+                temperature=float(
+                    parameter_value("analyst_engine.model_temperatures.announcement", 0.1)
+                ),
             )
             model_name = model_gateway.model_name
 
@@ -423,7 +424,8 @@ def _normalize_summary_output(
     tags = _clean_tags(classification.tags, output.tags)
     raw_summary = " ".join(output.summary.strip().split())
     summary = raw_summary
-    if len(raw_summary) > MAX_KEYWORD_SUMMARY_CHARS:
+    keyword_limit = int(parameter_value("data_sampling.announcement_keyword_summary_chars", 120))
+    if len(raw_summary) > keyword_limit:
         summary = (
             f"类别：{category}；性质：{_infer_announcement_nature(announcement)}；"
             f"影响：{_impact_label(output.impact_direction)}"
@@ -552,9 +554,10 @@ def _impact_label(value: str | None) -> str:
 
 def _truncate_summary(value: str) -> str:
     normalized = " ".join(value.strip().split())
-    if len(normalized) <= MAX_KEYWORD_SUMMARY_CHARS:
+    keyword_limit = int(parameter_value("data_sampling.announcement_keyword_summary_chars", 120))
+    if len(normalized) <= keyword_limit:
         return normalized
-    return f"{normalized[: MAX_KEYWORD_SUMMARY_CHARS - 3]}..."
+    return f"{normalized[: keyword_limit - 3]}..."
 
 
 def _clean_tags(*tag_groups: list[str] | str | None) -> list[str]:
@@ -610,8 +613,10 @@ def _announcement_snapshot(announcement: Announcement) -> dict[str, Any]:
 
 
 def _truncate_for_model(content: str) -> tuple[str, bool]:
-    if len(content) <= MAX_MODEL_CONTENT_CHARS:
+    model_limit = int(parameter_value("data_sampling.announcement_model_chars", 12000))
+    if len(content) <= model_limit:
         return content, False
-    head = content[: int(MAX_MODEL_CONTENT_CHARS * 0.7)]
-    tail = content[-int(MAX_MODEL_CONTENT_CHARS * 0.3) :]
+    head_ratio = float(parameter_value("data_sampling.announcement_head_ratio", 0.70))
+    head = content[: int(model_limit * head_ratio)]
+    tail = content[-int(model_limit * (1.0 - head_ratio)) :]
     return f"{head}\n\n[中间内容因长度限制已截断]\n\n{tail}", True

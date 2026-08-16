@@ -621,6 +621,9 @@ class InvestmentMemoRead(BaseModel):
     markdown: str | None = None
     source_analyst_run_ids: list[int] = Field(default_factory=list)
     source_snapshot_hash: str | None = None
+    config_version: int | None = None
+    config_hash: str | None = None
+    config_snapshot: dict[str, object] = Field(default_factory=dict)
     change_note: str | None = None
     status: str
     is_latest: bool

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-ANALYST_WEIGHT_DIFFERENTIATION_EXPONENT = 2.0
-ANALYST_SCORE_MIN = 0.20
-ANALYST_SCORE_MAX = 1.00
+from app.configuration.runtime import parameter_value
 
 
 def analyst_raw_weight(*, data_confidence: float, profile_fit_score: float) -> float:
-    confidence = _clamp(data_confidence, ANALYST_SCORE_MIN, ANALYST_SCORE_MAX)
-    fit = _clamp(profile_fit_score, ANALYST_SCORE_MIN, ANALYST_SCORE_MAX)
-    return (0.50 * confidence) + (0.50 * fit)
+    minimum = float(parameter_value("valuation_rule_matrix.analyst_score_min", 0.20))
+    maximum = float(parameter_value("valuation_rule_matrix.analyst_score_max", 1.00))
+    confidence = _clamp(data_confidence, minimum, maximum)
+    fit = _clamp(profile_fit_score, minimum, maximum)
+    return (
+        float(parameter_value("valuation_rule_matrix.confidence_weight", 0.50)) * confidence
+        + float(parameter_value("valuation_rule_matrix.profile_fit_weight", 0.50)) * fit
+    )
 
 
 def differentiate_and_normalize_analyst_weights(
@@ -24,10 +27,8 @@ def differentiate_and_normalize_analyst_weights(
         if raw_total > 0
         else [1.0 / len(normalized_raw_weights)] * len(normalized_raw_weights)
     )
-    differentiated_raw_weights = [
-        weight**ANALYST_WEIGHT_DIFFERENTIATION_EXPONENT
-        for weight in normalized_raw_weights
-    ]
+    exponent = float(parameter_value("valuation_rule_matrix.weight_exponent", 2.0))
+    differentiated_raw_weights = [weight**exponent for weight in normalized_raw_weights]
     differentiated_total = sum(differentiated_raw_weights)
     analyst_weights = (
         [weight / differentiated_total for weight in differentiated_raw_weights]

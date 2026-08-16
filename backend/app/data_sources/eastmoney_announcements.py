@@ -31,14 +31,23 @@ class EastmoneyAnnouncementClient:
     pdf_url_template = "https://pdf.dfcfw.com/pdf/H2_{art_code}_1.pdf"
     source_name = "eastmoney_announcements"
 
-    def __init__(self, timeout: float = 12.0) -> None:
+    def __init__(
+        self,
+        timeout: float = 12.0,
+        *,
+        page_size: int = 50,
+        max_pages: int = 200,
+    ) -> None:
         self._timeout = timeout
+        self._page_size = page_size
+        self._max_pages = max_pages
 
     def fetch_announcements(
         self,
         ticker: str,
         years: int = 1,
-        page_size: int = 50,
+        page_size: int | None = None,
+        max_pages: int | None = None,
         limit: int | None = 50,
         as_of: datetime | None = None,
     ) -> list[FetchedAnnouncement]:
@@ -46,14 +55,15 @@ class EastmoneyAnnouncementClient:
         if years < 1:
             raise AnnouncementDataSourceError("公告回看年限必须大于 0")
 
-        normalized_page_size = max(1, min(page_size, 100))
+        normalized_page_size = max(1, min(page_size or self._page_size, 100))
         max_items = None if limit is None else max(1, min(limit, 50))
         reference_time = _as_utc(as_of or datetime.now(UTC))
         published_since = _start_of_day(_subtract_years(reference_time, years))
         announcements: list[FetchedAnnouncement] = []
         page_index = 1
 
-        while page_index <= 200:
+        normalized_max_pages = max(1, min(max_pages or self._max_pages, 500))
+        while page_index <= normalized_max_pages:
             raw_items, total_hits = self._fetch_announcement_page(
                 stock_code=stock_code,
                 page_index=page_index,
@@ -85,7 +95,8 @@ class EastmoneyAnnouncementClient:
             page_index += 1
         else:
             raise AnnouncementDataSourceError(
-                "东方财富公告分页超过安全上限，可能未完整读取目标时间范围公告"
+                "东方财富公告分页超过当前安全上限 "
+                f"{normalized_max_pages} 页，可能未完整读取目标时间范围公告"
             )
 
         return announcements

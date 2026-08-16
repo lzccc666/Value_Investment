@@ -35,6 +35,8 @@ app/tests/            API、服务和数据源测试
 
 核心实体：`Company`、`FinancialStatement`、`Announcement`、`Evidence`、`AnalysisRun`、`InvestmentMemo`、`ValuationRun`、`PriceDecisionRun`。
 
+SQLite 连接统一启用外键约束。`app/services/backup_service.py` 使用 SQLite Backup API 创建一致性备份，默认写入项目根目录 `data/backups/`；每份备份包含数据库文件和带 SHA-256、schema version、记录数及创建原因的 manifest。
+
 ## API 分组
 
 - `/api/health`
@@ -44,6 +46,7 @@ app/tests/            API、服务和数据源测试
 - `/api/companies/{id}/investment-memos`
 - `/api/companies/{id}/valuation-runs`
 - `/api/companies/{id}/price-decision-runs`
+- `/api/data-management`
 
 完整端点见 `../docs/api.md`。
 
@@ -68,6 +71,8 @@ app/tests/            API、服务和数据源测试
 - 011 必须绑定同公司、已计算完成的 `ValuationRun` 及其固定 `InvestmentMemo`。
 - 财务证据包、估值和价格决策均由确定性服务生成，模型输出不能直接覆盖公式结果。
 - `PriceDecisionRun` 使用软删除；其他历史对象按各自接口管理。
+- 数据管理使用 Preview/Execute 两阶段协议。一次性令牌绑定操作参数和数据库状态；维护期间其他写请求返回 `503`。
+- `evidence_search`、`evidence_import_text` 和公告摘要运行不属于全局派生分析清理范围。
 
 ## 验证
 

@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "value_investment.db"
+DEFAULT_BACKUP_DIRECTORY = PROJECT_ROOT / "data" / "backups"
 
 
 class Settings(BaseSettings):
@@ -14,6 +15,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     api_prefix: str = "/api"
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+    backup_directory: Path = DEFAULT_BACKUP_DIRECTORY
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"]
     )

@@ -46,8 +46,6 @@ type CreateState =
   | { status: "saving"; message: null }
   | { status: "error"; message: string };
 
-const COMPANY_LIST_PAGE_SIZE = 20;
-
 const defaultCompaniesState: CompaniesState = {
   status: "loading",
   data: null,
@@ -87,7 +85,6 @@ export function CompanySearchView({
 
     getCompanies({
       q: normalizedQuery || undefined,
-      limit: COMPANY_LIST_PAGE_SIZE,
       offset: location.offset,
       signal: controller.signal
     })
@@ -154,16 +151,18 @@ export function CompanySearchView({
   }
 
   function handlePreviousPage() {
+    const pageSize = pagination?.limit ?? 1;
     onLocationChange({
       query: location.query,
-      offset: Math.max(0, location.offset - COMPANY_LIST_PAGE_SIZE)
+      offset: Math.max(0, location.offset - pageSize)
     });
   }
 
   function handleNextPage() {
+    const pageSize = pagination?.limit ?? 1;
     onLocationChange({
       query: location.query,
-      offset: location.offset + COMPANY_LIST_PAGE_SIZE
+      offset: location.offset + pageSize
     });
   }
 
@@ -242,7 +241,7 @@ export function CompanySearchView({
         </div>
       ) : null}
 
-      {pagination !== null && pagination.total > COMPANY_LIST_PAGE_SIZE ? (
+      {pagination !== null && pagination.total > pagination.limit ? (
         <nav className="company-pagination" aria-label="公司列表分页">
           <button
             className="pagination-button"

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import Connection, Engine, text
 
-CURRENT_SQLITE_SCHEMA_VERSION = 2
+CURRENT_SQLITE_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,18 @@ SQLITE_COLUMN_MIGRATIONS: tuple[ColumnMigration, ...] = (
     ColumnMigration("analysis_runs", "is_latest", "BOOLEAN DEFAULT 0 NOT NULL"),
     ColumnMigration("analysis_runs", "user_note", "TEXT"),
     ColumnMigration("analysis_runs", "status", "VARCHAR(40) DEFAULT 'success' NOT NULL"),
+    ColumnMigration("analysis_runs", "config_version", "INTEGER"),
+    ColumnMigration("analysis_runs", "config_hash", "VARCHAR(64)"),
+    ColumnMigration("analysis_runs", "config_snapshot", "JSON DEFAULT '{}' NOT NULL"),
+    ColumnMigration("investment_memos", "config_version", "INTEGER"),
+    ColumnMigration("investment_memos", "config_hash", "VARCHAR(64)"),
+    ColumnMigration("investment_memos", "config_snapshot", "JSON DEFAULT '{}' NOT NULL"),
+    ColumnMigration("valuation_runs", "config_version", "INTEGER"),
+    ColumnMigration("valuation_runs", "config_hash", "VARCHAR(64)"),
+    ColumnMigration("valuation_runs", "config_snapshot", "JSON DEFAULT '{}' NOT NULL"),
+    ColumnMigration("price_decision_runs", "config_version", "INTEGER"),
+    ColumnMigration("price_decision_runs", "config_hash", "VARCHAR(64)"),
+    ColumnMigration("price_decision_runs", "config_snapshot", "JSON DEFAULT '{}' NOT NULL"),
     ColumnMigration(
         "evidence",
         "analysis_status",
@@ -82,12 +94,43 @@ def run_schema_migrations(database_engine: Engine) -> None:
 
 def _run_sqlite_schema_migrations(database_engine: Engine) -> None:
     with database_engine.begin() as connection:
+        _ensure_sqlite_parameter_config_versions_table(connection)
         _ensure_sqlite_investment_memos_table(connection)
         _ensure_sqlite_valuation_runs_table(connection)
         _ensure_sqlite_price_decision_runs_table(connection)
         _ensure_sqlite_columns(connection, SQLITE_COLUMN_MIGRATIONS)
         _normalize_legacy_evidence_analysis_status(connection)
         _set_sqlite_schema_version(connection)
+
+
+def _ensure_sqlite_parameter_config_versions_table(connection: Connection) -> None:
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS parameter_config_versions (
+                id INTEGER PRIMARY KEY,
+                version_no INTEGER NOT NULL UNIQUE,
+                schema_version VARCHAR(40) NOT NULL,
+                status VARCHAR(40) DEFAULT 'draft' NOT NULL,
+                scope_type VARCHAR(40) DEFAULT 'global' NOT NULL,
+                scope_key VARCHAR(120),
+                config_json JSON DEFAULT '{}' NOT NULL,
+                config_hash VARCHAR(64) NOT NULL,
+                change_note TEXT,
+                created_at DATETIME NOT NULL,
+                published_at DATETIME
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_parameter_config_versions_status
+            ON parameter_config_versions (status)
+            """
+        )
+    )
 
 
 def _ensure_sqlite_investment_memos_table(connection: Connection) -> None:

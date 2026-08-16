@@ -19,22 +19,14 @@ from app.analysis.valuation_parameter_matrix import (
     VALUATION_DIMENSIONS,
     derive_valuation_parameter_matrix,
 )
+from app.configuration.runtime import parameter_config_context, parameter_value
 from app.db.models import AnalysisRun, Company, ValuationRun, utc_now
 from app.services.companies import list_company_financials
 from app.services.financial_metrics import build_financial_evidence_pack
 from app.services.memo_service import get_latest_memo_for_valuation
+from app.services.parameter_config_service import get_runtime_parameter_config
 
 RUN_VERSION = "010_v1"
-FORECAST_YEARS = 5
-ANALYST_PARAMETER_IMPACT_SCALE = 1.50
-MODEL_BASE_WEIGHTS = {
-    "owner_earnings": 0.35,
-    "dcf": 0.35,
-    "residual_income": 0.15,
-    "dividend_discount": 0.10,
-    "asset_value": 0.05,
-}
-MODEL_WEIGHT_TOTAL_TOLERANCE = 1e-6
 FORBIDDEN_PRICE_FIELDS = {
     "current_price",
     "market_cap",
@@ -84,7 +76,12 @@ def build_valuation_snapshot(session: Session, company: Company) -> dict[str, ob
     if memo is None:
         raise ValuationInputError("需要先生成最新综合投资备忘录，010 只读取最新未删除 memo。")
 
-    financials, _ = list_company_financials(session, company_id=company.id, limit=120, offset=0)
+    financials, _ = list_company_financials(
+        session,
+        company_id=company.id,
+        limit=int(parameter_value("data_sampling.valuation_financial_records", 120)),
+        offset=0,
+    )
     financial_evidence_pack = build_financial_evidence_pack(financials)
     if not financial_evidence_pack.get("latest_period"):
         raise ValuationInputError("需要先同步财务数据，当前没有可用于估值的财务证据包。")
@@ -174,37 +171,48 @@ def create_draft_valuation_run(
     user_assumptions: dict[str, object] | None = None,
     user_note: str | None = None,
 ) -> ValuationRun:
-    snapshot = build_valuation_snapshot(session, company)
-    memo_inputs = snapshot.get("memo_inputs")
-    memo_id = _as_int(memo_inputs.get("memo_id")) if isinstance(memo_inputs, dict) else None
-    payload = _calculate_valuation_payload(snapshot, user_assumptions or {})
-    run = ValuationRun(
-        company_id=company.id,
-        memo_id=memo_id,
-        run_version=RUN_VERSION,
-        status="draft",
-        price_blind=True,
-        forbidden_price_inputs=payload["forbidden_price_inputs"],
-        input_snapshot=snapshot,
-        input_snapshot_hash=_hash_snapshot(snapshot),
-        valuation_inputs=payload["valuation_inputs"],
-        model_suggested_assumptions=payload["model_suggested_assumptions"],
-        user_adjusted_assumptions=payload["user_adjusted_assumptions"],
-        assumptions=payload["assumptions"],
-        methods=payload["methods"],
-        results=payload["results"],
-        sensitivity=payload["sensitivity"],
-        confidence=payload["confidence"],
-        confidence_summary=payload["confidence_summary"],
-        source_map=payload["source_map"],
-        user_note=user_note,
-        created_at=utc_now(),
-        updated_at=utc_now(),
-    )
-    session.add(run)
-    session.commit()
-    session.refresh(run)
-    return run
+    runtime = get_runtime_parameter_config(session)
+    with parameter_config_context(runtime.snapshot):
+        snapshot = build_valuation_snapshot(session, company)
+        snapshot["configuration"] = {
+            "version": runtime.version,
+            "hash": runtime.config_hash,
+            "source": runtime.source,
+            "fallback_reason": runtime.fallback_reason,
+        }
+        memo_inputs = snapshot.get("memo_inputs")
+        memo_id = _as_int(memo_inputs.get("memo_id")) if isinstance(memo_inputs, dict) else None
+        payload = _calculate_valuation_payload(snapshot, user_assumptions or {})
+        run = ValuationRun(
+            company_id=company.id,
+            memo_id=memo_id,
+            run_version=RUN_VERSION,
+            status="draft",
+            price_blind=True,
+            forbidden_price_inputs=payload["forbidden_price_inputs"],
+            input_snapshot=snapshot,
+            input_snapshot_hash=_hash_snapshot(snapshot),
+            config_version=runtime.version,
+            config_hash=runtime.config_hash,
+            config_snapshot=deepcopy(runtime.snapshot),
+            valuation_inputs=payload["valuation_inputs"],
+            model_suggested_assumptions=payload["model_suggested_assumptions"],
+            user_adjusted_assumptions=payload["user_adjusted_assumptions"],
+            assumptions=payload["assumptions"],
+            methods=payload["methods"],
+            results=payload["results"],
+            sensitivity=payload["sensitivity"],
+            confidence=payload["confidence"],
+            confidence_summary=payload["confidence_summary"],
+            source_map=payload["source_map"],
+            user_note=user_note,
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        return run
 
 
 def recalculate_valuation_run(
@@ -342,8 +350,8 @@ def _calculate_valuation_payload(
             ],
             "reserved_methods": [],
             "base_weights": configured_model_weights,
-            "default_base_weights": dict(MODEL_BASE_WEIGHTS),
-            "forecast_years": FORECAST_YEARS,
+            "default_base_weights": dict(parameter_value("valuation_models.model_weights", {})),
+            "forecast_years": int(parameter_value("valuation_models.forecast_years", 5)),
         },
         "results": {
             "title": "无锚定估值实验",
@@ -359,9 +367,7 @@ def _calculate_valuation_payload(
             "valuation_input_gaps": input_gaps,
             "dispersion_warning": dispersion_warning,
             "next_step": (
-                "参数已确认，估值结果已生成。"
-                if user_confirmed
-                else "请先确认或调整模型建议参数。"
+                "参数已确认，估值结果已生成。" if user_confirmed else "请先确认或调整模型建议参数。"
             ),
         },
         "sensitivity": (
@@ -562,12 +568,18 @@ def _derive_normalized_free_cash_flow(financial_pack: dict[str, object]) -> dict
         confidence = "medium"
         source_periods = ttm_fcf["source_periods"]
     elif len(annual_fcf) >= 3:
-        value = _weighted_values([item["value"] for item in annual_fcf[:3]], [0.50, 0.30, 0.20])
+        value = _weighted_values(
+            [item["value"] for item in annual_fcf[:3]],
+            list(parameter_value("valuation_models.fcf_year_weights", [0.50, 0.30, 0.20]))[:3],
+        )
         method = "weighted_annual_3y"
         confidence = "high"
         source_periods = [str(item["period"]) for item in annual_fcf[:3]]
     elif len(annual_fcf) == 2:
-        value = _weighted_values([item["value"] for item in annual_fcf], [0.50, 0.30])
+        value = _weighted_values(
+            [item["value"] for item in annual_fcf],
+            list(parameter_value("valuation_models.fcf_year_weights", [0.50, 0.30, 0.20]))[:2],
+        )
         method = "weighted_annual_available"
         confidence = "medium"
         source_periods = [str(item["period"]) for item in annual_fcf]
@@ -604,22 +616,34 @@ def _derive_normalized_free_cash_flow(financial_pack: dict[str, object]) -> dict
         else None
     )
     if value is not None and normalized_profit is not None and normalized_profit > 0:
-        cap = normalized_profit * 1.30
+        fcf_profit_cap = float(parameter_value("valuation_models.fcf_profit_cap", 1.30))
+        cap = normalized_profit * fcf_profit_cap
         if value > cap:
+            cap_text = f"{fcf_profit_cap:g}"
             adjustments.append(
                 {
                     "type": "cash_conversion_cap",
                     "from": value,
                     "to": cap,
-                    "reason": "正常化 FCF/净利润超过 1.30，未确认前不自动抬高 DCF 基数。",
+                    "reason": f"正常化 FCF/净利润超过 {cap_text}，已限制 DCF 基数。",
                 }
             )
             value = cap
             confidence = "low" if confidence == "medium" else confidence
-            warnings.append("正常化 FCF/净利润超过 1.30，已按 1.30 倍净利润设置保守上限。")
-        elif fcf_to_net_profit is not None and fcf_to_net_profit < 0.60:
-            warnings.append("正常化 FCF/净利润低于 0.60，现金转化偏弱，DCF 权重应降低。")
-            confidence = "low"
+            warnings.append(
+                f"正常化 FCF/净利润超过 {cap_text}，已按 {cap_text} 倍净利润设置保守上限。"
+            )
+        elif fcf_to_net_profit is not None:
+            weak_threshold = float(
+                parameter_value("valuation_models.fcf_profit_weak", 0.60)
+            )
+            if fcf_to_net_profit < weak_threshold:
+                threshold_text = f"{weak_threshold:g}"
+                warnings.append(
+                    f"正常化 FCF/净利润低于 {threshold_text}，"
+                    "现金转化偏弱，基准置信度已降低。"
+                )
+                confidence = "low"
 
     return {
         "value": value,
@@ -711,9 +735,15 @@ def _matching_normalized_profit(
         if str(item["period"]) in source_set and _num(item["value"]) is not None
     ]
     if len(matching) >= 3:
-        return _weighted_values(matching[:3], [0.50, 0.30, 0.20])
+        return _weighted_values(
+            matching[:3],
+            list(parameter_value("valuation_models.fcf_year_weights", [0.50, 0.30, 0.20]))[:3],
+        )
     if len(matching) == 2:
-        return _weighted_values(matching, [0.50, 0.30])
+        return _weighted_values(
+            matching,
+            list(parameter_value("valuation_models.fcf_year_weights", [0.50, 0.30, 0.20]))[:2],
+        )
     if len(matching) == 1:
         return matching[0]
     latest = _num(annual_profit[0].get("value"))
@@ -895,57 +925,91 @@ def _derive_assumptions(
 ) -> dict[str, object]:
     trends = _dict(financial_pack.get("financial_trends"))
     flags = _list(financial_pack.get("financial_flags"))
-    base_growth = _first_number(
-        trends.get("free_cash_flow_cagr_5y"),
-        trends.get("free_cash_flow_cagr_3y"),
-        trends.get("net_profit_cagr_5y"),
-        trends.get("net_profit_cagr_3y"),
-        trends.get("revenue_cagr_5y"),
-        trends.get("revenue_cagr_3y"),
-        default=0.04,
+    growth_priority = parameter_value("valuation_models.growth_source_priority", [])
+    growth_values = (
+        [trends.get(str(key)) for key in growth_priority]
+        if isinstance(growth_priority, list)
+        else []
     )
-    base_growth = _clamp(base_growth, -0.05, 0.12)
+    base_growth = _first_number(
+        *growth_values,
+        default=float(parameter_value("valuation_models.default_growth", 0.04)),
+    )
+    base_growth = _clamp(
+        base_growth,
+        float(parameter_value("valuation_models.financial_growth_min", -0.05)),
+        float(parameter_value("valuation_models.financial_growth_max", 0.12)),
+    )
     financial_base_growth = base_growth
-    risk_penalty = min(0.025, 0.005 * len(flags) + 0.003 * len(input_gaps))
-    base_discount = _clamp(0.095 + risk_penalty, 0.08, 0.14)
-    base_terminal = 0.02
+    risk_penalty = min(
+        float(parameter_value("valuation_models.discount_penalty_cap", 0.025)),
+        float(parameter_value("valuation_models.flag_discount_penalty", 0.005)) * len(flags)
+        + float(parameter_value("valuation_models.gap_discount_penalty", 0.003)) * len(input_gaps),
+    )
+    base_discount = _clamp(
+        float(parameter_value("valuation_models.base_discount_rate", 0.095)) + risk_penalty,
+        float(parameter_value("valuation_models.financial_discount_min", 0.08)),
+        float(parameter_value("valuation_models.financial_discount_max", 0.14)),
+    )
+    base_terminal = float(parameter_value("valuation_models.base_terminal_growth", 0.02))
     analyst_adjustment = _derive_analyst_matrix_adjustment(
         matrices=analyst_matrices,
         input_gaps=input_gaps,
     )
     base_growth = _clamp(
         base_growth + float(analyst_adjustment["delta_growth"]),
-        -0.08,
-        0.16,
+        *_configured_bounds("growth", (-0.08, 0.16)),
     )
     base_owner_growth = _clamp(
         financial_base_growth + float(analyst_adjustment["delta_owner_growth"]),
-        -0.08,
-        0.15,
+        *_configured_bounds("owner_growth", (-0.08, 0.15)),
     )
     base_discount = _clamp(
         base_discount + float(analyst_adjustment["delta_discount"]),
-        0.075,
-        0.16,
+        *_configured_bounds("discount", (0.075, 0.16)),
     )
     base_terminal = min(
-        base_discount - 0.01,
+        base_discount - float(parameter_value("valuation_models.discount_terminal_gap", 0.01)),
         _clamp(
             base_terminal + float(analyst_adjustment["delta_terminal"]),
-            0.0,
-            0.035,
+            *_configured_bounds("terminal", (0.0, 0.035)),
         ),
     )
-    spread = _clamp(float(analyst_adjustment["scenario_spread"]), 0.015, 0.08)
-    conservative_terminal = _clamp(base_terminal - spread * 0.30, 0.0, 0.035)
-    optimistic_terminal = _clamp(base_terminal + spread * 0.25, 0.0, 0.035)
-    if float(analyst_adjustment["permanent_loss_risk_negative"]) > 0.50:
+    spread = _clamp(
+        float(analyst_adjustment["scenario_spread"]),
+        float(parameter_value("valuation_models.scenario_spread_min", 0.015)),
+        float(parameter_value("valuation_models.scenario_spread_max", 0.08)),
+    )
+    conservative = parameter_value("valuation_models.scenarios.conservative", {})
+    optimistic = parameter_value("valuation_models.scenarios.optimistic", {})
+    conservative = conservative if isinstance(conservative, dict) else {}
+    optimistic = optimistic if isinstance(optimistic, dict) else {}
+    conservative_terminal = _clamp(
+        base_terminal + spread * float(conservative.get("terminal_spread", -0.30)),
+        *_scenario_bounds(conservative, "terminal_bounds", (0.0, 0.035)),
+    )
+    optimistic_terminal = _clamp(
+        base_terminal + spread * float(optimistic.get("terminal_spread", 0.25)),
+        *_scenario_bounds(optimistic, "terminal_bounds", (0.0, 0.035)),
+    )
+    if float(analyst_adjustment["permanent_loss_risk_negative"]) > float(
+        parameter_value("valuation_models.permanent_loss_optimistic_cap", 0.50)
+    ):
         optimistic_terminal = min(optimistic_terminal, base_terminal)
     scenario_inputs = {
         "conservative": {
-            "cash_flow_growth_rate": _clamp(base_growth - spread, -0.10, 0.10),
-            "owner_earnings_growth_rate": _clamp(base_owner_growth - spread, -0.10, 0.10),
-            "discount_rate": _clamp(base_discount + spread * 0.60, 0.09, 0.18),
+            "cash_flow_growth_rate": _clamp(
+                base_growth + spread * float(conservative.get("growth_spread", -1.0)),
+                *_scenario_bounds(conservative, "growth_bounds", (-0.10, 0.10)),
+            ),
+            "owner_earnings_growth_rate": _clamp(
+                base_owner_growth + spread * float(conservative.get("owner_growth_spread", -1.0)),
+                *_scenario_bounds(conservative, "owner_growth_bounds", (-0.10, 0.10)),
+            ),
+            "discount_rate": _clamp(
+                base_discount + spread * float(conservative.get("discount_spread", 0.60)),
+                *_scenario_bounds(conservative, "discount_bounds", (0.09, 0.18)),
+            ),
             "terminal_growth_rate": conservative_terminal,
         },
         "base": {
@@ -955,16 +1019,25 @@ def _derive_assumptions(
             "terminal_growth_rate": base_terminal,
         },
         "optimistic": {
-            "cash_flow_growth_rate": _clamp(base_growth + spread, -0.02, 0.18),
-            "owner_earnings_growth_rate": _clamp(base_owner_growth + spread, -0.02, 0.16),
-            "discount_rate": _clamp(base_discount - spread * 0.35, 0.075, 0.14),
+            "cash_flow_growth_rate": _clamp(
+                base_growth + spread * float(optimistic.get("growth_spread", 1.0)),
+                *_scenario_bounds(optimistic, "growth_bounds", (-0.02, 0.18)),
+            ),
+            "owner_earnings_growth_rate": _clamp(
+                base_owner_growth + spread * float(optimistic.get("owner_growth_spread", 1.0)),
+                *_scenario_bounds(optimistic, "owner_growth_bounds", (-0.02, 0.16)),
+            ),
+            "discount_rate": _clamp(
+                base_discount + spread * float(optimistic.get("discount_spread", -0.35)),
+                *_scenario_bounds(optimistic, "discount_bounds", (0.075, 0.14)),
+            ),
             "terminal_growth_rate": optimistic_terminal,
         },
     }
     return {
-        "forecast_years": FORECAST_YEARS,
+        "forecast_years": int(parameter_value("valuation_models.forecast_years", 5)),
         "scenarios": scenario_inputs,
-        "model_weights": dict(MODEL_BASE_WEIGHTS),
+        "model_weights": dict(parameter_value("valuation_models.model_weights", {})),
         "source": {
             "growth": "financial_evidence_pack.financial_trends",
             "discount_rate": "rule_based_quality_and_gap_adjustment",
@@ -1003,8 +1076,8 @@ def _derive_assumptions(
             "user_adjusted": [],
         },
         "rules": {
-            "terminal_growth_rate_max": 0.035,
-            "discount_rate_min": 0.075,
+            "terminal_growth_rate_max": _configured_bounds("terminal", (0.0, 0.035))[1],
+            "discount_rate_min": _configured_bounds("discount", (0.075, 0.16))[0],
             "price_blind": True,
             "analyst_status_score_policy": analyst_adjustment["status_score_policy"],
         },
@@ -1022,6 +1095,16 @@ def _derive_analyst_matrix_adjustment(
     matrices: list[dict[str, object]],
     input_gaps: list[dict[str, object]],
 ) -> dict[str, object]:
+    status_scores = parameter_value("valuation_rule_matrix.status_scores", STATUS_SCORES)
+    status_scores = status_scores if isinstance(status_scores, dict) else STATUS_SCORES
+    composite = parameter_value("valuation_models.composite_weights", {})
+    composite = composite if isinstance(composite, dict) else {}
+    quality_weights = _dict(composite.get("quality"))
+    growth_weights = _dict(composite.get("growth"))
+    risk_weights = _dict(composite.get("risk"))
+    deltas = parameter_value("valuation_models.parameter_deltas", {})
+    deltas = deltas if isinstance(deltas, dict) else {}
+    impact_scale = float(parameter_value("valuation_models.analyst_impact_scale", 1.50))
     analyst_rows = []
     for matrix in matrices:
         for item in _list(matrix.get("analyst_items")):
@@ -1037,8 +1120,10 @@ def _derive_analyst_matrix_adjustment(
                 and rule.get("price_blind_compatible") is True
                 for rule in rules
             )
-            fit = _clamp(_num(item.get("profile_fit_score")) or 0.6, 0.2, 1.0)
-            confidence = _clamp(_num(item.get("data_confidence")) or 0.6, 0.2, 1.0)
+            analyst_min = float(parameter_value("valuation_rule_matrix.analyst_score_min", 0.2))
+            analyst_max = float(parameter_value("valuation_rule_matrix.analyst_score_max", 1.0))
+            fit = _clamp(_num(item.get("profile_fit_score")) or 0.6, analyst_min, analyst_max)
+            confidence = _clamp(_num(item.get("data_confidence")) or 0.6, analyst_min, analyst_max)
             known_completeness = known_count / total_count
             price_blind_completeness = compute_count / total_count
             raw_weight = analyst_raw_weight(
@@ -1077,7 +1162,7 @@ def _derive_analyst_matrix_adjustment(
         analyst_weight = float(analyst["weight"])
         for rule in analyst["rules"]:
             status = str(rule.get("status") or "unknown")
-            status_score = float(STATUS_SCORES.get(status, 0.0))
+            status_score = float(status_scores.get(status, 0.0))
             gate = (
                 rule.get("calculation_role") == "compute"
                 and rule.get("price_blind_compatible") is True
@@ -1146,7 +1231,11 @@ def _derive_analyst_matrix_adjustment(
             if denominator
             else 0.0
         )
-        dimension_scores[dimension] = _clamp(score, -2.0, 1.0)
+        dimension_scores[dimension] = _clamp(
+            score,
+            float(parameter_value("valuation_rule_matrix.dimension_score_min", -2.0)),
+            float(parameter_value("valuation_rule_matrix.dimension_score_max", 1.0)),
+        )
         dimension_disagreement[dimension] = _weighted_std(
             [float(item["status_score"]) * float(item["mapping_weight"]) for item in traces],
             [float(item["analyst_weight"]) for item in traces],
@@ -1164,55 +1253,68 @@ def _derive_analyst_matrix_adjustment(
         return max(0.0, -dimension_scores[name])
 
     quality_score = (
-        0.30 * dimension_scores["business_quality"]
-        + 0.25 * dimension_scores["moat_durability"]
-        + 0.20 * dimension_scores["cash_flow_reliability"]
-        + 0.15 * dimension_scores["management_quality"]
-        + 0.10 * dimension_scores["pricing_power"]
+        float(quality_weights.get("business_quality", 0.30)) * dimension_scores["business_quality"]
+        + float(quality_weights.get("moat_durability", 0.25)) * dimension_scores["moat_durability"]
+        + float(quality_weights.get("cash_flow_reliability", 0.20))
+        * dimension_scores["cash_flow_reliability"]
+        + float(quality_weights.get("management_quality", 0.15))
+        * dimension_scores["management_quality"]
+        + float(quality_weights.get("pricing_power", 0.10)) * dimension_scores["pricing_power"]
     )
     growth_score = (
-        0.40 * dimension_scores["growth_runway"]
-        + 0.25 * dimension_scores["pricing_power"]
-        + 0.20 * dimension_scores["demand_durability"]
-        + 0.15 * dimension_scores["execution_quality"]
-        - 0.15 * negative("capital_intensity")
+        float(growth_weights.get("growth_runway", 0.40)) * dimension_scores["growth_runway"]
+        + float(growth_weights.get("pricing_power", 0.25)) * dimension_scores["pricing_power"]
+        + float(growth_weights.get("demand_durability", 0.20))
+        * dimension_scores["demand_durability"]
+        + float(growth_weights.get("execution_quality", 0.15))
+        * dimension_scores["execution_quality"]
+        - float(growth_weights.get("capital_intensity_penalty", 0.15))
+        * negative("capital_intensity")
     )
     risk_score = (
-        0.25 * negative("balance_sheet_risk")
-        + 0.25 * negative("permanent_loss_risk")
-        + 0.20 * negative("cyclicality")
-        + 0.15 * negative("accounting_quality")
-        + 0.15 * data_gap_penalty
+        float(risk_weights.get("balance_sheet_risk", 0.25)) * negative("balance_sheet_risk")
+        + float(risk_weights.get("permanent_loss_risk", 0.25)) * negative("permanent_loss_risk")
+        + float(risk_weights.get("cyclicality", 0.20)) * negative("cyclicality")
+        + float(risk_weights.get("accounting_quality", 0.15)) * negative("accounting_quality")
+        + float(risk_weights.get("data_gap_penalty", 0.15)) * data_gap_penalty
     )
-    delta_growth = ANALYST_PARAMETER_IMPACT_SCALE * (
-        0.030 * growth_score + 0.012 * quality_score - 0.020 * risk_score
+    delta_growth = impact_scale * (
+        float(deltas.get("growth_growth", 0.030)) * growth_score
+        + float(deltas.get("growth_quality", 0.012)) * quality_score
+        + float(deltas.get("growth_risk", -0.020)) * risk_score
     )
-    delta_owner_growth = ANALYST_PARAMETER_IMPACT_SCALE * (
-        0.020 * growth_score
-        + 0.018 * quality_score
-        - 0.025 * negative("capital_intensity")
-        - 0.018 * risk_score
+    delta_owner_growth = impact_scale * (
+        float(deltas.get("owner_growth_growth", 0.020)) * growth_score
+        + float(deltas.get("owner_growth_quality", 0.018)) * quality_score
+        + float(deltas.get("owner_growth_capital", -0.025)) * negative("capital_intensity")
+        + float(deltas.get("owner_growth_risk", -0.018)) * risk_score
     )
-    delta_discount = ANALYST_PARAMETER_IMPACT_SCALE * (
-        -0.018 * quality_score + 0.030 * risk_score + 0.012 * disagreement_avg
+    delta_discount = impact_scale * (
+        float(deltas.get("discount_quality", -0.018)) * quality_score
+        + float(deltas.get("discount_risk", 0.030)) * risk_score
+        + float(deltas.get("discount_disagreement", 0.012)) * disagreement_avg
     )
-    delta_terminal = ANALYST_PARAMETER_IMPACT_SCALE * (
-        0.012 * dimension_scores["moat_durability"]
-        + 0.006 * dimension_scores["pricing_power"]
-        - 0.014 * risk_score
+    delta_terminal = impact_scale * (
+        float(deltas.get("terminal_moat", 0.012)) * dimension_scores["moat_durability"]
+        + float(deltas.get("terminal_pricing", 0.006)) * dimension_scores["pricing_power"]
+        + float(deltas.get("terminal_risk", -0.014)) * risk_score
     )
     scenario_spread = _clamp(
-        0.020
-        + ANALYST_PARAMETER_IMPACT_SCALE
-        * (0.020 * risk_score + 0.012 * disagreement_avg + 0.012 * unknown_ratio),
-        0.015,
-        0.080,
+        float(parameter_value("valuation_models.scenario_spread_base", 0.020))
+        + impact_scale
+        * (
+            float(deltas.get("spread_risk", 0.020)) * risk_score
+            + float(deltas.get("spread_disagreement", 0.012)) * disagreement_avg
+            + float(deltas.get("spread_unknown", 0.012)) * unknown_ratio
+        ),
+        float(parameter_value("valuation_models.scenario_spread_min", 0.015)),
+        float(parameter_value("valuation_models.scenario_spread_max", 0.080)),
     )
     return {
         "source": "latest_successful_008_analyst_view_runs",
         "has_signals": bool(analyst_rows),
-        "analyst_parameter_impact_scale": ANALYST_PARAMETER_IMPACT_SCALE,
-        "status_score_policy": dict(STATUS_SCORES),
+        "analyst_parameter_impact_scale": impact_scale,
+        "status_score_policy": dict(status_scores),
         "analyst_weights": [
             {key: value for key, value in item.items() if key != "rules"} for item in analyst_rows
         ],
@@ -1452,8 +1554,7 @@ def _analyst_weights(
         [float(item["raw_weight"]) for item in weighted]
     )
     return [
-        {**item, **components}
-        for item, components in zip(weighted, weight_components, strict=True)
+        {**item, **components} for item, components in zip(weighted, weight_components, strict=True)
     ]
 
 
@@ -1493,7 +1594,16 @@ def _data_gap_penalty(input_gaps: list[dict[str, object]], pack: dict[str, objec
     medium = sum(1 for item in input_gaps if item.get("severity") == "medium")
     low = sum(1 for item in input_gaps if item.get("severity") == "low")
     pack_gaps = len(_list(pack.get("data_gaps_for_valuation")))
-    return _clamp((0.25 * high) + (0.12 * medium) + (0.05 * low) + (0.04 * pack_gaps), 0.0, 1.0)
+    penalties = parameter_value("valuation_models.gap_penalties", {})
+    penalties = penalties if isinstance(penalties, dict) else {}
+    return _clamp(
+        float(penalties.get("high", 0.25)) * high
+        + float(penalties.get("medium", 0.12)) * medium
+        + float(penalties.get("low", 0.05)) * low
+        + float(penalties.get("pack", 0.04)) * pack_gaps,
+        0.0,
+        float(parameter_value("valuation_models.gap_penalty_cap", 1.0)),
+    )
 
 
 def _calculate_dcf(
@@ -1515,7 +1625,7 @@ def _calculate_dcf(
         growth_key="cash_flow_growth_rate",
         assumptions=assumptions,
         valuation_inputs=valuation_inputs,
-        applicability=MODEL_BASE_WEIGHTS["dcf"],
+        applicability=_model_weights()["dcf"],
         reason="自由现金流口径可用，DCF 作为价值投资估值的交叉验证模型。",
     )
 
@@ -1565,7 +1675,7 @@ def _calculate_owner_earnings(
         growth_key="owner_earnings_growth_rate",
         assumptions=assumptions,
         valuation_inputs=valuation_inputs,
-        applicability=MODEL_BASE_WEIGHTS["owner_earnings"],
+        applicability=_model_weights()["owner_earnings"],
         reason="净利润、资本开支可用，所有者盈余作为价值投资估值的主要模型。",
     )
     result["calculation_basis"] = {
@@ -1627,7 +1737,10 @@ def _calculate_residual_income(
         scenario = _dict(scenarios.get(scenario_name))
         discount_rate = _num(scenario.get("discount_rate")) or 0.1
         growth_rate = _num(scenario.get("owner_earnings_growth_rate")) or 0.0
-        terminal_growth_rate = min(_num(scenario.get("terminal_growth_rate")) or 0.0, 0.035)
+        terminal_growth_rate = min(
+            _num(scenario.get("terminal_growth_rate")) or 0.0,
+            _configured_bounds("terminal", (0.0, 0.035))[1],
+        )
         value, basis = _residual_income_value(
             beginning_equity=equity,
             base_net_profit=net_profit,
@@ -1642,7 +1755,7 @@ def _calculate_residual_income(
     return {
         "method": "residual_income",
         "status": "success",
-        "applicability": MODEL_BASE_WEIGHTS["residual_income"],
+        "applicability": _model_weights()["residual_income"],
         "reason": "股东权益和年度化净利润可用，剩余收益模型用于检验 ROE 是否覆盖权益资本成本。",
         "scenario_values": scenario_values,
         "per_share_values": per_share_values,
@@ -1674,18 +1787,23 @@ def _residual_income_value(
     cost_of_equity: float,
     terminal_growth_rate: float,
 ) -> tuple[float, dict[str, float]]:
-    cost_of_equity = max(cost_of_equity, terminal_growth_rate + 0.01)
+    cost_of_equity = max(
+        cost_of_equity,
+        terminal_growth_rate
+        + float(parameter_value("valuation_models.discount_terminal_gap", 0.01)),
+    )
     present_value = beginning_equity
     net_profit = base_net_profit
     last_residual_income = 0.0
-    for year in range(1, FORECAST_YEARS + 1):
+    forecast_years = _forecast_years()
+    for year in range(1, forecast_years + 1):
         net_profit *= 1 + growth_rate
         residual_income = net_profit - (cost_of_equity * beginning_equity)
         last_residual_income = residual_income
         present_value += residual_income / ((1 + cost_of_equity) ** year)
     terminal_residual_income = last_residual_income * (1 + terminal_growth_rate)
     terminal_value = terminal_residual_income / (cost_of_equity - terminal_growth_rate)
-    present_value += terminal_value / ((1 + cost_of_equity) ** FORECAST_YEARS)
+    present_value += terminal_value / ((1 + cost_of_equity) ** forecast_years)
     return max(0.0, present_value), {
         "beginning_equity": beginning_equity,
         "base_net_profit": base_net_profit,
@@ -1729,7 +1847,10 @@ def _calculate_dividend_discount(
         scenario = _dict(scenarios.get(scenario_name))
         discount_rate = _num(scenario.get("discount_rate")) or 0.1
         growth_rate = _num(scenario.get("owner_earnings_growth_rate")) or 0.0
-        terminal_growth_rate = min(_num(scenario.get("terminal_growth_rate")) or 0.0, 0.035)
+        terminal_growth_rate = min(
+            _num(scenario.get("terminal_growth_rate")) or 0.0,
+            _configured_bounds("terminal", (0.0, 0.035))[1],
+        )
         value, basis = _dividend_discount_value(
             base_dividend=dividend,
             growth_rate=growth_rate,
@@ -1743,7 +1864,7 @@ def _calculate_dividend_discount(
     return {
         "method": "dividend_discount",
         "status": "success",
-        "applicability": MODEL_BASE_WEIGHTS["dividend_discount"],
+        "applicability": _model_weights()["dividend_discount"],
         "reason": "年度化现金分红可用，分红折现模型用于检验股东现金回报价值。",
         "scenario_values": scenario_values,
         "per_share_values": per_share_values,
@@ -1770,15 +1891,20 @@ def _dividend_discount_value(
     discount_rate: float,
     terminal_growth_rate: float,
 ) -> tuple[float, dict[str, float]]:
-    discount_rate = max(discount_rate, terminal_growth_rate + 0.01)
+    discount_rate = max(
+        discount_rate,
+        terminal_growth_rate
+        + float(parameter_value("valuation_models.discount_terminal_gap", 0.01)),
+    )
     present_value = 0.0
     dividend = base_dividend
-    for year in range(1, FORECAST_YEARS + 1):
+    forecast_years = _forecast_years()
+    for year in range(1, forecast_years + 1):
         dividend *= 1 + growth_rate
         present_value += dividend / ((1 + discount_rate) ** year)
     terminal_dividend = dividend * (1 + terminal_growth_rate)
     terminal_value = terminal_dividend / (discount_rate - terminal_growth_rate)
-    present_value += terminal_value / ((1 + discount_rate) ** FORECAST_YEARS)
+    present_value += terminal_value / ((1 + discount_rate) ** forecast_years)
     return max(0.0, present_value), {
         "base_dividend": base_dividend,
         "growth_rate": growth_rate,
@@ -1812,10 +1938,9 @@ def _calculate_asset_value(
                 input_gaps,
                 required_fields=required,
             )
-        haircuts = {"conservative": 0.80, "base": 1.00, "optimistic": 1.10}
+        haircuts = dict(parameter_value("valuation_models.equity_fallback_haircuts", {}))
         scenario_values = {
-            scenario_name: max(0.0, equity * haircut)
-            for scenario_name, haircut in haircuts.items()
+            scenario_name: max(0.0, equity * haircut) for scenario_name, haircut in haircuts.items()
         }
         scenario_basis = {
             scenario_name: {
@@ -1827,7 +1952,7 @@ def _calculate_asset_value(
         policy = "shareholders_equity_fallback_when_assets_and_liabilities_are_missing"
     else:
         non_cash_assets = max(total_assets - cash, 0.0)
-        haircuts = {"conservative": 0.60, "base": 0.80, "optimistic": 1.00}
+        haircuts = dict(parameter_value("valuation_models.non_cash_asset_haircuts", {}))
         scenario_values = {}
         scenario_basis = {}
         for scenario_name, haircut in haircuts.items():
@@ -1849,14 +1974,12 @@ def _calculate_asset_value(
     return {
         "method": "asset_value",
         "status": "success",
-        "applicability": MODEL_BASE_WEIGHTS["asset_value"],
+        "applicability": _model_weights()["asset_value"],
         "reason": "资产负债表关键字段可用，资产价值模型作为下行保护和清算价值交叉验证。",
         "scenario_values": scenario_values,
         "per_share_values": per_share_values,
         "key_assumptions": {
-            "conservative": {"non_cash_asset_haircut": 0.60},
-            "base": {"non_cash_asset_haircut": 0.80},
-            "optimistic": {"non_cash_asset_haircut": 1.00},
+            scenario: {"non_cash_asset_haircut": haircut} for scenario, haircut in haircuts.items()
         },
         "input_gaps": [],
         "source_refs": {"financial_periods": [_safe_str(valuation_inputs.get("latest_period"))]},
@@ -1888,7 +2011,10 @@ def _cash_flow_method_result(
             base_cash_flow=base_cash_flow,
             growth_rate=_num(scenario.get(growth_key)) or 0.0,
             discount_rate=_num(scenario.get("discount_rate")) or 0.1,
-            terminal_growth_rate=min(_num(scenario.get("terminal_growth_rate")) or 0.0, 0.035),
+            terminal_growth_rate=min(
+                _num(scenario.get("terminal_growth_rate")) or 0.0,
+                _configured_bounds("terminal", (0.0, 0.035))[1],
+            ),
             cash=_num(valuation_inputs.get("cash_and_equivalents")),
             debt=_num(valuation_inputs.get("interest_bearing_debt")),
         )
@@ -1916,38 +2042,46 @@ def _discount_cash_flow(
     cash: float | None,
     debt: float | None,
 ) -> float:
-    discount_rate = max(discount_rate, terminal_growth_rate + 0.01)
+    discount_rate = max(
+        discount_rate,
+        terminal_growth_rate
+        + float(parameter_value("valuation_models.discount_terminal_gap", 0.01)),
+    )
     present_value = 0.0
     cash_flow = base_cash_flow
-    for year in range(1, FORECAST_YEARS + 1):
+    forecast_years = _forecast_years()
+    for year in range(1, forecast_years + 1):
         cash_flow *= 1 + growth_rate
         present_value += cash_flow / ((1 + discount_rate) ** year)
     terminal_cash_flow = cash_flow * (1 + terminal_growth_rate)
     terminal_value = terminal_cash_flow / (discount_rate - terminal_growth_rate)
-    present_value += terminal_value / ((1 + discount_rate) ** FORECAST_YEARS)
+    present_value += terminal_value / ((1 + discount_rate) ** forecast_years)
     return present_value + (cash or 0.0) - (debt or 0.0)
 
 
 def _resolve_model_weights(assumptions: dict[str, object]) -> dict[str, float]:
+    defaults = _model_weights()
     raw_weights = assumptions.get("model_weights")
     if raw_weights is None:
-        return dict(MODEL_BASE_WEIGHTS)
+        return defaults
     if not isinstance(raw_weights, dict):
         raise ValuationInputError("模型配比必须是包含五个模型权重的对象。")
 
-    unknown_methods = sorted(set(raw_weights) - set(MODEL_BASE_WEIGHTS))
+    unknown_methods = sorted(set(raw_weights) - set(defaults))
     if unknown_methods:
         raise ValuationInputError(f"模型配比包含未知模型：{', '.join(unknown_methods)}。")
 
     weights: dict[str, float] = {}
-    for method, default_weight in MODEL_BASE_WEIGHTS.items():
+    for method, default_weight in defaults.items():
         weight = _num(raw_weights.get(method, default_weight))
         if weight is None or not isfinite(weight) or weight < 0 or weight > 1:
             raise ValuationInputError(f"模型 {method} 的权重必须在 0% 到 100% 之间。")
         weights[method] = weight
 
     total_weight = sum(weights.values())
-    if abs(total_weight - 1.0) > MODEL_WEIGHT_TOTAL_TOLERANCE:
+    if abs(total_weight - 1.0) > float(
+        parameter_value("valuation_models.model_weight_tolerance", 0.000001)
+    ):
         raise ValuationInputError("五个模型的配置权重合计必须等于 100%。")
     return weights
 
@@ -2023,7 +2157,7 @@ def _build_dispersion_warning(
         return None
     low = min(base_values)
     high = max(base_values)
-    if low <= 0 or high / low <= 1.35:
+    if low <= 0 or high / low <= float(parameter_value("valuation_models.dispersion_ratio", 1.35)):
         return None
     return {
         "level": "medium",
@@ -2038,29 +2172,35 @@ def _build_confidence_summary(
     method_results: list[dict[str, object]],
     dispersion_warning: dict[str, object] | None,
 ) -> tuple[float, dict[str, object]]:
-    confidence = 0.78
+    confidence_config = parameter_value("valuation_models.confidence", {})
+    confidence_config = confidence_config if isinstance(confidence_config, dict) else {}
+    confidence = float(confidence_config.get("base", 0.78))
     reasons = ["估值数字来自服务层确定性公式，且保留单模型结果。"]
     high_gaps = _high_severity_gaps(input_gaps)
     low_gaps = [item for item in input_gaps if item.get("severity") == "low"]
     medium_gaps = [item for item in input_gaps if item.get("severity") == "medium"]
-    confidence -= 0.16 * len(high_gaps)
-    confidence -= 0.06 * len(medium_gaps)
-    confidence -= 0.03 * len(low_gaps)
+    confidence -= float(confidence_config.get("high_gap_penalty", 0.16)) * len(high_gaps)
+    confidence -= float(confidence_config.get("medium_gap_penalty", 0.06)) * len(medium_gaps)
+    confidence -= float(confidence_config.get("low_gap_penalty", 0.03)) * len(low_gaps)
     successful_methods = [item for item in method_results if item.get("status") == "success"]
     if len(successful_methods) < 2:
-        confidence -= 0.12
+        confidence -= float(confidence_config.get("skipped_method_penalty", 0.12))
         reasons.append("可参与综合的成功估值模型少于 2 个。")
     if high_gaps:
         reasons.append("存在高严重度输入缺口，估值结果仅供复核。")
     elif medium_gaps or low_gaps:
         reasons.append("存在中低严重度输入缺口，允许形成草稿但降低置信度。")
     if dispersion_warning:
-        confidence -= 0.08
+        confidence -= float(confidence_config.get("dispersion_penalty", 0.08))
         reasons.append(str(dispersion_warning["message"]))
-    confidence = _clamp(confidence, 0.1, 0.9)
-    if confidence >= 0.72:
+    confidence = _clamp(
+        confidence,
+        float(confidence_config.get("minimum", 0.10)),
+        float(confidence_config.get("maximum", 0.90)),
+    )
+    if confidence >= float(confidence_config.get("high_threshold", 0.72)):
         level = "high"
-    elif confidence >= 0.45:
+    elif confidence >= float(confidence_config.get("medium_threshold", 0.45)):
         level = "medium"
     else:
         level = "low"
@@ -2078,9 +2218,11 @@ def _build_sensitivity(
     discount_rate = _num(base.get("discount_rate")) or 0.1
     terminal_growth_rate = _num(base.get("terminal_growth_rate")) or 0.02
     rows = []
-    for growth_delta in (-0.02, 0.0, 0.02):
+    growth_step = float(parameter_value("valuation_models.sensitivity.growth_step", 0.02))
+    discount_step = float(parameter_value("valuation_models.sensitivity.discount_step", 0.01))
+    for growth_delta in (-growth_step, 0.0, growth_step):
         row = []
-        for discount_delta in (-0.01, 0.0, 0.01):
+        for discount_delta in (-discount_step, 0.0, discount_step):
             row.append(
                 _discount_cash_flow(
                     base_cash_flow=base_fcf,
@@ -2095,8 +2237,8 @@ def _build_sensitivity(
     return {
         "status": "success",
         "axes": {
-            "growth_delta": [-0.02, 0.0, 0.02],
-            "discount_delta": [-0.01, 0.0, 0.01],
+            "growth_delta": [-growth_step, 0.0, growth_step],
+            "discount_delta": [-discount_step, 0.0, discount_step],
         },
         "items": rows,
     }
@@ -2113,7 +2255,7 @@ def _needs_input_method(
     return {
         "method": method,
         "status": "needs_input",
-        "applicability": MODEL_BASE_WEIGHTS.get(method, 0.0),
+        "applicability": _model_weights().get(method, 0.0),
         "reason": reason,
         "scenario_values": {"conservative": None, "base": None, "optimistic": None},
         "per_share_values": {"conservative": None, "base": None, "optimistic": None},
@@ -2127,7 +2269,7 @@ def _skipped_method(method: str, reason: str) -> dict[str, object]:
     return {
         "method": method,
         "status": "skipped",
-        "applicability": MODEL_BASE_WEIGHTS.get(method, 0.0),
+        "applicability": _model_weights().get(method, 0.0),
         "reason": reason,
         "scenario_values": {"conservative": None, "base": None, "optimistic": None},
         "per_share_values": {"conservative": None, "base": None, "optimistic": None},
@@ -2202,6 +2344,48 @@ def _first_number(*values: object, default: float) -> float:
         if number is not None:
             return number
     return default
+
+
+def _forecast_years() -> int:
+    return int(parameter_value("valuation_models.forecast_years", 5))
+
+
+def _model_weights() -> dict[str, float]:
+    configured = parameter_value("valuation_models.model_weights", {})
+    if not isinstance(configured, dict):
+        configured = {}
+    defaults = {
+        "owner_earnings": 0.35,
+        "dcf": 0.35,
+        "residual_income": 0.15,
+        "dividend_discount": 0.10,
+        "asset_value": 0.05,
+    }
+    return {key: float(configured.get(key, value)) for key, value in defaults.items()}
+
+
+def _configured_bounds(name: str, fallback: tuple[float, float]) -> tuple[float, float]:
+    bounds = parameter_value(f"valuation_models.base_bounds.{name}", list(fallback))
+    if isinstance(bounds, list) and len(bounds) == 2:
+        low = _num(bounds[0])
+        high = _num(bounds[1])
+        if low is not None and high is not None:
+            return low, high
+    return fallback
+
+
+def _scenario_bounds(
+    scenario: dict[str, object],
+    key: str,
+    fallback: tuple[float, float],
+) -> tuple[float, float]:
+    bounds = scenario.get(key)
+    if isinstance(bounds, list) and len(bounds) == 2:
+        low = _num(bounds[0])
+        high = _num(bounds[1])
+        if low is not None and high is not None:
+            return low, high
+    return fallback
 
 
 def _clamp(value: float, low: float, high: float) -> float:

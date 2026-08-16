@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections import Counter, defaultdict
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy import func, select
@@ -21,9 +22,11 @@ from app.analysis.prompts.memo import (
     build_memo_prompt,
 )
 from app.analysis.result_sanitizer import sanitize_error_text
+from app.configuration.runtime import parameter_config_context, parameter_value
 from app.db.models import AnalysisRun, Company, InvestmentMemo, utc_now
 from app.schemas.memo import InvestmentMemoOutput, MemoValuationSignalPack
 from app.services.analyst_service import RUN_TYPE_ANALYST_VIEW, list_latest_company_analysis_runs
+from app.services.parameter_config_service import get_runtime_parameter_config
 
 RUN_TYPE_INVESTMENT_MEMO = "investment_memo"
 RUN_VERSION = "009_v1"
@@ -164,7 +167,9 @@ def build_investment_memo_snapshot(session: Session, company: Company) -> dict[s
                 "price_decision",
             ],
             "decision_policy": "不生成买入、卖出、持有、减仓、加仓或仓位动作。",
-            "minimum_successful_profiles": MIN_SOURCE_ANALYST_RUNS,
+            "minimum_successful_profiles": int(
+                parameter_value("memo_decision.min_successful_analysts", 2)
+            ),
         },
     }
 
@@ -287,9 +292,9 @@ def build_analyst_scorecard(
     source_analyst_runs: list[dict[str, object]],
 ) -> dict[str, object]:
     profiles = list_analyst_profiles()
-    runs_by_profile = {
-        str(run.get("analyst_profile") or ""): run for run in source_analyst_runs
-    }
+    status_scores = parameter_value("memo_decision.status_scores", MEMO_ANALYST_STATUS_SCORES)
+    status_scores = status_scores if isinstance(status_scores, dict) else MEMO_ANALYST_STATUS_SCORES
+    runs_by_profile = {str(run.get("analyst_profile") or ""): run for run in source_analyst_runs}
     total_rule_count = sum(len(profile.rules) for profile in profiles)
     rule_weight = 1.0 / total_rule_count if total_rule_count > 0 else 0.0
 
@@ -310,7 +315,7 @@ def build_analyst_scorecard(
         for rule in profile.rules:
             check = checks.get(rule.id, {})
             status = str(check.get("status") or "unknown").strip().lower()
-            if status not in MEMO_ANALYST_STATUS_SCORES:
+            if status not in status_scores:
                 status = "unknown"
             if status != "unknown":
                 known_rule_count += 1
@@ -319,7 +324,7 @@ def build_analyst_scorecard(
                     "rule_id": rule.id,
                     "rule_label": rule.label,
                     "status": status,
-                    "score": MEMO_ANALYST_STATUS_SCORES[status],
+                    "score": float(status_scores[status]),
                 }
             )
 
@@ -351,15 +356,18 @@ def build_analyst_scorecard(
         )
 
     suggested_safety_margin = _clamp(
-        ((MEMO_ANALYST_STATUS_SCORES["pass"] - total_score) / 3.0)
-        * MEMO_SAFETY_MARGIN_MAXIMUM,
-        MEMO_SAFETY_MARGIN_MINIMUM,
-        MEMO_SAFETY_MARGIN_MAXIMUM,
+        (
+            (float(status_scores["pass"]) - total_score)
+            / float(parameter_value("memo_decision.safety_margin_score_span", 3.0))
+        )
+        * float(parameter_value("memo_decision.safety_margin_max", 0.50)),
+        float(parameter_value("memo_decision.safety_margin_min", 0.0)),
+        float(parameter_value("memo_decision.safety_margin_max", 0.50)),
     )
     return {
         "source": "latest_successful_008_rule_checks",
         "independent_from_valuation": True,
-        "status_score_policy": dict(MEMO_ANALYST_STATUS_SCORES),
+        "status_score_policy": dict(status_scores),
         "weight_policy": {
             "mode": "equal_weight_per_rule",
             "rule_weight": rule_weight,
@@ -369,9 +377,7 @@ def build_analyst_scorecard(
             "uses_profile_fit_score": False,
         },
         "coverage": {
-            "successful_profiles": sum(
-                1 for profile in profiles if profile.id in runs_by_profile
-            ),
+            "successful_profiles": sum(1 for profile in profiles if profile.id in runs_by_profile),
             "total_profiles": len(profiles),
             "known_rules": known_rule_count,
             "total_rules": total_rule_count,
@@ -381,8 +387,8 @@ def build_analyst_scorecard(
         "score_range": {"minimum": -2.0, "maximum": 1.0},
         "suggested_safety_margin": suggested_safety_margin,
         "safety_margin_policy": {
-            "minimum": MEMO_SAFETY_MARGIN_MINIMUM,
-            "maximum": MEMO_SAFETY_MARGIN_MAXIMUM,
+            "minimum": float(parameter_value("memo_decision.safety_margin_min", 0.0)),
+            "maximum": float(parameter_value("memo_decision.safety_margin_max", 0.50)),
             "formula": "clamp(((1 - total_score) / 3) * 0.50, 0.0, 0.50)",
             "score_source": "equal_weight_40_rule_average",
         },
@@ -396,58 +402,75 @@ def run_company_investment_memo(
     user_note: str | None = None,
     gateway: ModelGateway | None = None,
 ) -> tuple[AnalysisRun, InvestmentMemo]:
-    data_snapshot = build_investment_memo_snapshot(session, company)
-    source_runs = data_snapshot.get("source_analyst_runs")
-    if not isinstance(source_runs, list) or len(source_runs) < MIN_SOURCE_ANALYST_RUNS:
-        raise InvestmentMemoInsufficientSourcesError(
-            "至少需要 2 个成功分析师视角才能生成综合备忘录。"
-        )
-
-    model_gateway = gateway or ModelGateway()
-    snapshot_hash = _hash_snapshot(data_snapshot)
-    run = _create_running_memo_run(
-        session,
-        company_id=company.id,
-        model_name=model_gateway.model_name,
-        data_snapshot=data_snapshot,
-        snapshot_hash=snapshot_hash,
-        user_note=user_note,
-    )
-
-    try:
-        output = model_gateway.generate_structured(
-            system_prompt=MEMO_SYSTEM_PROMPT,
-            user_prompt=build_memo_prompt(data_snapshot),
-            schema=InvestmentMemoOutput,
-            temperature=0.2,
-        )
-        output_payload = output.model_dump(mode="json")
-        _apply_source_map_override(output_payload, data_snapshot)
-        ledger = data_snapshot.get("committee_ledger")
-        output_payload["analyst_scorecard"] = (
-            ledger.get("analyst_scorecard", {}) if isinstance(ledger, dict) else {}
-        )
-        output_payload["valuation_signal_pack"] = {
-            "price_blind_compatible": True,
-            "source": "deprecated_009_display_compatibility_only",
-            "analyst_signals": [],
-            "consensus_parameter_impacts": [],
-            "dissent_parameter_impacts": [],
-            "risk_constraints": [],
-            "data_gaps_for_valuation": [],
-            "user_confirmation_required": True,
+    runtime = get_runtime_parameter_config(session)
+    with parameter_config_context(runtime.snapshot):
+        data_snapshot = build_investment_memo_snapshot(session, company)
+        data_snapshot["configuration"] = {
+            "version": runtime.version,
+            "hash": runtime.config_hash,
+            "source": runtime.source,
+            "fallback_reason": runtime.fallback_reason,
         }
-        _validate_output_references(output_payload, data_snapshot)
-        _validate_no_prohibited_actions(output_payload)
-        _complete_memo_run(session, run, output_payload)
-        memo = _create_model_memo(session, company_id=company.id, run=run, output=output_payload)
-        return run, memo
-    except (ModelGatewayError, ModelOutputValidationError, ValueError) as exc:
-        _fail_memo_run(session, run, exc)
-        raise
-    except Exception as exc:
-        _fail_memo_run(session, run, exc)
-        raise
+        source_runs = data_snapshot.get("source_analyst_runs")
+        minimum = int(parameter_value("memo_decision.min_successful_analysts", 2))
+        if not isinstance(source_runs, list) or len(source_runs) < minimum:
+            raise InvestmentMemoInsufficientSourcesError(
+                f"至少需要 {minimum} 个成功分析师视角才能生成综合备忘录。"
+            )
+
+        model_gateway = gateway or ModelGateway()
+        snapshot_hash = _hash_snapshot(data_snapshot)
+        run = _create_running_memo_run(
+            session,
+            company_id=company.id,
+            model_name=model_gateway.model_name,
+            data_snapshot=data_snapshot,
+            snapshot_hash=snapshot_hash,
+            user_note=user_note,
+            config_version=runtime.version,
+            config_hash=runtime.config_hash,
+            config_snapshot=runtime.snapshot,
+        )
+
+        try:
+            output = model_gateway.generate_structured(
+                system_prompt=MEMO_SYSTEM_PROMPT,
+                user_prompt=build_memo_prompt(data_snapshot),
+                schema=InvestmentMemoOutput,
+                temperature=float(parameter_value("analyst_engine.model_temperatures.memo", 0.2)),
+            )
+            output_payload = output.model_dump(mode="json")
+            _apply_source_map_override(output_payload, data_snapshot)
+            ledger = data_snapshot.get("committee_ledger")
+            output_payload["analyst_scorecard"] = (
+                ledger.get("analyst_scorecard", {}) if isinstance(ledger, dict) else {}
+            )
+            output_payload["valuation_signal_pack"] = {
+                "price_blind_compatible": True,
+                "source": "deprecated_009_display_compatibility_only",
+                "analyst_signals": [],
+                "consensus_parameter_impacts": [],
+                "dissent_parameter_impacts": [],
+                "risk_constraints": [],
+                "data_gaps_for_valuation": [],
+                "user_confirmation_required": True,
+            }
+            _validate_output_references(output_payload, data_snapshot)
+            _validate_no_prohibited_actions(output_payload)
+            _complete_memo_run(session, run, output_payload)
+            memo = _create_model_memo(
+                session,
+                company_id=company.id,
+                run=run,
+                output=output_payload,
+            )
+            return run, memo
+        except (ModelGatewayError, ModelOutputValidationError, ValueError) as exc:
+            _fail_memo_run(session, run, exc)
+            raise
+        except Exception as exc:
+            _fail_memo_run(session, run, exc)
+            raise
 
 
 def list_company_investment_memos(
@@ -528,6 +551,9 @@ def _create_running_memo_run(
     data_snapshot: dict[str, object],
     snapshot_hash: str,
     user_note: str | None,
+    config_version: int | None,
+    config_hash: str,
+    config_snapshot: dict[str, object],
 ) -> AnalysisRun:
     session.query(AnalysisRun).filter(
         AnalysisRun.company_id == company_id,
@@ -544,6 +570,9 @@ def _create_running_memo_run(
         data_snapshot_hash=snapshot_hash,
         input_snapshot=data_snapshot,
         result={},
+        config_version=config_version,
+        config_hash=config_hash,
+        config_snapshot=deepcopy(config_snapshot),
         confidence=None,
         parent_run_id=None,
         is_latest=True,
@@ -561,9 +590,11 @@ def _complete_memo_run(session: Session, run: AnalysisRun, output: dict[str, obj
     confidence = output.get("confidence_summary")
     confidence_level = confidence.get("level") if isinstance(confidence, dict) else None
     run.result = output
-    run.confidence = {"low": 0.35, "medium": 0.65, "high": 0.85}.get(
+    confidence_map = parameter_value("memo_decision.model_confidence_map", {})
+    confidence_map = confidence_map if isinstance(confidence_map, dict) else {}
+    run.confidence = confidence_map.get(
         str(confidence_level),
-        0.65,
+        confidence_map.get("medium", 0.65),
     )
     run.status = "success"
     run.is_latest = True
@@ -619,6 +650,9 @@ def _create_model_memo(
             else []
         ),
         source_snapshot_hash=run.data_snapshot_hash,
+        config_version=run.config_version,
+        config_hash=run.config_hash,
+        config_snapshot=deepcopy(run.config_snapshot),
         change_note=None,
         status="draft",
         is_latest=True,
@@ -723,6 +757,7 @@ def _build_service_valuation_signal_pack(data_snapshot: dict[str, object]) -> di
     ledger = data_snapshot.get("committee_ledger")
     if not isinstance(ledger, dict):
         ledger = {}
+    item_limit = int(parameter_value("data_sampling.memo_list_items", 12))
     return {
         "price_blind_compatible": True,
         "source": "latest_successful_analyst_view_runs",
@@ -733,12 +768,12 @@ def _build_service_valuation_signal_pack(data_snapshot: dict[str, object]) -> di
             str(item.get("summary") or "")
             for item in ledger.get("critical_risk_candidates", [])
             if isinstance(item, dict) and str(item.get("summary") or "").strip()
-        ][:12],
+        ][:item_limit],
         "data_gaps_for_valuation": [
             str(item.get("summary") or "")
             for item in ledger.get("data_gap_candidates", [])
             if isinstance(item, dict) and str(item.get("summary") or "").strip()
-        ][:12],
+        ][:item_limit],
         "user_confirmation_required": True,
     }
 
@@ -1254,9 +1289,7 @@ def _build_memo_markdown(output: dict[str, object]) -> str:
                 analyst_weight = _as_number(item.get("analyst_weight")) or 0.0
                 weighted_score = _as_number(item.get("weighted_score")) or 0.0
                 availability_note = (
-                    "（缺失，按未知计分）"
-                    if item.get("availability") != "success"
-                    else ""
+                    "（缺失，按未知计分）" if item.get("availability") != "success" else ""
                 )
                 lines.append(
                     f"- {name}{availability_note}：四指标 {rule_score:+.2f}，"

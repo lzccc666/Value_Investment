@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import Select
 
+from app.configuration.runtime import parameter_value
 from app.db.models import FinancialStatement
 
 FACT_FIELDS = (
@@ -693,13 +694,8 @@ def _build_trends(
     data_gaps: list[dict[str, object]],
 ) -> dict[str, object]:
     annual_snapshots = [item for item in snapshots if _looks_like_annual_report(item)]
+    cagr_years = [int(value) for value in parameter_value("financial_flags.cagr_years", [3, 5])]
     trends = {
-        "revenue_cagr_3y": _cagr(annual_snapshots, "revenue", years=3),
-        "revenue_cagr_5y": _cagr(annual_snapshots, "revenue", years=5),
-        "net_profit_cagr_3y": _cagr(annual_snapshots, "net_profit", years=3),
-        "net_profit_cagr_5y": _cagr(annual_snapshots, "net_profit", years=5),
-        "free_cash_flow_cagr_3y": _cagr(annual_snapshots, "free_cash_flow", years=3),
-        "free_cash_flow_cagr_5y": _cagr(annual_snapshots, "free_cash_flow", years=5),
         "roe_stability": _stability(snapshots, "roe"),
         "gross_margin_stability": _stability(snapshots, "gross_margin"),
         "net_margin_stability": _stability(snapshots, "net_margin"),
@@ -721,7 +717,11 @@ def _build_trends(
         "dividend_stability": _stability(snapshots, "dividend"),
         "share_count_trend": _trend_direction(snapshots, "shares_outstanding"),
     }
-    if annual_snapshots and trends["revenue_cagr_3y"] is None:
+    for years in cagr_years:
+        for field in ("revenue", "net_profit", "free_cash_flow"):
+            trends[f"{field}_cagr_{years}y"] = _cagr(annual_snapshots, field, years=years)
+    primary_cagr_year = min(cagr_years) if cagr_years else 3
+    if annual_snapshots and trends.get(f"revenue_cagr_{primary_cagr_year}y") is None:
         _append_gap(
             data_gaps,
             field="revenue_cagr_3y",
@@ -729,7 +729,7 @@ def _build_trends(
             reason="年报收入样本不足或存在非正数，无法计算 3 年收入 CAGR。",
             needed_by=["analyst_view", "valuation_lab"],
         )
-    if annual_snapshots and trends["net_profit_cagr_3y"] is None:
+    if annual_snapshots and trends.get(f"net_profit_cagr_{primary_cagr_year}y") is None:
         _append_gap(
             data_gaps,
             field="net_profit_cagr_3y",
@@ -768,11 +768,15 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
     non_operating_profit_ratio = _number_or_none(fields.get("non_operating_profit_to_net_profit"))
     effective_tax_rate = _number_or_none(fields.get("effective_tax_rate"))
 
-    if revenue_yoy is not None and revenue_yoy < 0:
+    if revenue_yoy is not None and revenue_yoy < float(
+        parameter_value("financial_flags.revenue_yoy_min", 0.0)
+    ):
         flags.append(
             _flag("revenue_growth_negative", "warn", "收入同比为负，需要复核增长压力。", period)
         )
-    if net_profit_yoy is not None and net_profit_yoy < 0:
+    if net_profit_yoy is not None and net_profit_yoy < float(
+        parameter_value("financial_flags.net_profit_yoy_min", 0.0)
+    ):
         flags.append(
             _flag(
                 "profit_growth_negative",
@@ -784,7 +788,8 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
     if (
         revenue_yoy is not None
         and net_profit_yoy is not None
-        and net_profit_yoy - revenue_yoy < -0.10
+        and net_profit_yoy - revenue_yoy
+        < float(parameter_value("financial_flags.profit_revenue_gap_min", -0.10))
     ):
         flags.append(
             _flag(
@@ -794,7 +799,9 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if asset_liability_ratio is not None and asset_liability_ratio > 0.70:
+    if asset_liability_ratio is not None and asset_liability_ratio > float(
+        parameter_value("financial_flags.asset_liability_ratio_max", 0.70)
+    ):
         flags.append(
             _flag(
                 "high_asset_liability_ratio",
@@ -803,7 +810,9 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if cash_to_revenue is not None and cash_to_revenue < 0.05:
+    if cash_to_revenue is not None and cash_to_revenue < float(
+        parameter_value("financial_flags.ocf_to_revenue_min", 0.05)
+    ):
         flags.append(
             _flag(
                 "low_operating_cash_flow_to_revenue",
@@ -812,7 +821,9 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if free_cash_flow_to_profit is not None and free_cash_flow_to_profit < 0:
+    if free_cash_flow_to_profit is not None and free_cash_flow_to_profit < float(
+        parameter_value("financial_flags.fcf_to_profit_min", 0.0)
+    ):
         flags.append(
             _flag(
                 "negative_free_cash_flow_to_profit",
@@ -821,7 +832,9 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if investment_profit_ratio is not None and abs(investment_profit_ratio) > 0.20:
+    if investment_profit_ratio is not None and abs(investment_profit_ratio) > float(
+        parameter_value("financial_flags.investment_profit_ratio_abs_max", 0.20)
+    ):
         flags.append(
             _flag(
                 "high_investment_income_to_profit",
@@ -830,7 +843,9 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if fair_value_profit_ratio is not None and abs(fair_value_profit_ratio) > 0.10:
+    if fair_value_profit_ratio is not None and abs(fair_value_profit_ratio) > float(
+        parameter_value("financial_flags.fair_value_profit_ratio_abs_max", 0.10)
+    ):
         flags.append(
             _flag(
                 "high_fair_value_change_to_profit",
@@ -839,7 +854,9 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if impairment_profit_ratio is not None and impairment_profit_ratio > 0.10:
+    if impairment_profit_ratio is not None and impairment_profit_ratio > float(
+        parameter_value("financial_flags.impairment_profit_ratio_max", 0.10)
+    ):
         flags.append(
             _flag(
                 "high_impairment_loss_to_profit",
@@ -848,7 +865,9 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if non_operating_profit_ratio is not None and abs(non_operating_profit_ratio) > 0.10:
+    if non_operating_profit_ratio is not None and abs(non_operating_profit_ratio) > float(
+        parameter_value("financial_flags.non_operating_profit_ratio_abs_max", 0.10)
+    ):
         flags.append(
             _flag(
                 "high_non_operating_profit_to_profit",
@@ -857,7 +876,11 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if effective_tax_rate is not None and (effective_tax_rate < 0 or effective_tax_rate > 0.35):
+    if effective_tax_rate is not None and (
+        effective_tax_rate < float(parameter_value("financial_flags.effective_tax_rate_min", 0.0))
+        or effective_tax_rate
+        > float(parameter_value("financial_flags.effective_tax_rate_max", 0.35))
+    ):
         flags.append(
             _flag(
                 "abnormal_effective_tax_rate",
@@ -866,7 +889,9 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
                 period,
             )
         )
-    if deducted_profit_ratio is not None and deducted_profit_ratio < 0.80:
+    if deducted_profit_ratio is not None and deducted_profit_ratio < float(
+        parameter_value("financial_flags.deducted_profit_ratio_min", 0.80)
+    ):
         flags.append(
             _flag(
                 "deducted_profit_lags_parent_profit",
@@ -889,7 +914,8 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
         if (
             latest_value is not None
             and previous_value is not None
-            and latest_value - previous_value < -0.05
+            and latest_value - previous_value
+            < -float(parameter_value("financial_flags.margin_decline", 0.05))
         ):
             flags.append(_flag(code, "warn", label, period))
 
@@ -906,7 +932,14 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
         ),
     ):
         latest_value, previous_value = _latest_two_values(snapshots, field)
-        threshold = 0.03 if field == "finance_expense_ratio" else 0.05
+        threshold = float(
+            parameter_value(
+                "financial_flags.finance_expense_rise"
+                if field == "finance_expense_ratio"
+                else "financial_flags.period_expense_rise",
+                0.03 if field == "finance_expense_ratio" else 0.05,
+            )
+        )
         if (
             latest_value is not None
             and previous_value is not None
@@ -1208,12 +1241,12 @@ def _cagr(
 def _stability(snapshots: list[dict[str, object]], field: str) -> str:
     values = [
         value
-        for item in snapshots[:5]
+        for item in snapshots[: int(parameter_value("financial_flags.stability_periods", 5))]
         if (value := _number_or_none(_fields(item).get(field))) is not None
     ]
     if len(values) < 3:
         return "insufficient_data"
-    if max(values) - min(values) <= 0.05:
+    if max(values) - min(values) <= float(parameter_value("financial_flags.stability_range", 0.05)):
         return "stable"
     return "volatile"
 
@@ -1225,9 +1258,10 @@ def _trend_direction(snapshots: list[dict[str, object]], field: str) -> str:
     if previous == 0:
         return "flat" if latest == 0 else "up"
     change = (latest - previous) / abs(previous)
-    if change > 0.05:
+    threshold = float(parameter_value("financial_flags.trend_change", 0.05))
+    if change > threshold:
         return "up"
-    if change < -0.05:
+    if change < -threshold:
         return "down"
     return "flat"
 

@@ -122,7 +122,7 @@ class EvidenceListResponse(BaseModel):
 
 class EvidenceSearchRequest(BaseModel):
     keywords: list[str] = Field(default_factory=list, max_length=10)
-    max_results: int = Field(default=5, ge=1, le=10)
+    max_results: int | None = Field(default=None, ge=1, le=10)
 
     @field_validator("keywords")
     @classmethod

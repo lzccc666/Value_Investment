@@ -500,6 +500,137 @@ def test_eastmoney_market_snapshot_client_falls_back_to_delay_endpoint(
     assert "push2delay.eastmoney.com" in snapshot.source_url
 
 
+def test_eastmoney_market_snapshot_uses_announced_dividend_when_latest_total_is_partial(
+    monkeypatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "BonusFinancing" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "fhyx": [
+                        {
+                            "NOTICE_DATE": "2026-04-29 00:00:00",
+                            "IMPL_PLAN_PROFILE": "10派44.17元",
+                            "ASSIGN_PROGRESS": "股东大会预案",
+                        },
+                        {
+                            "NOTICE_DATE": "2026-01-24 00:00:00",
+                            "IMPL_PLAN_PROFILE": "10派13.58元",
+                            "ASSIGN_PROGRESS": "实施方案",
+                            "PAY_CASH_DATE": "2026-01-30 00:00:00",
+                        },
+                        {
+                            "NOTICE_DATE": "2025-08-02 00:00:00",
+                            "IMPL_PLAN_PROFILE": "10派45.92元",
+                            "ASSIGN_PROGRESS": "实施方案",
+                            "PAY_CASH_DATE": "2025-08-08 00:00:00",
+                        },
+                    ],
+                    "lnfhrz": [
+                        {"STATISTICS_YEAR": "2025", "TOTAL_DIVIDEND": 1998897185.75},
+                        {"STATISTICS_YEAR": "2024", "TOTAL_DIVIDEND": 8759000000.0},
+                    ],
+                },
+                request=request,
+            )
+
+        return httpx.Response(
+            200,
+            json={
+                "rc": 0,
+                "data": {
+                    "f43": 89.42,
+                    "f116": 131617428821.46,
+                    "f162": 8.87,
+                    "f163": 12.15,
+                    "f164": 13.23,
+                    "f167": 2.55,
+                    "f173": 7.32,
+                },
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_get(url: str, **kwargs):
+        with httpx.Client(transport=transport) as client:
+            return client.get(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    snapshot = EastmoneyMarketSnapshotClient(
+        now_factory=lambda: datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
+    ).fetch_market_snapshot("000568.SZ")
+
+    total_shares = 131617428821.46 / 89.42
+    announced_annual_yield = (
+        1998897185.75 + (44.17 / 10) * total_shares
+    ) / 131617428821.46
+    strict_implemented_ttm_yield = (13.58 / 10) / 89.42
+    assert snapshot.dividend_yield_ttm == announced_annual_yield
+    assert snapshot.dividend_yield_static == announced_annual_yield
+    assert snapshot.dividend_yield_ttm > strict_implemented_ttm_yield
+
+
+def test_eastmoney_market_snapshot_keeps_latest_lower_dividend_without_pending_plan(
+    monkeypatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "BonusFinancing" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "fhyx": [
+                        {
+                            "NOTICE_DATE": "2026-06-01 00:00:00",
+                            "IMPL_PLAN_PROFILE": "10派2元",
+                            "ASSIGN_PROGRESS": "实施方案",
+                            "PAY_CASH_DATE": "2026-06-10 00:00:00",
+                        }
+                    ],
+                    "lnfhrz": [
+                        {"STATISTICS_YEAR": "2025", "TOTAL_DIVIDEND": 2000000000.0},
+                        {"STATISTICS_YEAR": "2024", "TOTAL_DIVIDEND": 6000000000.0},
+                    ],
+                },
+                request=request,
+            )
+
+        return httpx.Response(
+            200,
+            json={
+                "rc": 0,
+                "data": {
+                    "f43": 20.0,
+                    "f116": 100000000000.0,
+                    "f162": 10.0,
+                    "f163": 11.0,
+                    "f164": 12.0,
+                    "f167": 1.5,
+                    "f173": 3.0,
+                },
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_get(url: str, **kwargs):
+        with httpx.Client(transport=transport) as client:
+            return client.get(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    snapshot = EastmoneyMarketSnapshotClient(
+        now_factory=lambda: datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
+    ).fetch_market_snapshot("000001.SZ")
+
+    assert snapshot.dividend_yield_ttm == (2 / 10) / 20
+    assert snapshot.dividend_yield_static == 2000000000.0 / 100000000000.0
+
+
 def test_eastmoney_financial_client_normalizes_main_indicator_fields(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert "RPT_F10_FINANCE_MAINFINADATA" in str(request.url)
@@ -806,7 +937,7 @@ def test_company_financials_return_seed_statement(tmp_path: Path) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["total"] == 1
-    assert payload["limit"] == 60
+    assert payload["limit"] == 1
     assert payload["items"][0]["period"] == "2025A"
     assert payload["items"][0]["fields"]["revenue"] == 100.0
     assert payload["items"][0]["fields"]["gross_margin"] == 0.58

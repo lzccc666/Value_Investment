@@ -47,6 +47,9 @@ class ValuationRunRead(BaseModel):
     forbidden_price_inputs: dict[str, object] = Field(default_factory=dict)
     input_snapshot: dict[str, object] = Field(default_factory=dict)
     input_snapshot_hash: str | None = None
+    config_version: int | None = None
+    config_hash: str | None = None
+    config_snapshot: dict[str, object] = Field(default_factory=dict)
     valuation_inputs: dict[str, object] = Field(default_factory=dict)
     model_suggested_assumptions: dict[str, object] = Field(default_factory=dict)
     user_adjusted_assumptions: dict[str, object] = Field(default_factory=dict)

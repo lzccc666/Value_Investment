@@ -179,6 +179,48 @@
 
 两个字段都可省略；未指定估值时选择当前公司最新的已完成估值，未覆盖安全边际时使用绑定 Memo 的建议值。响应保存绑定版本、行情快照、三情景内在价值和买入价、当前安全边际及价格状态。
 
+## 数据管理
+
+`012` 是独立运维 API，不属于 `004-011` 研究主链路。所有破坏性操作先调用 Preview，再提交后端返回的一次性令牌和精确确认短语。
+
+| 方法 | 路径 | 参数/请求 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/api/data-management/summary` | - | 数据库大小、各表数量、软删除、最近备份、自动备份和完整性状态 |
+| `POST` | `/api/data-management/operations/preview` | `DataOperationPreviewRequest` | 生成影响计划和一次性令牌 |
+| `POST` | `/api/data-management/operations/execute` | `DataOperationExecuteRequest` | 校验令牌、数据库状态和确认短语后执行 |
+| `GET` | `/api/data-management/backups` | - | 备份列表 |
+| `POST` | `/api/data-management/backups` | `{ "reason": "manual" }` | 手动创建并校验一致性备份 |
+| `POST` | `/api/data-management/backups/{backup_id}/verify` | - | 校验 SHA-256 和 SQLite integrity check |
+| `POST` | `/api/data-management/backups/{backup_id}/restore/preview` | - | 生成指定备份的恢复预览 |
+| `DELETE` | `/api/data-management/backups/{backup_id}` | 令牌与确认短语 | 删除已通过通用 Preview 绑定的备份 |
+| `GET` | `/api/data-management/settings` | - | 自动备份设置 |
+| `PUT` | `/api/data-management/settings` | `enabled`、`interval_hours`、`max_backups` | 更新自动备份与保留策略 |
+
+Preview 示例：
+
+```json
+{
+  "operation_type": "prune_versions",
+  "parameters": {
+    "company_id": 1,
+    "keep_count": 3
+  }
+}
+```
+
+操作类型包括 `reset_company_research_data`、`clear_analysis_history`、`initialize_database`、`prune_versions`、`purge_deleted_and_vacuum`、`restore_backup` 和 `delete_backup`。Preview 响应包含各表影响数量、受引用保护记录、预计释放空间、是否自动备份、确认短语和过期时间。
+
+Execute 示例：
+
+```json
+{
+  "operation_token": "preview 返回的一次性令牌",
+  "confirmation_phrase": "清理旧版本"
+}
+```
+
+令牌过期、重复使用或数据库状态变化返回 `409`。另一个维护操作正在执行时返回 `409`；维护期间非数据管理写请求返回 `503`。恢复和初始化成功时响应可包含 `restart_required=true`。
+
 ## 数据范围边界
 
 - API 不提供账户、持仓、组合或交易执行端点。

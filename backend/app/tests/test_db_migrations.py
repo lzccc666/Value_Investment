@@ -23,14 +23,38 @@ def test_init_db_migrates_legacy_sqlite_database(tmp_path: Path) -> None:
         investment_memo_columns = _table_columns(connection, "investment_memos")
         valuation_run_columns = _table_columns(connection, "valuation_runs")
         price_decision_run_columns = _table_columns(connection, "price_decision_runs")
+        parameter_config_columns = _table_columns(connection, "parameter_config_versions")
         evidence_columns = _table_columns(connection, "evidence")
         sqlite_schema_version = connection.scalar(text("PRAGMA user_version"))
 
     assert {"market_cap", "current_price", "market_data_updated_at"}.issubset(company_columns)
     assert {"raw_content", "summary_status", "summary_model_name"}.issubset(announcement_columns)
-    assert {"run_version", "is_latest", "status"}.issubset(analysis_run_columns)
-    assert {"version_no", "sections", "is_latest", "status"}.issubset(investment_memo_columns)
-    assert {"memo_id", "price_blind", "assumptions", "results"}.issubset(valuation_run_columns)
+    assert {
+        "run_version",
+        "is_latest",
+        "status",
+        "config_version",
+        "config_hash",
+        "config_snapshot",
+    }.issubset(analysis_run_columns)
+    assert {
+        "version_no",
+        "sections",
+        "is_latest",
+        "status",
+        "config_version",
+        "config_hash",
+        "config_snapshot",
+    }.issubset(investment_memo_columns)
+    assert {
+        "memo_id",
+        "price_blind",
+        "assumptions",
+        "results",
+        "config_version",
+        "config_hash",
+        "config_snapshot",
+    }.issubset(valuation_run_columns)
     assert {
         "valuation_run_id",
         "memo_id",
@@ -38,7 +62,19 @@ def test_init_db_migrates_legacy_sqlite_database(tmp_path: Path) -> None:
         "suggested_buy_price",
         "price_status",
         "deleted_at",
+        "config_version",
+        "config_hash",
+        "config_snapshot",
     }.issubset(price_decision_run_columns)
+    assert {
+        "version_no",
+        "schema_version",
+        "status",
+        "config_json",
+        "config_hash",
+        "change_note",
+        "published_at",
+    }.issubset(parameter_config_columns)
     assert {"analysis_status", "analysis_note", "price_sensitive", "use_scope"}.issubset(
         evidence_columns
     )

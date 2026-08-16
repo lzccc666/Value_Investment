@@ -92,6 +92,7 @@ import {
   type ValuationRunLatestResponse,
   type ValuationRunListResponse
 } from "../services/api";
+import { matrixParameterLabel } from "./parameterConfigLabels";
 
 type CompanyWorkspaceViewProps = {
   companyId: number | null;
@@ -374,7 +375,6 @@ const financialFieldDisplayOrder = [
 const ANNOUNCEMENT_LOOKBACK_YEARS = 1;
 const ANNOUNCEMENT_LIST_LIMIT = 50;
 const ANNOUNCEMENT_SUMMARY_BATCH_LIMIT = ANNOUNCEMENT_LIST_LIMIT;
-const FINANCIAL_STATEMENT_DISPLAY_PERIOD_LIMIT = 60;
 const FINANCIAL_STATEMENT_SYNC_LIMIT = 60;
 const DISPLAY_TIME_ZONE = "Asia/Shanghai";
 const EMPTY_FINANCIAL_EVIDENCE_PACK: FinancialEvidencePack = {
@@ -559,7 +559,6 @@ export function CompanyWorkspaceView({
       getCompany(companyId, controller.signal),
       withOptionalWorkspaceData(
         getCompanyFinancials(companyId, {
-          period_limit: FINANCIAL_STATEMENT_DISPLAY_PERIOD_LIMIT,
           period_offset: 0,
           signal: controller.signal
         }),
@@ -656,8 +655,8 @@ export function CompanyWorkspaceView({
         item: null
       }),
       withOptionalWorkspaceData(
-        getPriceDecisionRuns(companyId, { limit: 20, offset: 0, signal: controller.signal }),
-        { items: [], total: 0, limit: 20, offset: 0 }
+        getPriceDecisionRuns(companyId, { offset: 0, signal: controller.signal }),
+        { items: [], total: 0, limit: 0, offset: 0 }
       )
     ])
       .then(
@@ -820,7 +819,6 @@ export function CompanyWorkspaceView({
         limit: FINANCIAL_STATEMENT_SYNC_LIMIT
       });
       const refreshedFinancials = await getCompanyFinancials(company.id, {
-        period_limit: FINANCIAL_STATEMENT_DISPLAY_PERIOD_LIMIT,
         period_offset: 0
       });
       const refreshedFinancialEvidencePack = await getCompanyFinancialEvidencePack(company.id);
@@ -904,8 +902,7 @@ export function CompanyWorkspaceView({
 
     try {
       const searchResult = await searchCompanyEvidence(company.id, {
-        keywords: [company.name, company.industry ?? ""].filter(Boolean),
-        max_results: 10
+        keywords: [company.name, company.industry ?? ""].filter(Boolean)
       });
       const refreshedEvidence = await getCompanyEvidence(company.id, {
         limit: 10,
@@ -2429,6 +2426,7 @@ function ValuationLabPanel({
             <>
               <dl className="valuation-input-grid">
                 <MetricFact label="Memo" value={`v${latestMemo.version_no}`} />
+                <MetricFact label="参数配置" value={formatConfigVersion(latestMemo.config_version)} />
                 <MetricFact label="生成时间" value={formatDateTime(latestMemo.created_at)} />
                 <MetricFact label="来源视角" value={`${latestMemo.source_analyst_run_ids.length} 个`} />
                 <MetricFact label="状态" value={latestMemo.status} />
@@ -2848,6 +2846,10 @@ function PriceDecisionPanel({
               value={calculatedValuation ? `#${calculatedValuation.id}` : "待完成"}
             />
             <MetricFact
+              label="参数配置"
+              value={formatConfigVersion(calculatedValuation?.config_version)}
+            />
+            <MetricFact
               label="估值结果"
               value={
                 calculatedValuation?.results.status === "calculated_after_user_confirmation"
@@ -2979,7 +2981,7 @@ function PriceDecisionResult({ run, compact = false }: { run: PriceDecisionRun; 
       <div className="price-decision-result__heading">
         <div>
           <strong>{run.price_status}</strong>
-          <span>估值 #{run.valuation_run_id} · Memo v{String(memoSnapshot.version_no ?? run.memo_id)}</span>
+          <span>估值 #{run.valuation_run_id} · Memo v{String(memoSnapshot.version_no ?? run.memo_id)} · {formatConfigVersion(run.config_version)}</span>
         </div>
         <span className={`price-decision-status price-decision-status--${priceDecisionStatusTone(run.price_status)}`}>
           {run.price_status}
@@ -3021,6 +3023,10 @@ function formatSignedPercent(value: number): string {
 
 function formatSignedNumber(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
+function formatConfigVersion(version: number | null | undefined): string {
+  return version === null || version === undefined ? "内置参数" : `参数 v${version}`;
 }
 
 function MemoPreparationPanel({
@@ -3100,7 +3106,7 @@ function MemoPreparationPanel({
           <strong>最新综合备忘录</strong>
           {latestMemo ? (
             <span>
-              v{latestMemo.version_no} · {formatDateTime(latestMemo.created_at)}
+              v{latestMemo.version_no} · {formatConfigVersion(latestMemo.config_version)} · {formatDateTime(latestMemo.created_at)}
             </span>
           ) : null}
         </div>
@@ -4496,6 +4502,7 @@ function AnalystPanel({
                 <div className="analyst-run-result">
                   <div className="analyst-run-meta">
                     <span>#{latestRun.id}</span>
+                    <span>{formatConfigVersion(latestRun.config_version)}</span>
                     <span>{formatDateTime(latestRun.created_at)}</span>
                     {typeof result.confidence === "number" ? (
                       <span>数据置信度 {formatImportanceScore(result.confidence)}</span>
@@ -4983,7 +4990,7 @@ function formatRuleStatus(value: unknown): string {
 function formatMappingKeys(value: unknown): string {
   const mapping = readPlainRecord(value);
   const keys = Object.keys(mapping);
-  return keys.length > 0 ? keys.join("、") : "无";
+  return keys.length > 0 ? keys.map(matrixParameterLabel).join("、") : "无";
 }
 
 function formatRuleParameterContributions(
@@ -5001,9 +5008,17 @@ function formatRuleParameterContributions(
       continue;
     }
     const contribution = readNumber(match.contribution);
-    labels.push(`${parameter} ${contribution === null ? "待计算" : contribution.toFixed(4)}`);
+    labels.push(
+      `${matrixParameterLabel(parameter)} ${
+        contribution === null ? "待计算" : formatCompactDecimal(contribution)
+      }`
+    );
   }
   return labels.length > 0 ? labels.join("、") : "不参与计算";
+}
+
+function formatCompactDecimal(value: number): string {
+  return String(Number(value.toFixed(4)));
 }
 
 function buildEditableValuationScenario(
@@ -5299,7 +5314,7 @@ async function loadInvestmentMemos(companyId: number) {
 async function loadPriceDecisions(companyId: number) {
   return Promise.all([
     getLatestPriceDecisionRun(companyId),
-    getPriceDecisionRuns(companyId, { limit: 20, offset: 0 })
+    getPriceDecisionRuns(companyId, { offset: 0 })
   ]);
 }
 

@@ -12,9 +12,11 @@ import {
   type CompanyWorkspaceSection
 } from "./CompanyWorkspaceView";
 import { DashboardView } from "./DashboardView";
-import { navigationItems } from "./dashboardData";
+import { DataManagementView } from "./DataManagementView";
+import { ParameterConfigView } from "./ParameterConfigView";
+import { navigationItems, type NavItemId } from "./dashboardData";
 
-type WorkbenchView = "dashboard" | "company-search" | "company-workspace";
+type WorkbenchView = "dashboard" | "company-search" | "company-workspace" | "parameter-config" | "data-management";
 
 type ApiState =
   | { status: "checking"; label: "API 检查中" }
@@ -22,19 +24,21 @@ type ApiState =
   | { status: "offline"; label: "API 未连接" };
 
 const navigationViewMap: Record<
-  string,
-  { view: WorkbenchView; section?: CompanyWorkspaceSection } | null
+  NavItemId,
+  { view: WorkbenchView; section?: CompanyWorkspaceSection }
 > = {
-  Dashboard: { view: "dashboard" },
-  "Company Search": { view: "company-search" },
-  "Company Workspace": { view: "company-workspace", section: "overview" },
-  Financials: { view: "company-workspace", section: "financials" },
-  Announcements: { view: "company-workspace", section: "announcements" },
-  Evidence: { view: "company-workspace", section: "evidence" },
-  "Analyst Views": { view: "company-workspace", section: "analyst-views" },
-  "Valuation Lab": { view: "company-workspace", section: "valuation-lab" },
-  Memo: { view: "company-workspace", section: "memo" },
-  "Price Decision": { view: "company-workspace", section: "price-decision" },
+  dashboard: { view: "dashboard" },
+  "company-search": { view: "company-search" },
+  "company-workspace": { view: "company-workspace", section: "overview" },
+  financials: { view: "company-workspace", section: "financials" },
+  announcements: { view: "company-workspace", section: "announcements" },
+  evidence: { view: "company-workspace", section: "evidence" },
+  "analyst-views": { view: "company-workspace", section: "analyst-views" },
+  "valuation-lab": { view: "company-workspace", section: "valuation-lab" },
+  memo: { view: "company-workspace", section: "memo" },
+  "price-decision": { view: "company-workspace", section: "price-decision" },
+  "parameter-config": { view: "parameter-config" },
+  "data-management": { view: "data-management" }
 };
 
 const pageMeta: Record<WorkbenchView, { eyebrow: string; title: string }> = {
@@ -49,6 +53,14 @@ const pageMeta: Record<WorkbenchView, { eyebrow: string; title: string }> = {
   "company-workspace": {
     eyebrow: "Company Workspace",
     title: "公司档案"
+  },
+  "parameter-config": {
+    eyebrow: "全局参数 · 004-011",
+    title: "参数配置中心"
+  },
+  "data-management": {
+    eyebrow: "Operations · 012",
+    title: "数据管理"
   }
 };
 
@@ -151,7 +163,7 @@ export function App() {
         <nav className="nav-list">
           {navigationItems.map((item) => {
             const Icon = item.icon;
-            const target = navigationViewMap[item.label];
+            const target = navigationViewMap[item.id];
             const isActive =
               target?.view === activeView &&
               (target.view !== "company-workspace" ||
@@ -160,11 +172,10 @@ export function App() {
 
             return (
               <button
-                key={item.label}
+                key={item.id}
                 className={isActive ? "nav-item nav-item--active" : "nav-item"}
                 type="button"
-                title={target ? item.label : "模块待接入"}
-                disabled={!target}
+                title={item.label}
                 aria-current={isActive ? "page" : undefined}
                 onClick={() => {
                   if (target) {
@@ -235,6 +246,12 @@ export function App() {
             onCompanyUnavailable={handleCompanyUnavailable}
             refreshToken={refreshToken}
           />
+        ) : null}
+        {activeView === "data-management" ? (
+          <DataManagementView refreshToken={refreshToken} />
+        ) : null}
+        {activeView === "parameter-config" ? (
+          <ParameterConfigView refreshToken={refreshToken} />
         ) : null}
       </main>
     </div>

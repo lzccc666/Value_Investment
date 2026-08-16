@@ -8,6 +8,7 @@ from app.analysis.model_gateway import (
     ModelNotConfiguredError,
     ModelOutputValidationError,
 )
+from app.configuration.runtime import parameter_config_context
 from app.db.models import Company
 from app.db.session import get_db
 from app.schemas.evidence import (
@@ -35,6 +36,7 @@ from app.services.evidence_service import (
     run_model_smoke_test,
     search_company_evidence,
 )
+from app.services.parameter_config_service import get_runtime_parameter_config
 
 router = APIRouter()
 
@@ -67,7 +69,15 @@ def search_external_evidence(
 ) -> EvidenceSearchResponse:
     company = _get_company_or_404(db, company_id)
     try:
-        items, run = search_company_evidence(db, company, payload)
+        runtime = get_runtime_parameter_config(db)
+        with parameter_config_context(runtime.snapshot):
+            effective_payload = payload.model_copy(
+                update={
+                    "max_results": payload.max_results
+                    or int(runtime.snapshot["data_sampling"]["external_search_default_results"])
+                }
+            )
+            items, run = search_company_evidence(db, company, effective_payload)
     except ModelNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ModelOutputValidationError as exc:
@@ -98,7 +108,9 @@ def import_external_evidence_text(
 ) -> EvidenceImportTextResponse:
     company = _get_company_or_404(db, company_id)
     try:
-        items, run = import_text_evidence(db, company, payload)
+        runtime = get_runtime_parameter_config(db)
+        with parameter_config_context(runtime.snapshot):
+            items, run = import_text_evidence(db, company, payload)
     except ModelNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ModelOutputValidationError as exc:

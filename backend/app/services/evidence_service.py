@@ -19,6 +19,7 @@ from app.analysis.prompts.evidence import (
     build_evidence_prompt,
     build_query_prompt,
 )
+from app.configuration.runtime import parameter_value
 from app.data_sources.announcement_content import (
     AnnouncementContentFetcher,
     AnnouncementContentFetchError,
@@ -50,7 +51,6 @@ DEFAULT_FUNDAMENTAL_USE_SCOPE: list[EvidenceUseScope] = [
     "intrinsic_valuation",
 ]
 
-MAX_MODEL_SEARCH_RESULTS = 10
 
 FUNDAMENTAL_SUBSTANTIVE_PATTERNS = (
     "政策",
@@ -381,7 +381,14 @@ def import_text_evidence(
 ) -> tuple[list[Evidence], AnalysisRun]:
     model_gateway = gateway or ModelGateway()
     company_snapshot = _company_snapshot(company)
-    manual_snapshot = _manual_text_import_snapshot(payload)
+    model_snapshot = _manual_text_import_snapshot(
+        payload,
+        max_length=int(parameter_value("data_sampling.manual_import_model_chars", 1800)),
+    )
+    audit_snapshot = _manual_text_import_snapshot(
+        payload,
+        max_length=int(parameter_value("data_sampling.manual_import_snapshot_chars", 3600)),
+    )
     input_snapshot = {
         "mode": "manual_text_import",
         "company": company_snapshot,
@@ -394,7 +401,10 @@ def import_text_evidence(
         "source_type": payload.source_type,
         "notes": payload.notes,
         "requires_review": True,
-        "content_excerpt": _truncate_lead_text(payload.content, max_length=1800),
+        "content_excerpt": _truncate_lead_text(
+            payload.content,
+            max_length=int(parameter_value("data_sampling.manual_import_snapshot_chars", 3600)),
+        ),
     }
     run = _create_import_text_run(
         session,
@@ -406,21 +416,23 @@ def import_text_evidence(
     try:
         prompt = _build_manual_text_import_prompt(
             company=company_snapshot,
-            manual_snapshot=manual_snapshot,
+            manual_snapshot=model_snapshot,
             payload=payload,
         )
         extraction = model_gateway.generate_structured(
             system_prompt=EVIDENCE_SYSTEM_PROMPT,
             user_prompt=prompt,
             schema=EvidenceExtractionOutput,
-            temperature=0.1,
+            temperature=float(
+                parameter_value("analyst_engine.model_temperatures.evidence_extract", 0.1)
+            ),
         )
         if not extraction.evidences:
             raise EvidenceImportTextError("模型未从手动导入文本中生成可入库外部证据")
         outputs = _prepare_manual_import_outputs(
             extraction.evidences,
             payload=payload,
-            manual_snapshot=manual_snapshot,
+            manual_snapshot=audit_snapshot,
         )
         evidence_items = _create_evidence_items(session, company.id, outputs)
         if not evidence_items:
@@ -430,7 +442,7 @@ def import_text_evidence(
         _complete_import_text_run(
             session,
             run,
-            manual_snapshot=manual_snapshot,
+            manual_snapshot=audit_snapshot,
             evidence_items=evidence_items,
         )
         return evidence_items, run
@@ -464,6 +476,9 @@ def search_company_evidence(
         if page_fetcher is not None
         else AnnouncementAwareWebPageSnapshotFetcher(
             announcement_content_fetcher=content_fetcher,
+            max_excerpt_chars=int(
+                parameter_value("data_sampling.evidence_excerpt_chars", 1800)
+            ),
         )
         if search_provider is None
         else None
@@ -499,7 +514,9 @@ def search_company_evidence(
                     max_queries=4,
                 ),
                 schema=SearchQueryPlan,
-                temperature=0.2,
+                temperature=float(
+                    parameter_value("analyst_engine.model_temperatures.evidence_plan", 0.2)
+                ),
             )
         except (ModelGatewayError, ModelOutputValidationError, ValueError):
             query_plan = SearchQueryPlan(queries=_expand_queries([], company, payload.keywords)[:4])
@@ -570,7 +587,9 @@ def search_company_evidence(
                 search_results=raw_results,
             ),
             schema=EvidenceExtractionOutput,
-            temperature=0.1,
+            temperature=float(
+                parameter_value("analyst_engine.model_temperatures.evidence_extract", 0.1)
+            ),
         )
         evidence_items = _create_evidence_items(session, company.id, extraction.evidences)
         _complete_search_run(
@@ -794,14 +813,24 @@ def _fail_import_text_run(
     session.refresh(run)
 
 
-def _manual_text_import_snapshot(payload: EvidenceImportTextRequest) -> dict[str, object]:
-    content_excerpt = _truncate_lead_text(payload.content, max_length=3600)
+def _manual_text_import_snapshot(
+    payload: EvidenceImportTextRequest,
+    *,
+    max_length: int,
+) -> dict[str, object]:
+    content_excerpt = _truncate_lead_text(
+        payload.content,
+        max_length=max_length,
+    )
     return {
         "query": "manual_text_import",
         "title": payload.title or "手动导入外部信息",
         "url": payload.source_url,
         "source": payload.source or "manual_text_import",
-        "snippet": _truncate_lead_text(payload.content, max_length=500),
+        "snippet": _truncate_lead_text(
+            payload.content,
+            max_length=int(parameter_value("data_sampling.search_snippet_chars", 500)),
+        ),
         "published_at": payload.published_at.isoformat()
         if payload.published_at is not None
         else None,
@@ -826,6 +855,9 @@ def _build_manual_text_import_prompt(
     manual_snapshot: dict[str, object],
     payload: EvidenceImportTextRequest,
 ) -> str:
+    credibility_cap = float(
+        parameter_value("analyst_engine.manual_import_credibility_cap", 0.6)
+    )
     prompt = build_evidence_prompt(
         company=company,
         search_results=[manual_snapshot],
@@ -852,7 +884,7 @@ def _build_manual_text_import_prompt(
             "默认 requires_review=true。",
             "analysis_note 必须说明该证据由用户手动导入文本生成，需要人工复核来源。",
             (
-                "如果 source_url 为空，credibility_score 不应超过 0.6，"
+                f"如果 source_url 为空，credibility_score 不应超过 {credibility_cap:g}，"
                 "analysis_note 必须说明缺少可复核来源链接。"
             ),
             (
@@ -896,7 +928,10 @@ def _prepare_manual_import_outputs(
         title = output.title or payload.title or "手动导入外部信息"
         credibility_score = output.credibility_score
         if missing_source_url:
-            credibility_score = min(credibility_score, 0.6)
+            credibility_score = min(
+                credibility_score,
+                float(parameter_value("analyst_engine.manual_import_credibility_cap", 0.6)),
+            )
         analysis_note = _manual_import_analysis_note(
             output.analysis_note,
             missing_source_url=missing_source_url,
@@ -1496,7 +1531,7 @@ def _merge_search_stats(
             fallback_stats.get("candidate_before_ranking_count") or 0
         ),
         "sent_to_model_count": int(fallback_stats.get("sent_to_model_count") or 0),
-        "model_candidate_limit": MAX_MODEL_SEARCH_RESULTS,
+        "model_candidate_limit": int(parameter_value("data_sampling.external_evidence_limit", 10)),
         "filtered_out_count": sum(merged_filtered.values()),
         "filtered_out_by_reason": merged_filtered,
         "query_errors": [
@@ -1665,7 +1700,7 @@ def _collect_search_results(
         key=lambda item: float(item.get("relevance_score") or 0),
         reverse=True,
     )
-    snapshots = candidates[:MAX_MODEL_SEARCH_RESULTS]
+    snapshots = candidates[: int(parameter_value("data_sampling.external_evidence_limit", 10))]
     filtered_out_count = sum(filtered_out_by_reason.values())
     search_stats: dict[str, object] = {
         "queries": queries,
@@ -1674,7 +1709,7 @@ def _collect_search_results(
         "deduped_result_count": deduped_result_count,
         "candidate_before_ranking_count": len(candidates),
         "sent_to_model_count": len(snapshots),
-        "model_candidate_limit": MAX_MODEL_SEARCH_RESULTS,
+        "model_candidate_limit": int(parameter_value("data_sampling.external_evidence_limit", 10)),
         "filtered_out_count": filtered_out_count,
         "filtered_out_by_reason": filtered_out_by_reason,
         "query_errors": query_errors,
@@ -2089,12 +2124,14 @@ def _append_unique(items: list[str], value: str) -> None:
 
 def _compact_search_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
     compact = dict(snapshot)
+    snippet_limit = int(parameter_value("data_sampling.search_snippet_chars", 500))
+    title_limit = int(parameter_value("data_sampling.search_title_chars", 160))
     snippet = compact.get("snippet")
-    if isinstance(snippet, str) and len(snippet) > 500:
-        compact["snippet"] = f"{snippet[:500]}..."
+    if isinstance(snippet, str) and len(snippet) > snippet_limit:
+        compact["snippet"] = f"{snippet[:snippet_limit]}..."
     title = compact.get("title")
-    if isinstance(title, str) and len(title) > 160:
-        compact["title"] = f"{title[:160]}..."
+    if isinstance(title, str) and len(title) > title_limit:
+        compact["title"] = f"{title[:title_limit]}..."
     return compact
 
 
@@ -2105,7 +2142,7 @@ def _create_evidence_items(
 ) -> list[Evidence]:
     items: list[Evidence] = []
     for output in outputs:
-        if len(items) >= MAX_MODEL_SEARCH_RESULTS:
+        if len(items) >= int(parameter_value("data_sampling.external_evidence_limit", 10)):
             break
         price_sensitive, use_scope = _resolve_evidence_scope(output)
         if price_sensitive:

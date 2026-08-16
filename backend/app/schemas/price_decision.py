@@ -34,6 +34,9 @@ class PriceDecisionRunRead(BaseModel):
     status: PriceDecisionRunStatus
     input_snapshot: dict[str, object] = Field(default_factory=dict)
     input_snapshot_hash: str
+    config_version: int | None = None
+    config_hash: str | None = None
+    config_snapshot: dict[str, object] = Field(default_factory=dict)
     intrinsic_values_per_share: dict[str, float] = Field(default_factory=dict)
     current_price: float
     market_data_updated_at: datetime

@@ -26,6 +26,7 @@ from app.analysis.prompts.analyst import (
 )
 from app.analysis.result_sanitizer import sanitize_error_text
 from app.analysis.valuation_parameter_matrix import derive_valuation_parameter_matrix
+from app.configuration.runtime import parameter_config_context, parameter_value
 from app.db.models import (
     AnalysisRun,
     Announcement,
@@ -39,16 +40,40 @@ from app.services.financial_metrics import (
     build_financial_evidence_pack,
     order_financial_statement_query,
 )
+from app.services.parameter_config_service import get_runtime_parameter_config
 
 RUN_TYPE_ANALYST_VIEW = "analyst_view"
 RUN_VERSION = "008_v1"
-MAX_FINANCIAL_SNAPSHOT_PERIODS = 40
-MAX_ANNOUNCEMENT_SNAPSHOT_ITEMS = 20
-MAX_EVIDENCE_SNAPSHOT_ITEMS = 10
-MAX_ANNOUNCEMENT_SELECTION_POOL = 80
-MAX_ANNOUNCEMENT_EXCERPT_LENGTH = 360
-MAX_HISTORY_TEXT_LENGTH = 360
 MAX_RESULT_LIST_ITEMS = 6
+PRICE_SENSITIVE_TEXT_TERMS = (
+    "当前价格",
+    "历史价格",
+    "目标价",
+    "市值",
+    "持仓成本",
+    "估值倍数",
+    "current price",
+    "historical price",
+    "target price",
+    "market cap",
+    "holding cost",
+)
+PRICE_SENSITIVE_FIELD_NAMES = {
+    "current_price",
+    "historical_price",
+    "history_price",
+    "target_price",
+    "market_cap",
+    "holding_cost",
+    "pe_ttm",
+    "pe_dynamic",
+    "pe_static",
+    "pb_ratio",
+    "ps_ratio",
+    "market_data_source",
+    "market_data_source_url",
+    "market_data_updated_at",
+}
 ANALYST_EXTERNAL_EVIDENCE_FIELDS = (
     "id",
     "title",
@@ -422,11 +447,13 @@ def update_analysis_run_rule_status(
         if isinstance(check, dict) and check.get("rule_id") == rule_id:
             check["status"] = status
             profile = _get_profile_or_raise(str(run.analyst_profile or ""))
-            result["valuation_parameter_matrix"] = derive_valuation_parameter_matrix(
-                source_run_id=run.id,
-                profile=profile,
-                result=result,
-            )
+            config_snapshot = run.config_snapshot if isinstance(run.config_snapshot, dict) else {}
+            with parameter_config_context(config_snapshot):
+                result["valuation_parameter_matrix"] = derive_valuation_parameter_matrix(
+                    source_run_id=run.id,
+                    profile=profile,
+                    result=result,
+                )
             run.result = result
             session.commit()
             session.refresh(run)
@@ -445,37 +472,52 @@ def run_company_analyst_view(
 ) -> AnalysisRun:
     profile = _get_profile_or_raise(analyst_profile_id)
     model_gateway = gateway or ModelGateway()
-    data_snapshot = build_company_analysis_snapshot(session, company, profile=profile)
-    snapshot_hash = _hash_snapshot(data_snapshot)
-    run = _create_running_run(
-        session,
-        company_id=company.id,
-        profile=profile,
-        model_name=model_gateway.model_name,
-        data_snapshot=data_snapshot,
-        snapshot_hash=snapshot_hash,
-        parent_run_id=None,
-        user_note=user_note,
-    )
-
-    try:
-        output = model_gateway.generate_structured(
-            system_prompt=ANALYST_SYSTEM_PROMPT,
-            user_prompt=build_analyst_prompt(profile=profile, data_snapshot=data_snapshot),
-            schema=AnalystAnalysisOutput,
-            temperature=0.2,
+    runtime = get_runtime_parameter_config(session)
+    with parameter_config_context(runtime.snapshot):
+        data_snapshot = build_company_analysis_snapshot(
+            session,
+            company,
+            profile=profile,
+            config_version=runtime.version,
+            config_hash=runtime.config_hash,
+            config_source=runtime.source,
+            config_fallback_reason=runtime.fallback_reason,
         )
-        output = _apply_fact_ledger_overrides(output, data_snapshot)
-        output = _apply_financial_unit_corrections(output, data_snapshot)
-        _validate_output_profile(output, profile, data_snapshot=data_snapshot)
-        _complete_run(session, run, output)
-        return run
-    except (ModelGatewayError, ModelOutputValidationError, ValueError) as exc:
-        _fail_run(session, run, exc)
-        raise
-    except Exception as exc:
-        _fail_run(session, run, exc)
-        raise
+        snapshot_hash = _hash_snapshot(data_snapshot)
+        run = _create_running_run(
+            session,
+            company_id=company.id,
+            profile=profile,
+            model_name=model_gateway.model_name,
+            data_snapshot=data_snapshot,
+            snapshot_hash=snapshot_hash,
+            parent_run_id=None,
+            user_note=user_note,
+            config_version=runtime.version,
+            config_hash=runtime.config_hash,
+            config_snapshot=runtime.snapshot,
+        )
+
+        try:
+            output = model_gateway.generate_structured(
+                system_prompt=ANALYST_SYSTEM_PROMPT,
+                user_prompt=build_analyst_prompt(profile=profile, data_snapshot=data_snapshot),
+                schema=AnalystAnalysisOutput,
+                temperature=float(
+                    parameter_value("analyst_engine.model_temperatures.analyst", 0.2)
+                ),
+            )
+            output = _apply_fact_ledger_overrides(output, data_snapshot)
+            output = _apply_financial_unit_corrections(output, data_snapshot)
+            _validate_output_profile(output, profile, data_snapshot=data_snapshot)
+            _complete_run(session, run, output)
+            return run
+        except (ModelGatewayError, ModelOutputValidationError, ValueError) as exc:
+            _fail_run(session, run, exc)
+            raise
+        except Exception as exc:
+            _fail_run(session, run, exc)
+            raise
 
 
 def run_company_analyst_views_batch(
@@ -602,13 +644,17 @@ def build_company_analysis_snapshot(
     company: Company,
     *,
     profile: AnalystProfile,
+    config_version: int | None = None,
+    config_hash: str | None = None,
+    config_source: str = "builtin_fallback",
+    config_fallback_reason: str | None = None,
 ) -> dict[str, object]:
     financials = _select_financial_snapshot_statements(session, company_id=company.id)
     announcements = session.scalars(
         select(Announcement)
         .where(Announcement.company_id == company.id)
         .order_by(Announcement.published_at.desc())
-        .limit(MAX_ANNOUNCEMENT_SELECTION_POOL)
+        .limit(int(parameter_value("data_sampling.analysis_announcement_pool", 80)))
     ).all()
     evidence_count = (
         session.scalar(
@@ -625,8 +671,13 @@ def build_company_analysis_snapshot(
             Evidence.created_at.desc(),
             Evidence.id.desc(),
         )
-        .limit(MAX_EVIDENCE_SNAPSHOT_ITEMS)
+        .limit(int(parameter_value("data_sampling.analysis_evidence_items", 10)) * 3)
     ).all()
+    evidence_items = [
+        item
+        for item in evidence_items
+        if not item.price_sensitive and not _model_contains_price_sensitive_text(item)
+    ][: int(parameter_value("data_sampling.analysis_evidence_items", 10))]
 
     financial_snapshots = [_financial_snapshot(item) for item in financials]
     financial_evidence_pack = build_financial_evidence_pack(financials)
@@ -656,6 +707,12 @@ def build_company_analysis_snapshot(
     )
 
     return {
+        "configuration": {
+            "version": config_version,
+            "hash": config_hash,
+            "source": config_source,
+            "fallback_reason": config_fallback_reason,
+        },
         "source_boundary": {
             "allowed_sources": [
                 "external_evidence",
@@ -663,14 +720,8 @@ def build_company_analysis_snapshot(
                 "announcements",
             ],
             "disallowed_actions": ["web_search", "data_collection", "third_party_fetch"],
-            "input_policy": (
-                "允许读取快照中已经入库的价格、市值、估值倍数、目标价、"
-                "持仓成本等字段或文本；不得联网补充或推断快照以外的信息。"
-            ),
-            "output_policy": (
-                "允许按分析师框架讨论安全边际、估值纪律、价格与市值相关事实；"
-                "输出应基于快照证据并说明依据。"
-            ),
+            "input_policy": "008-010 保持 price-blind，行情、估值倍数和价格敏感证据不得进入快照。",
+            "output_policy": "只输出基本面规则判断，不输出价格、交易动作或仓位建议。",
             "allowed_outputs": [
                 "business_quality",
                 "management_quality",
@@ -680,15 +731,18 @@ def build_company_analysis_snapshot(
                 "counter_evidence",
                 "valuation_assumption_suggestions",
                 "valuation_sensitivity",
-                "margin_of_safety",
             ],
             "run_isolation_policy": (
                 "每次 analyst_view 生成完全独立，不读取历史 run，不把历史结论作为输入。"
             ),
             "snapshot_limits": {
-                "financial_statement_periods": MAX_FINANCIAL_SNAPSHOT_PERIODS,
-                "announcements": MAX_ANNOUNCEMENT_SNAPSHOT_ITEMS,
-                "evidence": MAX_EVIDENCE_SNAPSHOT_ITEMS,
+                "financial_statement_periods": int(
+                    parameter_value("data_sampling.analysis_financial_periods", 40)
+                ),
+                "announcements": int(
+                    parameter_value("data_sampling.analysis_announcement_items", 20)
+                ),
+                "evidence": int(parameter_value("data_sampling.analysis_evidence_items", 10)),
             },
             "selection_policy": {
                 "financial_statements": (
@@ -704,10 +758,10 @@ def build_company_analysis_snapshot(
             },
             "price_sensitive_policy": {
                 "rule": (
-                    "price_sensitive=true 的 Evidence 可进入 analyst_view；"
-                    "008 不再按价格敏感标签做强制剔除或脱敏。"
+                    "price_sensitive=true 的 Evidence 不进入 008-010；"
+                    "仅可在 011 价格决策阶段使用价格。"
                 ),
-                "analyst_view_allows_price_sensitive": True,
+                "analyst_view_allows_price_sensitive": False,
             },
             "source_aliases": {
                 "evidence": "external_evidence",
@@ -751,9 +805,7 @@ def build_company_analysis_snapshot(
             "evidence": len(external_evidence_snapshots),
             "announcement_candidates": len(announcements),
             "external_evidence_candidates": evidence_count,
-            "price_sensitive_external_evidence": sum(
-                1 for item in selected_external_evidence_snapshots if item.get("price_sensitive")
-            ),
+            "price_sensitive_external_evidence": 0,
             "intrinsic_valuation_external_evidence": len(intrinsic_valuation_evidence_snapshots),
         },
     }
@@ -793,7 +845,9 @@ def _select_financial_snapshot_statements(
 
     for statement in statements:
         if statement.period not in selected_periods:
-            if len(selected_periods) >= MAX_FINANCIAL_SNAPSHOT_PERIODS:
+            if len(selected_periods) >= int(
+                parameter_value("data_sampling.analysis_financial_periods", 40)
+            ):
                 continue
             selected_periods.append(statement.period)
         if statement.period in selected_periods:
@@ -812,19 +866,26 @@ def _create_running_run(
     snapshot_hash: str,
     parent_run_id: int | None,
     user_note: str | None,
+    config_version: int | None,
+    config_hash: str,
+    config_snapshot: dict[str, object],
 ) -> AnalysisRun:
-    run = _get_reusable_analyst_run(
-        session,
-        company_id=company_id,
-        profile_id=profile.id,
-    )
-    if run is None:
-        run = AnalysisRun(
-            company_id=company_id,
-            run_type=RUN_TYPE_ANALYST_VIEW,
-            analyst_profile=profile.id,
+    existing_runs = session.scalars(
+        select(AnalysisRun).where(
+            AnalysisRun.company_id == company_id,
+            AnalysisRun.run_type == RUN_TYPE_ANALYST_VIEW,
+            AnalysisRun.analyst_profile == profile.id,
+            AnalysisRun.is_latest.is_(True),
         )
-        session.add(run)
+    ).all()
+    for existing in existing_runs:
+        existing.is_latest = False
+    run = AnalysisRun(
+        company_id=company_id,
+        run_type=RUN_TYPE_ANALYST_VIEW,
+        analyst_profile=profile.id,
+    )
+    session.add(run)
 
     run.run_version = RUN_VERSION
     run.model_name = model_name
@@ -832,6 +893,9 @@ def _create_running_run(
     run.data_snapshot_hash = snapshot_hash
     run.input_snapshot = data_snapshot
     run.result = {}
+    run.config_version = config_version
+    run.config_hash = config_hash
+    run.config_snapshot = deepcopy(config_snapshot)
     run.confidence = None
     run.parent_run_id = parent_run_id
     run.is_latest = True
@@ -841,30 +905,6 @@ def _create_running_run(
     session.commit()
     session.refresh(run)
     return run
-
-
-def _get_reusable_analyst_run(
-    session: Session,
-    *,
-    company_id: int,
-    profile_id: str,
-) -> AnalysisRun | None:
-    existing_runs = session.scalars(
-        select(AnalysisRun)
-        .where(
-            AnalysisRun.company_id == company_id,
-            AnalysisRun.run_type == RUN_TYPE_ANALYST_VIEW,
-            AnalysisRun.analyst_profile == profile_id,
-        )
-        .order_by(AnalysisRun.created_at.desc(), AnalysisRun.id.desc())
-    ).all()
-    if not existing_runs:
-        return None
-
-    reusable_run = existing_runs[0]
-    for stale_run in existing_runs[1:]:
-        session.delete(stale_run)
-    return reusable_run
 
 
 def _dedupe_latest_analyst_runs(runs: list[AnalysisRun]) -> list[AnalysisRun]:
@@ -1088,10 +1128,10 @@ def _correct_financial_unit_texts(
 
 def _select_announcement_snapshots(items: list[Announcement]) -> list[dict[str, object]]:
     selected_items = sorted(
-        items,
+        [item for item in items if not _model_contains_price_sensitive_text(item)],
         key=_announcement_selection_key,
         reverse=True,
-    )[:MAX_ANNOUNCEMENT_SNAPSHOT_ITEMS]
+    )[: int(parameter_value("data_sampling.analysis_announcement_items", 20))]
     return [_announcement_snapshot(item) for item in selected_items]
 
 
@@ -1104,13 +1144,19 @@ def _announcement_selection_key(item: Announcement) -> tuple[int, float, str]:
     score = 0.0
     category = str(item.category or "").lower()
     if any(term.lower() in category for term in ANNOUNCEMENT_PRIORITY_CATEGORIES):
-        score += 0.26
+        score += float(parameter_value("analyst_engine.announcement_ranking.category_bonus", 0.26))
     if _contains_any(text, ACCOUNTING_SELECTION_TERMS):
-        score += 0.24
+        score += float(
+            parameter_value("analyst_engine.announcement_ranking.accounting_bonus", 0.24)
+        )
     matched_terms = sum(1 for term in ANNOUNCEMENT_PRIORITY_TERMS if term in text)
-    score += min(0.22, matched_terms * 0.04)
+    score += min(
+        float(parameter_value("analyst_engine.announcement_ranking.term_bonus_cap", 0.22)),
+        matched_terms
+        * float(parameter_value("analyst_engine.announcement_ranking.term_bonus_each", 0.04)),
+    )
     if item.summary:
-        score += 0.06
+        score += float(parameter_value("analyst_engine.announcement_ranking.summary_bonus", 0.06))
     return (_deep_summary_rank(item), score, item.published_at.isoformat())
 
 
@@ -1126,17 +1172,24 @@ def _select_external_evidence_snapshots(
         snapshots,
         key=_external_evidence_selection_key,
         reverse=True,
-    )[:MAX_EVIDENCE_SNAPSHOT_ITEMS]
+    )[: int(parameter_value("data_sampling.analysis_evidence_items", 10))]
 
 
 def _external_evidence_selection_key(snapshot: dict[str, object]) -> tuple[float, str]:
     score = 0.0
     credibility_score = snapshot.get("credibility_score")
     if isinstance(credibility_score, (int, float)):
-        score += float(credibility_score) * 0.5
+        score += float(credibility_score) * float(
+            parameter_value("analyst_engine.evidence_ranking.credibility_weight", 0.5)
+        )
     importance_score = snapshot.get("importance_score")
     if isinstance(importance_score, (int, float)):
-        score += float(importance_score) * 0.5
+        score += float(importance_score) * float(
+            parameter_value("analyst_engine.evidence_ranking.importance_weight", 0.5)
+        )
+    source_priority = parameter_value("analyst_engine.source_priority", {})
+    if isinstance(source_priority, dict):
+        score += float(source_priority.get(str(snapshot.get("source_type") or ""), 0.0))
     return (score, str(snapshot.get("published_at") or ""))
 
 
@@ -1842,56 +1895,62 @@ def _compute_profile_relevance(
         "has_brand_term": _contains_any(text, ("品牌", "高端", "渠道", "复购", "消费心智")),
     }
 
-    base_score_by_profile = {
-        "buffett": 0.68,
-        "peter_lynch": 0.62,
-        "munger": 0.64,
-        "duan_yongping": 0.66,
-        "graham": 0.58,
-        "fisher": 0.58,
-        "lin_yuan": 0.62,
-        "li_lu": 0.62,
-        "ray_dalio": 0.48,
-        "george_soros": 0.5,
-    }
-    score = base_score_by_profile.get(profile.id, 0.56)
+    base_score_by_profile = parameter_value("analyst_engine.base_profile_scores", {})
+    score = (
+        float(
+            base_score_by_profile.get(
+                profile.id,
+                parameter_value("analyst_engine.profile_default_score", 0.56),
+            )
+        )
+        if isinstance(base_score_by_profile, dict)
+        else 0.56
+    )
+    feature = parameter_value("analyst_engine.feature_adjustments", {})
+    feature = feature if isinstance(feature, dict) else {}
     reasons: list[str] = []
 
     if signals["consumer_brand"]:
         if profile.id in {"lin_yuan", "buffett", "duan_yongping"}:
-            score += 0.2
+            score += float(feature.get("consumer_brand_primary", 0.2))
             reasons.append("公司具有消费/品牌属性，该视角对消费刚需、品牌壁垒和现金创造更适配。")
         elif profile.id in {"munger", "peter_lynch", "li_lu"}:
-            score += 0.1
+            score += float(feature.get("consumer_brand_secondary", 0.1))
             reasons.append("消费品牌生意较容易映射到业务质量、增长兑现和能力圈框架。")
         elif profile.id == "ray_dalio":
-            score -= 0.08
+            score += float(feature.get("consumer_brand_dalio", -0.08))
             reasons.append(
                 "消费品牌公司的一阶问题通常不是宏观周期暴露，宏观视角更适合作为风险补充。"
             )
         elif profile.id == "george_soros":
-            score += 0.02
+            score += float(feature.get("consumer_brand_soros", 0.02))
             reasons.append("消费品牌可用反身性视角检查叙事偏差，但主要结论仍应回到商业质量。")
     if signals["tech_growth"] and profile.id in {"fisher", "peter_lynch"}:
-        score += 0.16
+        score += float(feature.get("tech_growth", 0.16))
         reasons.append("公司文本包含科技、研发或创新信号，成长质量视角更适配。")
     if signals["cyclical_macro"]:
         if profile.id in {"ray_dalio", "george_soros"}:
-            score += 0.22
+            score += float(feature.get("cyclical_macro_primary", 0.22))
             reasons.append("公司暴露周期或宏观敏感行业，宏观周期和信用环境视角更适配。")
         elif profile.id in {"graham", "li_lu"}:
-            score += 0.08
+            score += float(feature.get("cyclical_macro_defensive", 0.08))
             reasons.append("周期行业需要强调下行保护和永久损失风险。")
     if signals["asset_heavy"] and profile.id == "graham":
-        score += 0.12
+        score += float(feature.get("asset_heavy_graham", 0.12))
         reasons.append("资产较重或金融地产属性更适合做资产保护和保守假设检查。")
     if signals["has_cash_flow"] and profile.id in {"buffett", "lin_yuan", "duan_yongping"}:
-        score += 0.06
+        score += float(feature.get("cash_flow_quality", 0.06))
         reasons.append("快照含经营现金流字段，可支持现金创造和长期质量判断。")
     if not reasons:
         reasons.append("当前仅基于行业、标签、文本和可用财务字段给出基础适配度。")
 
-    industry_framework_fit = round(max(0.2, min(0.95, score)), 2)
+    fit_config = parameter_value("analyst_engine.profile_fit", {})
+    fit_config = fit_config if isinstance(fit_config, dict) else {}
+    fit_min = float(fit_config.get("minimum", 0.2))
+    fit_max = float(fit_config.get("maximum", 0.92))
+    industry_framework_fit = round(
+        max(fit_min, min(float(fit_config.get("industry_maximum", 0.95)), score)), 2
+    )
     required_topics = _profile_required_topics(profile.id)
     covered_topics = _coverage_topics(source_coverage_matrix)
     covered_topics.update(_inferred_company_topics(signals, financials))
@@ -1903,18 +1962,22 @@ def _compute_profile_relevance(
         external_evidence=external_evidence,
         source_coverage_matrix=source_coverage_matrix,
     )
-    uncertainty_penalty = 0.08 if len(financials) < 3 else 0.0
+    uncertainty_penalty = (
+        float(fit_config.get("few_financial_penalty", 0.08))
+        if len(financials) < int(fit_config.get("few_financial_periods", 3))
+        else 0.0
+    )
     if not external_evidence:
-        uncertainty_penalty += 0.04
+        uncertainty_penalty += float(fit_config.get("missing_external_penalty", 0.04))
 
     normalized_score = round(
         max(
-            0.2,
+            fit_min,
             min(
-                0.92,
-                industry_framework_fit * 0.55
-                + rule_coverage * 0.3
-                + evidence_support * 0.15
+                fit_max,
+                industry_framework_fit * float(fit_config.get("industry_weight", 0.55))
+                + rule_coverage * float(fit_config.get("rule_coverage_weight", 0.30))
+                + evidence_support * float(fit_config.get("evidence_support_weight", 0.15))
                 - uncertainty_penalty,
             ),
         ),
@@ -1956,35 +2019,49 @@ def _compute_data_confidence(
 ) -> dict[str, object]:
     reasons: list[str] = []
     limitations: list[str] = []
+    confidence_config = parameter_value("analyst_engine.data_confidence", {})
+    confidence_config = confidence_config if isinstance(confidence_config, dict) else {}
 
     periods = _financial_periods(financials)
     financial_data_gaps = financial_evidence_pack.get("financial_data_gaps")
     financial_gap_count = len(financial_data_gaps) if isinstance(financial_data_gaps, list) else 0
     financial_score = 0.0
     if financials:
-        financial_score += 0.35
+        financial_score += float(confidence_config.get("financial_present", 0.35))
         reasons.append("存在财务快照。")
-    if len(periods) >= 3:
-        financial_score += 0.2
+    if len(periods) >= int(confidence_config.get("financial_periods_required", 3)):
+        financial_score += float(confidence_config.get("financial_periods_bonus", 0.20))
         reasons.append("财务期数达到 3 期以上。")
     if financial_evidence_pack.get("latest_period"):
-        financial_score += 0.15
+        financial_score += float(confidence_config.get("latest_period_bonus", 0.15))
     if _coverage_has_topic(source_coverage_matrix, "profitability"):
-        financial_score += 0.12
+        financial_score += float(confidence_config.get("profitability_bonus", 0.12))
     if _coverage_has_topic(source_coverage_matrix, "cash_flow"):
-        financial_score += 0.08
-    financial_score -= min(0.25, financial_gap_count * 0.03)
+        financial_score += float(confidence_config.get("cash_flow_bonus", 0.08))
+    financial_score -= min(
+        float(confidence_config.get("financial_gap_penalty_cap", 0.25)),
+        financial_gap_count * float(confidence_config.get("financial_gap_penalty_each", 0.03)),
+    )
     financial_score = max(0.0, min(1.0, financial_score))
 
     summarized_announcements = sum(1 for item in announcements if item.get("summary"))
     announcement_score = 0.0
     if announcements:
-        announcement_score += min(0.55, len(announcements) / 20 * 0.55)
-        announcement_score += min(0.3, summarized_announcements / len(announcements) * 0.3)
+        announcement_cap = float(confidence_config.get("announcement_count_cap", 0.55))
+        announcement_score += min(
+            announcement_cap,
+            len(announcements)
+            / float(confidence_config.get("announcement_target_count", 20))
+            * announcement_cap,
+        )
+        summary_cap = float(confidence_config.get("announcement_summary_cap", 0.30))
+        announcement_score += min(
+            summary_cap, summarized_announcements / len(announcements) * summary_cap
+        )
         if _coverage_has_topic(source_coverage_matrix, "accounting"):
-            announcement_score += 0.1
+            announcement_score += float(confidence_config.get("accounting_bonus", 0.10))
         if _coverage_has_topic(source_coverage_matrix, "governance"):
-            announcement_score += 0.05
+            announcement_score += float(confidence_config.get("governance_bonus", 0.05))
         reasons.append("存在公告快照。")
     announcement_score = max(0.0, min(1.0, announcement_score))
 
@@ -1997,10 +2074,12 @@ def _compute_data_confidence(
     external_score = 0.0
     if external_evidence:
         analyzed_ratio = model_analyzed / len(external_evidence)
-        external_score += 0.35
-        external_score += analyzed_ratio * 0.35
+        external_score += float(confidence_config.get("external_present", 0.35))
+        external_score += analyzed_ratio * float(
+            confidence_config.get("external_analyzed_weight", 0.35)
+        )
         external_score += min(
-            0.2,
+            float(confidence_config.get("external_source_bonus_cap", 0.20)),
             len(
                 {
                     str(item.get("source_type"))
@@ -2008,9 +2087,12 @@ def _compute_data_confidence(
                     if item.get("source_type")
                 }
             )
-            * 0.05,
+            * float(confidence_config.get("external_source_bonus_each", 0.05)),
         )
-        external_score -= min(0.25, search_leads * 0.04)
+        external_score -= min(
+            float(confidence_config.get("search_lead_penalty_cap", 0.25)),
+            search_leads * float(confidence_config.get("search_lead_penalty_each", 0.04)),
+        )
         reasons.append("存在 007 外部信息。")
     else:
         limitations.append("缺少 007 外部信息，外部约束和行业信息覆盖不足。")
@@ -2022,7 +2104,7 @@ def _compute_data_confidence(
     source_balance = source_presence / 3
     accounting_penalty = 0.0
     if accounting_events:
-        accounting_penalty = 0.06
+        accounting_penalty = float(confidence_config.get("accounting_event_penalty", 0.06))
         limitations.append("检测到会计口径事件，财务同比结论需要降置信度并单独说明。")
     if search_leads:
         limitations.append("部分外部信息仍是待复核搜索线索，不能当作已验证事实。")
@@ -2033,13 +2115,13 @@ def _compute_data_confidence(
 
     normalized_score = round(
         max(
-            0.2,
+            float(confidence_config.get("minimum", 0.20)),
             min(
-                0.92,
-                financial_score * 0.45
-                + announcement_score * 0.25
-                + external_score * 0.2
-                + source_balance * 0.1
+                float(confidence_config.get("maximum", 0.92)),
+                financial_score * float(confidence_config.get("financial_weight", 0.45))
+                + announcement_score * float(confidence_config.get("announcement_weight", 0.25))
+                + external_score * float(confidence_config.get("external_weight", 0.20))
+                + source_balance * float(confidence_config.get("source_balance_weight", 0.10))
                 - accounting_penalty,
             ),
         ),
@@ -2173,9 +2255,11 @@ def _profile_evidence_support(
 
 
 def _score_tier(score: float) -> str:
-    if score >= 0.78:
+    thresholds = parameter_value("analyst_engine.tier_thresholds", {})
+    thresholds = thresholds if isinstance(thresholds, dict) else {}
+    if score >= float(thresholds.get("high", 0.78)):
         return "high"
-    if score >= 0.55:
+    if score >= float(thresholds.get("medium", 0.55)):
         return "medium"
     return "low"
 
@@ -2244,6 +2328,29 @@ def _financial_periods(financials: list[dict[str, object]]) -> list[str]:
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword.lower() in text.lower() for keyword in keywords)
+
+
+def _model_contains_price_sensitive_text(item: Announcement | Evidence) -> bool:
+    text = _join_text_parts(
+        item.title,
+        getattr(item, "summary", None),
+        getattr(item, "key_facts", None),
+        getattr(item, "tags", None),
+        getattr(item, "analysis_note", None),
+    )
+    return _contains_any(text, PRICE_SENSITIVE_TEXT_TERMS)
+
+
+def _remove_price_sensitive_fields(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _remove_price_sensitive_fields(item)
+            for key, item in value.items()
+            if str(key).lower() not in PRICE_SENSITIVE_FIELD_NAMES
+        }
+    if isinstance(value, list):
+        return [_remove_price_sensitive_fields(item) for item in value]
+    return value
 
 
 def _join_text_parts(*parts: object) -> str:
@@ -2348,20 +2455,6 @@ def _company_snapshot(company: Company) -> dict[str, Any]:
         "listed_date": company.listed_date.isoformat() if company.listed_date else None,
         "status": company.status,
         "tags": company.tags,
-        "market_cap": company.market_cap,
-        "current_price": company.current_price,
-        "pe_ttm": company.pe_ttm,
-        "pe_dynamic": company.pe_dynamic,
-        "pe_static": company.pe_static,
-        "pb_ratio": company.pb_ratio,
-        "ps_ratio": company.ps_ratio,
-        "dividend_yield_ttm": company.dividend_yield_ttm,
-        "dividend_yield_static": company.dividend_yield_static,
-        "market_data_source": company.market_data_source,
-        "market_data_source_url": company.market_data_source_url,
-        "market_data_updated_at": (
-            company.market_data_updated_at.isoformat() if company.market_data_updated_at else None
-        ),
     }
 
 
@@ -2371,7 +2464,7 @@ def _financial_snapshot(item: FinancialStatement) -> dict[str, object]:
         "period": item.period,
         "statement_type": item.statement_type,
         "currency": item.currency,
-        "fields": item.fields,
+        "fields": _remove_price_sensitive_fields(item.fields),
         "source": item.source,
         "source_url": item.source_url,
         "created_at": item.created_at.isoformat(),
@@ -2386,7 +2479,7 @@ def _announcement_snapshot(item: Announcement) -> dict[str, object]:
         "category": item.category,
         "summary": _truncate_text(
             item.summary,
-            max_length=MAX_ANNOUNCEMENT_EXCERPT_LENGTH,
+            max_length=int(parameter_value("data_sampling.analysis_excerpt_chars", 360)),
         ),
         "key_facts": _compact_text_list(
             item.key_facts,
@@ -2406,7 +2499,7 @@ def _evidence_snapshot(item: Evidence) -> dict[str, object]:
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "summary": _truncate_text(
             item.summary,
-            max_length=MAX_HISTORY_TEXT_LENGTH,
+            max_length=int(parameter_value("data_sampling.analysis_excerpt_chars", 360)),
         ),
         "key_facts": _compact_text_list(
             item.key_facts,
@@ -2423,7 +2516,7 @@ def _evidence_snapshot(item: Evidence) -> dict[str, object]:
         "analysis_status": item.analysis_status,
         "analysis_note": _truncate_text(
             item.analysis_note,
-            max_length=MAX_HISTORY_TEXT_LENGTH,
+            max_length=int(parameter_value("data_sampling.analysis_excerpt_chars", 360)),
         ),
     }
 
@@ -2471,7 +2564,7 @@ def _compact_result(result: dict[str, object]) -> dict[str, object]:
         if isinstance(value, str):
             compact[key] = _truncate_text(
                 sanitize_error_text(value),
-                max_length=MAX_HISTORY_TEXT_LENGTH,
+                max_length=int(parameter_value("data_sampling.analysis_excerpt_chars", 360)),
             )
         elif value is not None:
             compact[key] = value
@@ -2507,7 +2600,7 @@ def _compact_rule_check(item: dict[str, object]) -> dict[str, object]:
     if isinstance(summary, str):
         compact["summary"] = _truncate_text(
             sanitize_error_text(summary),
-            max_length=MAX_HISTORY_TEXT_LENGTH,
+            max_length=int(parameter_value("data_sampling.analysis_excerpt_chars", 360)),
         )
     return compact
 
@@ -2517,7 +2610,7 @@ def _compact_text_list(value: list[object], *, max_items: int) -> list[str]:
     for item in value:
         normalized = _truncate_text(
             sanitize_error_text(str(item)),
-            max_length=MAX_HISTORY_TEXT_LENGTH,
+            max_length=int(parameter_value("data_sampling.analysis_excerpt_chars", 360)),
         )
         if normalized and normalized not in items:
             items.append(normalized)

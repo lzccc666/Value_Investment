@@ -514,6 +514,9 @@ class AnalysisRunRead(BaseModel):
     model_name: str | None = None
     prompt_version: str | None = None
     data_snapshot_hash: str | None = None
+    config_version: int | None = None
+    config_hash: str | None = None
+    config_snapshot: dict[str, object] = Field(default_factory=dict)
     result: dict[str, object] = Field(default_factory=dict)
     confidence: float | None = None
     parent_run_id: int | None = None

@@ -9,7 +9,9 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.configuration.runtime import parameter_config_context, parameter_value
 from app.db.models import Company, InvestmentMemo, PriceDecisionRun, ValuationRun, utc_now
+from app.services.parameter_config_service import get_runtime_parameter_config
 
 RUN_VERSION = "011_v1"
 FORMULA_VERSION = "011_v1"
@@ -38,6 +40,29 @@ def create_price_decision_run(
     valuation_run_id: int | None = None,
     safety_margin_override: float | None = None,
 ) -> PriceDecisionRun:
+    runtime = get_runtime_parameter_config(session)
+    with parameter_config_context(runtime.snapshot):
+        return _create_price_decision_run_with_config(
+            session,
+            company,
+            valuation_run_id=valuation_run_id,
+            safety_margin_override=safety_margin_override,
+            config_version=runtime.version,
+            config_hash=runtime.config_hash,
+            config_snapshot=runtime.snapshot,
+        )
+
+
+def _create_price_decision_run_with_config(
+    session: Session,
+    company: Company,
+    *,
+    valuation_run_id: int | None,
+    safety_margin_override: float | None,
+    config_version: int | None,
+    config_hash: str,
+    config_snapshot: dict[str, object],
+) -> PriceDecisionRun:
     valuation_run = _resolve_valuation_run(
         session,
         company_id=company.id,
@@ -51,10 +76,10 @@ def create_price_decision_run(
     effective_margin = suggested_margin if override is None else override
 
     scenario_buy_prices = {
-        scenario: value * (1.0 - effective_margin)
-        for scenario, value in intrinsic_values.items()
+        scenario: value * (1.0 - effective_margin) for scenario, value in intrinsic_values.items()
     }
-    suggested_buy_price = scenario_buy_prices["base"]
+    buy_price_scenario = str(parameter_value("price_decision.buy_price_scenario", "base"))
+    suggested_buy_price = scenario_buy_prices[buy_price_scenario]
     current_margin = 1.0 - current_price / intrinsic_values["base"]
     price_status = determine_price_status(
         current_price=current_price,
@@ -93,6 +118,10 @@ def create_price_decision_run(
             "effective": effective_margin,
         },
         "formula_version": FORMULA_VERSION,
+        "configuration": {
+            "version": config_version,
+            "hash": config_hash,
+        },
     }
     snapshot_hash = _hash_snapshot(input_snapshot)
     version_no = (
@@ -114,6 +143,9 @@ def create_price_decision_run(
         status=ACTIVE_STATUS,
         input_snapshot=input_snapshot,
         input_snapshot_hash=snapshot_hash,
+        config_version=config_version,
+        config_hash=config_hash,
+        config_snapshot=deepcopy(config_snapshot),
         intrinsic_values_per_share=intrinsic_values,
         current_price=current_price,
         market_data_updated_at=market_data_updated_at,
@@ -178,9 +210,7 @@ def list_company_price_decision_runs(
     filters = [PriceDecisionRun.company_id == company_id]
     if not include_deleted:
         filters.append(PriceDecisionRun.status != DELETED_STATUS)
-    total = session.scalar(
-        select(func.count()).select_from(PriceDecisionRun).where(*filters)
-    ) or 0
+    total = session.scalar(select(func.count()).select_from(PriceDecisionRun).where(*filters)) or 0
     items = list(
         session.scalars(
             select(PriceDecisionRun)
@@ -281,7 +311,9 @@ def _read_scorecard(memo: InvestmentMemo) -> tuple[float, float, dict[str, objec
         raise PriceDecisionInputError(
             "该估值绑定的旧 Memo 没有动态安全边际，请重新生成 Memo 和 010 估值。"
         )
-    if not 0.0 <= suggested_margin <= 0.5:
+    minimum = float(parameter_value("price_decision.safety_margin_min", 0.0))
+    maximum = float(parameter_value("price_decision.safety_margin_max", 0.5))
+    if not minimum <= suggested_margin <= maximum:
         raise PriceDecisionInputError("绑定 Memo 的动态安全边际超出 0%-50%，请重新生成 Memo。")
     analyst_score_total = _finite_number(scorecard.get("total_score"))
     if analyst_score_total is None:
@@ -304,7 +336,9 @@ def _validate_margin_override(value: float | None) -> float | None:
     if value is None:
         return None
     normalized = _finite_number(value)
-    if normalized is None or not 0.0 <= normalized <= 0.5:
+    minimum = float(parameter_value("price_decision.safety_margin_min", 0.0))
+    maximum = float(parameter_value("price_decision.safety_margin_max", 0.5))
+    if normalized is None or not minimum <= normalized <= maximum:
         raise PriceDecisionInputError("用户覆盖安全边际必须位于 0%-50%。")
     return normalized
 

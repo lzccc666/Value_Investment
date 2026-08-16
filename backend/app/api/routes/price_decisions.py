@@ -14,6 +14,7 @@ from app.schemas.price_decision import (
     PriceDecisionRunRead,
 )
 from app.services.companies import get_company
+from app.services.parameter_config_service import get_runtime_parameter_config
 from app.services.price_decision_service import (
     PriceDecisionInputError,
     create_price_decision_run,
@@ -68,19 +69,28 @@ def get_latest_company_price_decision_run_item(
 def get_company_price_decision_runs(
     company_id: int,
     db: Annotated[Session, Depends(get_db)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    limit: Annotated[int | None, Query(ge=1, le=100)] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     include_deleted: bool = False,
 ) -> PriceDecisionListResponse:
     _get_company_or_404(db, company_id)
+    runtime = get_runtime_parameter_config(db)
+    effective_limit = limit or int(
+        runtime.snapshot["data_sampling"]["price_decision_history_limit"]
+    )
     items, total = list_company_price_decision_runs(
         db,
         company_id=company_id,
-        limit=limit,
+        limit=effective_limit,
         offset=offset,
         include_deleted=include_deleted,
     )
-    return PriceDecisionListResponse(items=items, total=total, limit=limit, offset=offset)
+    return PriceDecisionListResponse(
+        items=items,
+        total=total,
+        limit=effective_limit,
+        offset=offset,
+    )
 
 
 @router.get("/price-decision-runs/{run_id}", response_model=PriceDecisionRunRead)

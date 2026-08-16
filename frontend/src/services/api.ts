@@ -373,6 +373,9 @@ export type AnalysisRun = {
   model_name: string | null;
   prompt_version: string | null;
   data_snapshot_hash: string | null;
+  config_version: number | null;
+  config_hash: string | null;
+  config_snapshot: Record<string, unknown>;
   result: Partial<AnalystAnalysisResult> & Record<string, unknown>;
   confidence: number | null;
   parent_run_id: number | null;
@@ -431,6 +434,9 @@ export type InvestmentMemo = {
   markdown: string;
   source_analyst_run_ids: number[];
   source_snapshot_hash: string | null;
+  config_version: number | null;
+  config_hash: string | null;
+  config_snapshot: Record<string, unknown>;
   change_note: string | null;
   status: string;
   is_latest: boolean;
@@ -478,6 +484,9 @@ export type ValuationRun = {
   forbidden_price_inputs: Record<string, unknown>;
   input_snapshot: Record<string, unknown>;
   input_snapshot_hash: string | null;
+  config_version: number | null;
+  config_hash: string | null;
+  config_snapshot: Record<string, unknown>;
   valuation_inputs: Record<string, unknown>;
   model_suggested_assumptions: Record<string, unknown>;
   user_adjusted_assumptions: Record<string, unknown>;
@@ -521,6 +530,9 @@ export type PriceDecisionRun = {
   status: "active" | "deleted";
   input_snapshot: Record<string, unknown>;
   input_snapshot_hash: string;
+  config_version: number | null;
+  config_hash: string | null;
+  config_snapshot: Record<string, unknown>;
   intrinsic_values_per_share: Record<string, number>;
   current_price: number;
   market_data_updated_at: string;
@@ -561,9 +573,150 @@ export type PriceDecisionDeleteResponse = {
   latest_price_decision_run_id: number | null;
 };
 
+export type ParameterValidationIssue = {
+  path: string;
+  message: string;
+  severity: "error" | "warning";
+  code: string;
+};
+
+export type ParameterValidationResult = {
+  valid: boolean;
+  errors: ParameterValidationIssue[];
+  warnings: ParameterValidationIssue[];
+  actual_parameter_count: number;
+  audit_parameter_count: number;
+};
+
+export type ParameterMetadataItem = {
+  path: string;
+  domain: string;
+  label: string;
+  code_name: string;
+  description: string;
+  unit: string;
+  default_value: unknown;
+  current_value: unknown;
+  minimum: number | null;
+  maximum: number | null;
+  editable: boolean;
+  expert: boolean;
+  audit_only: boolean;
+  risk: "low" | "medium" | "high";
+};
+
+export type ParameterConfigCurrentResponse = {
+  config_json: Record<string, unknown>;
+  config_hash: string;
+  source: "source_file" | "builtin_default" | "builtin_fallback";
+  fallback_reason: string | null;
+  validation: ParameterValidationResult;
+  metadata: ParameterMetadataItem[];
+};
+
+export type ParameterConfigPublishResponse = {
+  config_json: Record<string, unknown>;
+  config_hash: string;
+  source: "source_file";
+  validation: ParameterValidationResult;
+  metadata: ParameterMetadataItem[];
+};
+
+export type DataOperationType =
+  | "reset_company_research_data"
+  | "clear_analysis_history"
+  | "initialize_database"
+  | "prune_versions"
+  | "purge_deleted_and_vacuum"
+  | "restore_backup"
+  | "delete_backup";
+
+export type DataOperationParameters = {
+  company_id?: number | null;
+  keep_count?: number | null;
+  backup_id?: string | null;
+};
+
+export type ProtectedRecord = {
+  table: string;
+  record_id: number;
+  reason: string;
+};
+
+export type DataOperationPreview = {
+  operation_token: string;
+  operation_type: DataOperationType;
+  parameters: DataOperationParameters;
+  affected_counts: Record<string, number>;
+  protected_records: ProtectedRecord[];
+  estimated_reclaim_bytes: number;
+  requires_backup: boolean;
+  confirmation_phrase: string;
+  expires_at: string;
+};
+
+export type DataOperationResult = {
+  operation_type: DataOperationType;
+  affected_counts: Record<string, number>;
+  backup_id: string | null;
+  protected_records: ProtectedRecord[];
+  database_size_before: number | null;
+  database_size_after: number | null;
+  reclaimed_bytes: number | null;
+  integrity_check: string | null;
+  restart_required: boolean;
+  message: string;
+};
+
+export type BackupManifest = {
+  backup_id: string;
+  created_at: string;
+  database_filename: string;
+  file_size: number;
+  sha256: string;
+  schema_version: number;
+  record_counts: Record<string, number>;
+  reason: string;
+  application_version: string;
+  verified: boolean | null;
+  integrity_check: string | null;
+};
+
+export type AutomaticBackupSettings = {
+  enabled: boolean;
+  interval_hours: number;
+  max_backups: number;
+  last_auto_backup_at: string | null;
+};
+
+export type DataManagementSummary = {
+  database_path: string;
+  database_size: number;
+  record_counts: Record<string, number>;
+  soft_deleted_counts: Record<string, number>;
+  latest_backup: BackupManifest | null;
+  automatic_backup: AutomaticBackupSettings;
+  maintenance_active: boolean;
+  maintenance_operation: string | null;
+  schema_version: number;
+  integrity_check: string;
+};
+
+export type BackupListResponse = {
+  items: BackupManifest[];
+  total: number;
+};
+
+export type BackupVerifyResponse = {
+  backup_id: string;
+  valid: boolean;
+  sha256_matches: boolean;
+  integrity_check: string;
+};
+
 type RequestJsonOptions = {
   signal?: AbortSignal;
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
 };
 
@@ -877,12 +1030,15 @@ export async function searchCompanyEvidence(
   companyId: number,
   params: { keywords?: string[]; max_results?: number; signal?: AbortSignal } = {}
 ): Promise<EvidenceSearchResponse> {
+  const body: { keywords: string[]; max_results?: number } = {
+    keywords: params.keywords ?? []
+  };
+  if (typeof params.max_results === "number") {
+    body.max_results = params.max_results;
+  }
   return fetchJson<EvidenceSearchResponse>(`/companies/${companyId}/evidence/search`, {
     method: "POST",
-    body: {
-      keywords: params.keywords ?? [],
-      max_results: params.max_results ?? 5
-    },
+    body,
     signal: params.signal
   });
 }
@@ -1220,6 +1376,135 @@ export async function deletePriceDecisionRun(
 ): Promise<PriceDecisionDeleteResponse> {
   return fetchJson<PriceDecisionDeleteResponse>(`/price-decision-runs/${runId}`, {
     method: "DELETE",
+    signal
+  });
+}
+
+export async function getCurrentParameterConfig(
+  signal?: AbortSignal
+): Promise<ParameterConfigCurrentResponse> {
+  return fetchJson<ParameterConfigCurrentResponse>("/parameter-config/current", { signal });
+}
+
+export async function getDefaultParameterConfig(
+  signal?: AbortSignal
+): Promise<ParameterConfigCurrentResponse> {
+  return fetchJson<ParameterConfigCurrentResponse>("/parameter-config/defaults", { signal });
+}
+
+export async function validateParameterConfig(
+  configJson: Record<string, unknown>
+): Promise<ParameterValidationResult> {
+  return fetchJson<ParameterValidationResult>("/parameter-config/validate", {
+    method: "POST",
+    body: { config_json: configJson }
+  });
+}
+
+export async function publishParameterConfig(
+  configJson: Record<string, unknown>,
+  warningsAcknowledged: boolean
+): Promise<ParameterConfigPublishResponse> {
+  return fetchJson<ParameterConfigPublishResponse>("/parameter-config/current", {
+    method: "PUT",
+    body: { config_json: configJson, warnings_acknowledged: warningsAcknowledged }
+  });
+}
+
+export async function getDataManagementSummary(
+  signal?: AbortSignal
+): Promise<DataManagementSummary> {
+  return fetchJson<DataManagementSummary>("/data-management/summary", { signal });
+}
+
+export async function previewDataOperation(
+  operationType: DataOperationType,
+  parameters: DataOperationParameters = {},
+  signal?: AbortSignal
+): Promise<DataOperationPreview> {
+  return fetchJson<DataOperationPreview>("/data-management/operations/preview", {
+    method: "POST",
+    body: { operation_type: operationType, parameters },
+    signal
+  });
+}
+
+export async function executeDataOperation(
+  operationToken: string,
+  confirmationPhrase: string,
+  signal?: AbortSignal
+): Promise<DataOperationResult> {
+  return fetchJson<DataOperationResult>("/data-management/operations/execute", {
+    method: "POST",
+    body: { operation_token: operationToken, confirmation_phrase: confirmationPhrase },
+    signal
+  });
+}
+
+export async function getBackups(signal?: AbortSignal): Promise<BackupListResponse> {
+  return fetchJson<BackupListResponse>("/data-management/backups", { signal });
+}
+
+export async function createBackup(
+  reason = "manual",
+  signal?: AbortSignal
+): Promise<BackupManifest> {
+  return fetchJson<BackupManifest>("/data-management/backups", {
+    method: "POST",
+    body: { reason },
+    signal
+  });
+}
+
+export async function verifyBackup(
+  backupId: string,
+  signal?: AbortSignal
+): Promise<BackupVerifyResponse> {
+  return fetchJson<BackupVerifyResponse>(
+    `/data-management/backups/${encodeURIComponent(backupId)}/verify`,
+    { method: "POST", signal }
+  );
+}
+
+export async function previewBackupRestore(
+  backupId: string,
+  signal?: AbortSignal
+): Promise<DataOperationPreview> {
+  return fetchJson<DataOperationPreview>(
+    `/data-management/backups/${encodeURIComponent(backupId)}/restore/preview`,
+    { method: "POST", signal }
+  );
+}
+
+export async function deleteBackup(
+  backupId: string,
+  operationToken: string,
+  confirmationPhrase: string,
+  signal?: AbortSignal
+): Promise<DataOperationResult> {
+  return fetchJson<DataOperationResult>(
+    `/data-management/backups/${encodeURIComponent(backupId)}`,
+    {
+      method: "DELETE",
+      body: { operation_token: operationToken, confirmation_phrase: confirmationPhrase },
+      signal
+    }
+  );
+}
+
+export async function getAutomaticBackupSettings(
+  signal?: AbortSignal
+): Promise<AutomaticBackupSettings> {
+  return fetchJson<AutomaticBackupSettings>("/data-management/settings", { signal });
+}
+
+export async function updateAutomaticBackupSettings(
+  settings: Pick<AutomaticBackupSettings, "enabled" | "interval_hours" | "max_backups">,
+  signal?: AbortSignal
+): Promise<AutomaticBackupSettings> {
+  return fetchJson<AutomaticBackupSettings>("/data-management/settings", {
+    method: "PUT",
+    body: settings,
     signal
   });
 }

@@ -332,9 +332,13 @@ def derive_valuation_parameter_matrix(
     rule_impacts = []
     for rule in profile.rules:
         check = checks_by_id.get(rule.id, {})
-        mapping = RULE_VALUATION_MAPPINGS[(profile.id, rule.id)]
+        mapping = _runtime_rule_mapping(profile.id, rule.id)
+        status_scores = _parameter_value(
+            "valuation_rule_matrix.status_scores",
+            STATUS_SCORES,
+        )
         status = str(check.get("status") or "unknown").strip().lower()
-        if status not in STATUS_SCORES:
+        if status not in status_scores:
             status = "unknown"
         source_refs = {
             "evidence_ids": _list(check.get("evidence_ids")),
@@ -360,7 +364,7 @@ def derive_valuation_parameter_matrix(
                 "rule_id": rule.id,
                 "rule_label": rule.label,
                 "status": status,
-                "status_score": STATUS_SCORES[status],
+                "status_score": float(status_scores[status]),
                 "price_blind_compatible": price_blind,
                 "calculation_role": calculation_role,
                 "dimensions": dict(mapping.dimensions),
@@ -385,7 +389,7 @@ def derive_valuation_parameter_matrix(
             for item in rule_impacts
             if item["calculation_role"] == "compute"
         ),
-        "status_score_policy": dict(STATUS_SCORES),
+        "status_score_policy": dict(status_scores),
         "analyst_items": [
             {
                 "profile_id": profile.id,
@@ -397,6 +401,27 @@ def derive_valuation_parameter_matrix(
             }
         ],
     }
+
+
+def _runtime_rule_mapping(profile_id: str, rule_id: str) -> RuleValuationMapping:
+    configured_mappings = _parameter_value("valuation_rule_matrix.rule_mappings", {})
+    configured = (
+        configured_mappings.get(f"{profile_id}.{rule_id}")
+        if isinstance(configured_mappings, dict)
+        else None
+    )
+    if not isinstance(configured, dict):
+        return RULE_VALUATION_MAPPINGS[(profile_id, rule_id)]
+    dimensions = configured.get("dimensions")
+    impacts = configured.get("parameter_impacts")
+    if not isinstance(dimensions, dict) or not isinstance(impacts, dict):
+        return RULE_VALUATION_MAPPINGS[(profile_id, rule_id)]
+    return RuleValuationMapping(
+        dimensions={str(key): float(value) for key, value in dimensions.items()},
+        parameter_impacts={str(key): float(value) for key, value in impacts.items()},
+        calculation_role=str(configured.get("calculation_role") or "compute"),
+        price_blind_compatible=configured.get("price_blind_compatible") is True,
+    )
 
 
 def validate_rule_mapping_coverage() -> None:
@@ -460,6 +485,12 @@ def _number(value: object, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _parameter_value(path: str, default: object) -> object:
+    from app.configuration.runtime import parameter_value
+
+    return parameter_value(path, default)
 
 
 validate_rule_mapping_coverage()

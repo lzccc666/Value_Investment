@@ -221,15 +221,24 @@ def _calculate_dividend_yields(
     if payload is None:
         return None, None
 
-    dynamic_yield = _calculate_ttm_dividend_yield(
-        payload.get("fhyx"),
+    dividend_rows = payload.get("fhyx")
+    implemented_ttm_yield = _calculate_ttm_dividend_yield(
+        dividend_rows,
         current_price=current_price,
         as_of=as_of,
     )
-    static_yield = _calculate_static_dividend_yield(
+    announced_yield = _calculate_announced_dividend_yield(
+        dividend_rows,
         payload.get("lnfhrz"),
         market_cap=market_cap,
+        current_price=current_price,
     )
+    static_yield = announced_yield or _calculate_static_dividend_yield(
+        payload.get("lnfhrz"),
+        market_cap=market_cap,
+        latest_year_may_be_partial=_has_pending_cash_dividend(dividend_rows),
+    )
+    dynamic_yield = _normalize_ttm_dividend_yield(implemented_ttm_yield, static_yield)
     return dynamic_yield, static_yield
 
 
@@ -271,6 +280,7 @@ def _calculate_static_dividend_yield(
     rows: object,
     *,
     market_cap: float | None,
+    latest_year_may_be_partial: bool = False,
 ) -> float | None:
     if not isinstance(rows, list) or market_cap is None or market_cap <= 0:
         return None
@@ -286,8 +296,98 @@ def _calculate_static_dividend_yield(
 
     if not candidates:
         return None
-    _, total_dividend = max(candidates, key=lambda item: item[0])
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _, total_dividend = candidates[0]
+    if latest_year_may_be_partial and len(candidates) >= 2:
+        _, previous_total_dividend = candidates[1]
+        if total_dividend < previous_total_dividend * 0.5:
+            total_dividend = previous_total_dividend
     return total_dividend / market_cap
+
+
+def _calculate_announced_dividend_yield(
+    dividend_rows: object,
+    annual_rows: object,
+    *,
+    market_cap: float | None,
+    current_price: float | None,
+) -> float | None:
+    if (
+        not isinstance(dividend_rows, list)
+        or market_cap is None
+        or market_cap <= 0
+        or current_price is None
+        or current_price <= 0
+    ):
+        return None
+
+    latest_pending = _latest_pending_cash_dividend(dividend_rows)
+    if latest_pending is None:
+        return None
+
+    pending_notice_date, pending_cash_per_10 = latest_pending
+    annual_totals = _annual_dividend_totals_by_year(annual_rows)
+    fiscal_year = pending_notice_date.year - 1
+    same_year_total = annual_totals.get(fiscal_year)
+    if same_year_total is None:
+        same_year_total = annual_totals.get(pending_notice_date.year, 0.0)
+
+    total_shares = market_cap / current_price
+    pending_total_dividend = (pending_cash_per_10 / 10) * total_shares
+    return (same_year_total + pending_total_dividend) / market_cap
+
+
+def _normalize_ttm_dividend_yield(
+    implemented_ttm_yield: float | None,
+    static_yield: float | None,
+) -> float | None:
+    if static_yield is not None and (
+        implemented_ttm_yield is None or implemented_ttm_yield < static_yield * 0.5
+    ):
+        return static_yield
+    return implemented_ttm_yield
+
+
+def _latest_pending_cash_dividend(rows: object) -> tuple[date, float] | None:
+    if not isinstance(rows, list):
+        return None
+
+    pending: list[tuple[date, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        progress = str(row.get("ASSIGN_PROGRESS") or "")
+        if "实施" in progress:
+            continue
+        cash_per_10 = _cash_per_10_shares_or_none(row.get("IMPL_PLAN_PROFILE"))
+        notice_date = _date_or_none(row.get("NOTICE_DATE"))
+        if cash_per_10 is not None and cash_per_10 > 0 and notice_date is not None:
+            pending.append((notice_date, cash_per_10))
+
+    if not pending:
+        return None
+    return max(pending, key=lambda item: item[0])
+
+
+def _annual_dividend_totals_by_year(rows: object) -> dict[int, float]:
+    if not isinstance(rows, list):
+        return {}
+
+    totals: dict[int, float] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        year = _int_or_none(row.get("STATISTICS_YEAR"))
+        total_dividend = _number_or_none(row.get("TOTAL_DIVIDEND"))
+        if year is not None and total_dividend is not None and total_dividend > 0:
+            totals[year] = total_dividend
+    return totals
+
+
+def _has_pending_cash_dividend(rows: object) -> bool:
+    return _latest_pending_cash_dividend(rows) is not None
+
+
 
 
 def _cash_per_10_shares_or_none(value: object) -> float | None:

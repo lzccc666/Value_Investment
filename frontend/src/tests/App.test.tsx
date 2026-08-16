@@ -159,7 +159,21 @@ const mocks = vi.hoisted(() => {
     getLatestPriceDecisionRun: vi.fn(),
     getPriceDecisionRuns: vi.fn(),
     createPriceDecisionRun: vi.fn(),
-    deletePriceDecisionRun: vi.fn()
+    deletePriceDecisionRun: vi.fn(),
+    getDataManagementSummary: vi.fn(),
+    previewDataOperation: vi.fn(),
+    executeDataOperation: vi.fn(),
+    getBackups: vi.fn(),
+    createBackup: vi.fn(),
+    verifyBackup: vi.fn(),
+    previewBackupRestore: vi.fn(),
+    deleteBackup: vi.fn(),
+    getAutomaticBackupSettings: vi.fn(),
+    updateAutomaticBackupSettings: vi.fn(),
+    getCurrentParameterConfig: vi.fn(),
+    getDefaultParameterConfig: vi.fn(),
+    validateParameterConfig: vi.fn(),
+    publishParameterConfig: vi.fn()
   };
 });
 
@@ -218,7 +232,21 @@ vi.mock("../services/api", () => ({
   getLatestPriceDecisionRun: mocks.getLatestPriceDecisionRun,
   getPriceDecisionRuns: mocks.getPriceDecisionRuns,
   createPriceDecisionRun: mocks.createPriceDecisionRun,
-  deletePriceDecisionRun: mocks.deletePriceDecisionRun
+  deletePriceDecisionRun: mocks.deletePriceDecisionRun,
+  getDataManagementSummary: mocks.getDataManagementSummary,
+  previewDataOperation: mocks.previewDataOperation,
+  executeDataOperation: mocks.executeDataOperation,
+  getBackups: mocks.getBackups,
+  createBackup: mocks.createBackup,
+  verifyBackup: mocks.verifyBackup,
+  previewBackupRestore: mocks.previewBackupRestore,
+  deleteBackup: mocks.deleteBackup,
+  getAutomaticBackupSettings: mocks.getAutomaticBackupSettings,
+  updateAutomaticBackupSettings: mocks.updateAutomaticBackupSettings,
+  getCurrentParameterConfig: mocks.getCurrentParameterConfig,
+  getDefaultParameterConfig: mocks.getDefaultParameterConfig,
+  validateParameterConfig: mocks.validateParameterConfig,
+  publishParameterConfig: mocks.publishParameterConfig
 }));
 
 import { App } from "../app/App";
@@ -971,6 +999,172 @@ beforeEach(() => {
     deleted: true,
     latest_price_decision_run_id: null
   });
+  const backup = {
+    backup_id: "20260816T100000000000Z-test",
+    created_at: "2026-08-16T10:00:00Z",
+    database_filename: "database.sqlite3",
+    file_size: 2048,
+    sha256: "a".repeat(64),
+    schema_version: 0,
+    record_counts: { companies: 61 },
+    reason: "manual",
+    application_version: "0.1.0",
+    verified: true,
+    integrity_check: "ok"
+  };
+  const automaticBackupSettings = {
+    enabled: false,
+    interval_hours: 24,
+    max_backups: 10,
+    last_auto_backup_at: null
+  };
+  mocks.getDataManagementSummary.mockResolvedValue({
+    database_path: "D:/data/value_investment.db",
+    database_size: 4096,
+    record_counts: {
+      companies: 61,
+      financial_statements: 10,
+      announcements: 5,
+      evidence: 2,
+      analysis_runs: 4,
+      investment_memos: 2,
+      valuation_runs: 2,
+      price_decision_runs: 1
+    },
+    soft_deleted_counts: { investment_memos: 0, price_decision_runs: 1 },
+    latest_backup: backup,
+    automatic_backup: automaticBackupSettings,
+    maintenance_active: false,
+    maintenance_operation: null,
+    schema_version: 0,
+    integrity_check: "ok"
+  });
+  mocks.getBackups.mockResolvedValue({ items: [backup], total: 1 });
+  mocks.getAutomaticBackupSettings.mockResolvedValue(automaticBackupSettings);
+  mocks.previewDataOperation.mockImplementation((operationType: string, parameters = {}) =>
+    Promise.resolve({
+      operation_token: `token-${operationType}-01234567890123456789`,
+      operation_type: operationType,
+      parameters,
+      affected_counts: { analysis_runs: 3, investment_memos: 1 },
+      protected_records: operationType === "prune_versions"
+        ? [{ table: "analysis_runs", record_id: 11, reason: "被保留的 Memo JSON 来源引用" }]
+        : [],
+      estimated_reclaim_bytes: 4096,
+      requires_backup: operationType !== "delete_backup",
+      confirmation_phrase: operationType === "prune_versions" ? "清理旧版本" : "清空公司研究数据",
+      expires_at: "2026-08-16T11:00:00Z"
+    })
+  );
+  mocks.executeDataOperation.mockResolvedValue({
+    operation_type: "reset_company_research_data",
+    affected_counts: { analysis_runs: 3, investment_memos: 1 },
+    backup_id: backup.backup_id,
+    protected_records: [],
+    database_size_before: 4096,
+    database_size_after: 4096,
+    reclaimed_bytes: 0,
+    integrity_check: "ok",
+    restart_required: false,
+    message: "数据管理操作已完成。"
+  });
+  mocks.createBackup.mockResolvedValue(backup);
+  mocks.verifyBackup.mockResolvedValue({
+    backup_id: backup.backup_id,
+    valid: true,
+    sha256_matches: true,
+    integrity_check: "ok"
+  });
+  mocks.previewBackupRestore.mockResolvedValue({
+    operation_token: "restore-token-01234567890123456789",
+    operation_type: "restore_backup",
+    parameters: { backup_id: backup.backup_id },
+    affected_counts: { companies: 61 },
+    protected_records: [],
+    estimated_reclaim_bytes: 0,
+    requires_backup: true,
+    confirmation_phrase: "恢复指定备份",
+    expires_at: "2026-08-16T11:00:00Z"
+  });
+  mocks.deleteBackup.mockResolvedValue({
+    operation_type: "delete_backup",
+    affected_counts: { backups: 1 },
+    backup_id: null,
+    protected_records: [],
+    database_size_before: null,
+    database_size_after: null,
+    reclaimed_bytes: null,
+    integrity_check: null,
+    restart_required: false,
+    message: "备份已删除。"
+  });
+  mocks.updateAutomaticBackupSettings.mockResolvedValue({
+    ...automaticBackupSettings,
+    enabled: true
+  });
+  const parameterConfig = {
+    data_sampling: { company_list_limit: 20.000000000000004, company_list_limit_max: 100 },
+    financial_flags: {},
+    analyst_engine: {},
+    valuation_rule_matrix: { rule_mappings: {} },
+    memo_decision: {},
+    valuation_models: {},
+    price_decision: {}
+  };
+  const parameterValidation = {
+    valid: true,
+    errors: [],
+    warnings: [],
+    actual_parameter_count: 372,
+    audit_parameter_count: 92
+  };
+  const currentParameterConfig = {
+    config_json: parameterConfig,
+    config_hash: "0123456789abcdef",
+    source: "source_file",
+    fallback_reason: null,
+    validation: parameterValidation,
+    metadata: [
+      {
+        path: "data_sampling.company_list_limit",
+        domain: "data_sampling",
+        label: "公司列表每页默认数量",
+        code_name: "data_sampling.company_list_limit",
+        description: "004 公司搜索未指定每页数量时返回的公司数；调大后每页公司更多、请求和渲染量也更大，调小后分页更频繁。",
+        unit: "家公司",
+        default_value: 20.000000000000004,
+        current_value: 20.000000000000004,
+        minimum: 1,
+        maximum: 100,
+        editable: true,
+        expert: false,
+        audit_only: false,
+        risk: "medium"
+      },
+      {
+        path: "data_sampling.company_list_limit_max",
+        domain: "data_sampling",
+        label: "公司列表单次请求上限",
+        code_name: "data_sampling.company_list_limit_max",
+        description: "004 公司列表接口允许请求的最大公司数；只限制单次请求规模，不改变公司池总数，也不进入分析或估值。",
+        unit: "家公司",
+        default_value: 100,
+        current_value: 100,
+        minimum: 20,
+        maximum: 500,
+        editable: true,
+        expert: true,
+        audit_only: false,
+        risk: "medium"
+      }
+    ]
+  };
+  mocks.getCurrentParameterConfig.mockResolvedValue(currentParameterConfig);
+  mocks.getDefaultParameterConfig.mockResolvedValue({
+    ...currentParameterConfig,
+    source: "builtin_default"
+  });
+  mocks.validateParameterConfig.mockResolvedValue(parameterValidation);
   mocks.runCompanyAnalysis.mockResolvedValue({
     id: 12,
     company_id: 1,
@@ -1042,6 +1236,20 @@ beforeEach(() => {
   mocks.getPriceDecisionRuns.mockClear();
   mocks.createPriceDecisionRun.mockClear();
   mocks.deletePriceDecisionRun.mockClear();
+  mocks.getDataManagementSummary.mockClear();
+  mocks.previewDataOperation.mockClear();
+  mocks.executeDataOperation.mockClear();
+  mocks.getBackups.mockClear();
+  mocks.createBackup.mockClear();
+  mocks.verifyBackup.mockClear();
+  mocks.previewBackupRestore.mockClear();
+  mocks.deleteBackup.mockClear();
+  mocks.getAutomaticBackupSettings.mockClear();
+  mocks.updateAutomaticBackupSettings.mockClear();
+  mocks.getCurrentParameterConfig.mockClear();
+  mocks.getDefaultParameterConfig.mockClear();
+  mocks.validateParameterConfig.mockClear();
+  mocks.publishParameterConfig.mockClear();
 });
 
 function makeSyncedFinancialStatements() {
@@ -1434,15 +1642,61 @@ async function openWorkspaceSection(sectionLabel: string) {
 }
 
 describe("App", () => {
+  it("opens the source-backed parameter configuration center", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "参数配置" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "参数配置中心", level: 1 })
+    ).toBeInTheDocument();
+    expect(await screen.findByText("当前源码参数")).toBeInTheDocument();
+    expect(screen.getByText(/372 个生效参数/)).toBeInTheDocument();
+    expect(screen.queryByText(/审计参数/)).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "数据采样" })).toBeInTheDocument();
+    expect(screen.getByText("公司列表每页默认数量")).toBeInTheDocument();
+    expect(screen.getByText("公司列表单次请求上限")).toBeInTheDocument();
+    expect(
+      screen.getByText("公司列表每页默认数量").closest("label")?.querySelector("input")
+    ).toHaveValue(20);
+    expect(screen.queryByRole("button", { name: "普通参数" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "专家参数" })).not.toBeInTheDocument();
+    expect(screen.queryByText("data_sampling.company_list_limit")).not.toBeInTheDocument();
+    expect(screen.queryByText(/风险 medium/)).not.toBeInTheDocument();
+    expect(mocks.getCurrentParameterConfig).toHaveBeenCalled();
+    expect(mocks.getDefaultParameterConfig).toHaveBeenCalled();
+  });
+
   it("renders the dashboard shell", async () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "价值投资研究工作台" })).toBeInTheDocument();
     expect(screen.getByRole("navigation")).toBeInTheDocument();
-    const mainNavigationText = screen.getByLabelText("主导航").textContent ?? "";
-    expect(mainNavigationText.indexOf("Memo")).toBeLessThan(
-      mainNavigationText.indexOf("Valuation Lab")
+    const mainNavigation = screen.getByLabelText("主导航");
+    const mainNavigationText = mainNavigation.textContent ?? "";
+    const navigationLabels = [
+      "概览",
+      "公司搜索",
+      "公司工作台",
+      "财务底稿",
+      "公司公告",
+      "外部证据",
+      "分析师视角",
+      "投资备忘录",
+      "估值实验室",
+      "价格决策",
+      "参数配置",
+      "数据管理"
+    ];
+    navigationLabels.forEach((label) => {
+      expect(within(mainNavigation).getByRole("button", { name: label })).toBeInTheDocument();
+    });
+    expect(mainNavigationText.indexOf("投资备忘录")).toBeLessThan(
+      mainNavigationText.indexOf("估值实验室")
     );
+    expect(mainNavigationText).not.toContain("Dashboard");
+    expect(mainNavigationText).not.toContain("Company Search");
+    expect(mainNavigationText).not.toContain("Data Management");
     expect(mainNavigationText).not.toContain("Portfolio");
     expect(mainNavigationText).not.toContain("Settings");
     expect(screen.queryByText("假设追踪")).not.toBeInTheDocument();
@@ -1466,7 +1720,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "公司档案", level: 1 })).toBeInTheDocument();
     expect(await screen.findByText("基础档案")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+    fireEvent.click(screen.getByRole("button", { name: "概览" }));
     expect(await within(screen.getByLabelText("研究公司")).findByText("1")).toBeInTheDocument();
     const currentCompanyMetric = screen.getByLabelText("当前研究对象");
     expect(within(currentCompanyMetric).getByText("贵州茅台 600519.SH")).toBeInTheDocument();
@@ -1476,7 +1730,7 @@ describe("App", () => {
   it("opens company search and company workspace", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
 
     expect(await screen.findByRole("heading", { name: "公司搜索", level: 2 })).toBeInTheDocument();
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
@@ -1487,7 +1741,6 @@ describe("App", () => {
       expect(mocks.getCompany).toHaveBeenCalledWith(1, expect.any(AbortSignal));
     });
     expect(mocks.getCompanyFinancials).toHaveBeenCalledWith(1, {
-      period_limit: 60,
       period_offset: 0,
       signal: expect.any(AbortSignal)
     });
@@ -1535,7 +1788,9 @@ describe("App", () => {
     expect(await screen.findByText("fake-model")).toBeInTheDocument();
 
     await openWorkspaceSection("Analyst Views");
-    expect(await screen.findByText("分析师视角")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "分析师视角", level: 3 })
+    ).toBeInTheDocument();
     expect(await screen.findByText("巴菲特")).toBeInTheDocument();
     expect(await screen.findByText("现金流质量较好，但证据仍需补充。")).toBeInTheDocument();
     expect(
@@ -1585,7 +1840,7 @@ describe("App", () => {
   it("hides the new company panel while searching companies", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
 
     expect(await screen.findByRole("heading", { name: "新增公司" })).toBeInTheDocument();
 
@@ -1597,7 +1852,6 @@ describe("App", () => {
       expect(mocks.getCompanies).toHaveBeenLastCalledWith(
         expect.objectContaining({
           q: "茅台",
-          limit: 20,
           offset: 0,
           signal: expect.any(AbortSignal)
         })
@@ -1612,7 +1866,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -1668,14 +1922,22 @@ describe("App", () => {
             }
           ],
           price_reference_rules: [],
-          parameter_contributions: {}
+          parameter_contributions: {
+            discount_rate: [
+              {
+                source_run_id: 91,
+                rule_id: "moat",
+                contribution: 0.10000000000000002
+              }
+            ]
+          }
         }
       })
     });
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -1698,6 +1960,12 @@ describe("App", () => {
     expect(analystAuditText.indexOf("巴菲特")).toBeLessThan(
       analystAuditText.indexOf("乔治索罗斯")
     );
+    expect(analystAuditText).toContain("护城河持久性");
+    expect(analystAuditText).toContain("周期性");
+    expect(analystAuditText).toContain("折现率 0.1");
+    expect(analystAuditText).not.toContain("moat_durability");
+    expect(analystAuditText).not.toContain("cyclicality");
+    expect(analystAuditText).not.toContain("discount_rate");
     expect(screen.getByText("行情更新时间")).toBeInTheDocument();
     expect(screen.getByText("基本信息")).toBeInTheDocument();
     expect(screen.getByText("1,355.29")).toBeInTheDocument();
@@ -1751,7 +2019,7 @@ describe("App", () => {
       .mockResolvedValue({ items: [priceDecision], total: 1, limit: 20, offset: 0 });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Price Decision");
@@ -1794,7 +2062,7 @@ describe("App", () => {
     mocks.createPriceDecisionRun.mockResolvedValue({ company_id: 1, item: overridden });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Price Decision");
@@ -1832,7 +2100,7 @@ describe("App", () => {
       .mockResolvedValue({ items: [first], total: 1, limit: 20, offset: 0 });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Price Decision");
@@ -1850,7 +2118,7 @@ describe("App", () => {
 
   it("shows actionable missing-input and old Memo errors", async () => {
     const firstRender = render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Price Decision");
@@ -1865,7 +2133,7 @@ describe("App", () => {
       new Error("该估值绑定的旧 Memo 没有动态安全边际，请重新生成 Memo 和 010 估值。")
     );
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Price Decision");
@@ -1887,7 +2155,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
 
@@ -1936,7 +2204,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
 
@@ -2066,7 +2334,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
 
@@ -2081,7 +2349,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
 
@@ -2098,13 +2366,13 @@ describe("App", () => {
   it("opens external evidence from the sidebar", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     expect(await screen.findByRole("heading", { name: "公司档案", level: 1 })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+    fireEvent.click(screen.getByRole("button", { name: "外部证据" }));
 
     expect(await screen.findByText("外部信息")).toBeInTheDocument();
     expect(await screen.findByText("测试行业证据已入库")).toBeInTheDocument();
@@ -2113,7 +2381,7 @@ describe("App", () => {
   it("refreshes company profile market data from the workspace", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2138,7 +2406,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2155,7 +2423,7 @@ describe("App", () => {
   it("searches and refreshes company financial data", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2259,7 +2527,6 @@ describe("App", () => {
     });
     await waitFor(() => {
       expect(mocks.getCompanyFinancials).toHaveBeenLastCalledWith(1, {
-        period_limit: 60,
         period_offset: 0
       });
     });
@@ -2309,7 +2576,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2335,7 +2602,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2354,7 +2621,7 @@ describe("App", () => {
   it("searches announcements and refreshes the announcement list", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2408,7 +2675,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2423,7 +2690,7 @@ describe("App", () => {
   it("summarizes all announcements and displays each model result in place", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2487,7 +2754,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2508,7 +2775,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2524,7 +2791,7 @@ describe("App", () => {
   it("summarizes a single announcement deeply and displays the result in place", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2544,7 +2811,7 @@ describe("App", () => {
   it("summarizes all announcements deeply and skips already deep-summarized items", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2601,7 +2868,7 @@ describe("App", () => {
   it("shows the one-click announcement summary entry in the panel header", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2615,7 +2882,7 @@ describe("App", () => {
   it("hides generic announcement tags such as 待复核", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2628,7 +2895,7 @@ describe("App", () => {
   it("deletes an announcement from the company workspace", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2649,7 +2916,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2668,7 +2935,7 @@ describe("App", () => {
   it("searches external evidence and refreshes the evidence list", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2712,8 +2979,7 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(mocks.searchCompanyEvidence).toHaveBeenCalledWith(1, {
-        keywords: ["贵州茅台", "白酒"],
-        max_results: 10
+        keywords: ["贵州茅台", "白酒"]
       });
     });
 
@@ -2733,7 +2999,7 @@ describe("App", () => {
   it("imports manual text evidence and refreshes the evidence list", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2814,7 +3080,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2839,7 +3105,7 @@ describe("App", () => {
   it("deletes an irrelevant external evidence item and refreshes the list", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2867,7 +3133,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -2978,7 +3244,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -3005,7 +3271,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -3022,7 +3288,7 @@ describe("App", () => {
   it("runs model smoke test without creating evidence or analyst runs", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -3043,12 +3309,14 @@ describe("App", () => {
   it("generates an analyst view and refreshes analysis runs", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Analyst Views");
-    expect(await screen.findByText("分析师视角")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "分析师视角", level: 3 })
+    ).toBeInTheDocument();
 
     mocks.getLatestCompanyAnalysisRuns.mockResolvedValueOnce({
       company_id: 1,
@@ -3120,12 +3388,14 @@ describe("App", () => {
   it("generates all analyst views and refreshes latest runs", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Analyst Views");
-    expect(await screen.findByText("分析师视角")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "分析师视角", level: 3 })
+    ).toBeInTheDocument();
 
     mocks.getLatestCompanyAnalysisRuns.mockResolvedValueOnce({
       company_id: 1,
@@ -3261,7 +3531,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -3299,12 +3569,14 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Analyst Views");
-    expect(await screen.findByText("分析师视角")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "分析师视角", level: 3 })
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "生成全部" }));
 
@@ -3317,7 +3589,7 @@ describe("App", () => {
   it("deletes an analyst run only after an explicit user action", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -3350,7 +3622,7 @@ describe("App", () => {
   it("allows directly correcting an analyst rule status", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
@@ -3380,12 +3652,14 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
     expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Analyst Views");
-    expect(await screen.findByText("分析师视角")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "分析师视角", level: 3 })
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "生成巴菲特视角" }));
     expect(await screen.findByText("正在生成分析师视角")).toBeInTheDocument();
@@ -3433,7 +3707,7 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
 
     expect(await screen.findByText("公司池共 21 家，第 1-20 家")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
@@ -3448,7 +3722,6 @@ describe("App", () => {
     await waitFor(() => {
       expect(mocks.getCompanies).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          limit: 20,
           offset: 20,
           signal: expect.any(AbortSignal)
         })
@@ -3472,7 +3745,6 @@ describe("App", () => {
       expect(mocks.getCompanies).toHaveBeenLastCalledWith(
         expect.objectContaining({
           q: "白酒",
-          limit: 20,
           offset: 20,
           signal: expect.any(AbortSignal)
         })
@@ -3486,7 +3758,6 @@ describe("App", () => {
     await waitFor(() => {
       expect(mocks.getCompanies).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          limit: 20,
           offset: 0,
           signal: expect.any(AbortSignal)
         })
@@ -3497,7 +3768,7 @@ describe("App", () => {
   it("creates a company from the fixed new company panel", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
 
     expect(await screen.findByRole("heading", { name: "新增公司" })).toBeInTheDocument();
     const newCompanyPanel = screen.getByRole("region", { name: "新增公司" });
@@ -3537,6 +3808,81 @@ describe("App", () => {
     });
 
     expect(await screen.findByText("Sony Group Corporation 索尼集团")).toBeInTheDocument();
+  });
+
+  it("opens Data Management independently while Dashboard remains 8 of 8", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("8 / 8")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "数据管理" }));
+
+    expect(await screen.findByRole("heading", { name: "数据管理", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "数据库概览" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "备份与恢复" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "数据库维护" })).toBeInTheDocument();
+    expect(mocks.getDataManagementSummary).toHaveBeenCalled();
+  });
+
+  it("previews and confirms company cleanup with the backend phrase", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "数据管理" }));
+    await screen.findByRole("heading", { name: "数据库概览" });
+
+    fireEvent.change(screen.getByLabelText("目标公司"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "预览影响" }));
+
+    expect(await screen.findByRole("dialog", { name: "确认数据库操作" })).toBeInTheDocument();
+    expect(mocks.previewDataOperation).toHaveBeenCalledWith(
+      "reset_company_research_data",
+      { company_id: 1 }
+    );
+    const confirmButton = screen.getByRole("button", { name: "确认执行" });
+    expect(confirmButton).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/输入确认短语/), {
+      target: { value: "清空公司研究数据" }
+    });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      expect(mocks.executeDataOperation).toHaveBeenCalledWith(
+        "token-reset_company_research_data-01234567890123456789",
+        "清空公司研究数据"
+      );
+    });
+    expect(await screen.findByText("数据管理操作已完成。")).toBeInTheDocument();
+  });
+
+  it("validates N, shows prune protection, and supports backup controls", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "数据管理" }));
+    await screen.findByRole("heading", { name: "版本保留" });
+
+    const keepInput = screen.getByLabelText("每组保留版本");
+    fireEvent.change(keepInput, { target: { value: "0" } });
+    expect(screen.getByRole("button", { name: "生成 prune plan" })).toBeDisabled();
+    fireEvent.change(keepInput, { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成 prune plan" }));
+    expect(await screen.findByText(/被保留的 Memo JSON 来源引用/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "创建备份" }));
+    await waitFor(() => expect(mocks.createBackup).toHaveBeenCalledWith("manual"));
+    fireEvent.click(screen.getByTitle("校验备份"));
+    await waitFor(() => expect(mocks.verifyBackup).toHaveBeenCalled());
+    fireEvent.click(screen.getByTitle("恢复备份"));
+    await waitFor(() => expect(mocks.previewBackupRestore).toHaveBeenCalled());
+  });
+
+  it("keeps backend data-management errors visible", async () => {
+    mocks.getDataManagementSummary.mockRejectedValueOnce(
+      new Error("数据库正在维护，新的写请求已暂停。")
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "数据管理" }));
+
+    expect(
+      await screen.findByText("数据库正在维护，新的写请求已暂停。")
+    ).toBeInTheDocument();
   });
 });
 

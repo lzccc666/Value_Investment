@@ -8,6 +8,7 @@ from app.analysis.model_gateway import (
     ModelNotConfiguredError,
     ModelOutputValidationError,
 )
+from app.configuration.runtime import parameter_config_context
 from app.data_sources.announcement_content import AnnouncementContentFetchError
 from app.data_sources.eastmoney_announcements import (
     AnnouncementDataSourceError,
@@ -63,6 +64,7 @@ from app.services.companies import (
     sync_company_financials,
 )
 from app.services.financial_metrics import build_financial_evidence_pack
+from app.services.parameter_config_service import get_runtime_parameter_config
 
 router = APIRouter(prefix="/companies")
 
@@ -71,11 +73,20 @@ router = APIRouter(prefix="/companies")
 def get_companies(
     db: Annotated[Session, Depends(get_db)],
     q: Annotated[str | None, Query(description="按代码、名称、交易所或行业筛选")] = None,
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    limit: Annotated[int | None, Query(ge=1)] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> CompanyListResponse:
-    items, total = list_companies(db, query=q, limit=limit, offset=offset)
-    return CompanyListResponse(items=items, total=total, limit=limit, offset=offset)
+    runtime = get_runtime_parameter_config(db)
+    sampling = runtime.snapshot["data_sampling"]
+    maximum = int(sampling["company_list_limit_max"])
+    effective_limit = int(sampling["company_list_limit"]) if limit is None else limit
+    if effective_limit > maximum:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"公司列表单次请求数量不能超过当前配置上限 {maximum}",
+        )
+    items, total = list_companies(db, query=q, limit=effective_limit, offset=offset)
+    return CompanyListResponse(items=items, total=total, limit=effective_limit, offset=offset)
 
 
 @router.post("", response_model=CompanyRead, status_code=status.HTTP_201_CREATED)
@@ -133,17 +144,21 @@ def refresh_company_profile_data(
 def get_company_financials(
     company_id: int,
     db: Annotated[Session, Depends(get_db)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 60,
+    limit: Annotated[int | None, Query(ge=1, le=100)] = None,
     offset: Annotated[int, Query(ge=0)] = 0,
-    period_limit: Annotated[int | None, Query(ge=1, le=60)] = None,
+    period_limit: Annotated[int | None, Query(ge=1)] = None,
     period_offset: Annotated[int, Query(ge=0)] = 0,
 ) -> FinancialStatementListResponse:
     _get_company_or_404(db, company_id)
-    if period_limit is not None:
+    if period_limit is not None or limit is None:
+        runtime = get_runtime_parameter_config(db)
+        effective_period_limit = period_limit or int(
+            runtime.snapshot["data_sampling"]["financial_display_periods"]
+        )
         items, total = list_company_financials_by_periods(
             db,
             company_id=company_id,
-            period_limit=period_limit,
+            period_limit=effective_period_limit,
             period_offset=period_offset,
         )
         return FinancialStatementListResponse(
@@ -163,14 +178,19 @@ def get_company_financial_evidence_pack(
     db: Annotated[Session, Depends(get_db)],
 ) -> FinancialEvidencePackRead:
     _get_company_or_404(db, company_id)
-    items, _ = list_company_financials_by_periods(
-        db, company_id=company_id, period_limit=60, period_offset=0
-    )
-    return FinancialEvidencePackRead(**build_financial_evidence_pack(items))
+    runtime = get_runtime_parameter_config(db)
+    with parameter_config_context(runtime.snapshot):
+        items, _ = list_company_financials_by_periods(
+            db,
+            company_id=company_id,
+            period_limit=int(runtime.snapshot["data_sampling"]["financial_display_periods"]),
+            period_offset=0,
+        )
+        return FinancialEvidencePackRead(**build_financial_evidence_pack(items))
 
 
 @router.delete(
-    "/{company_id}/financials/{statement_id}",
+    "/{company_id}/financials/{statement_id:int}",
     response_model=FinancialStatementDeleteResponse,
 )
 def delete_company_financial_data(
@@ -266,7 +286,9 @@ def summarize_company_announcement_data(
         )
 
     try:
-        summarized, run_id = summarize_company_announcement(db, company, announcement)
+        runtime = get_runtime_parameter_config(db)
+        with parameter_config_context(runtime.snapshot):
+            summarized, run_id = summarize_company_announcement(db, company, announcement)
     except ModelNotConfiguredError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except (
@@ -320,7 +342,9 @@ def summarize_all_company_announcements_data(
             items=[],
         )
 
-    items = summarize_company_announcements(db, company, announcements)
+    runtime = get_runtime_parameter_config(db)
+    with parameter_config_context(runtime.snapshot):
+        items = summarize_company_announcements(db, company, announcements)
     succeeded = sum(1 for item in items if item.status == "success")
     failed = sum(1 for item in items if item.status == "failed")
 
@@ -365,7 +389,9 @@ def summarize_all_company_announcements_deep_data(
             items=[],
         )
 
-    items = summarize_company_announcements_deep(db, company, announcements)
+    runtime = get_runtime_parameter_config(db)
+    with parameter_config_context(runtime.snapshot):
+        items = summarize_company_announcements_deep(db, company, announcements)
     succeeded = sum(1 for item in items if item.status == "success")
     failed = sum(1 for item in items if item.status == "failed")
 
@@ -385,13 +411,18 @@ def summarize_all_company_announcements_deep_data(
 def sync_company_announcement_data(
     company_id: int,
     db: Annotated[Session, Depends(get_db)],
-    years: Annotated[int, Query(ge=1, le=10, description="同步最近多少年的公告")] = 1,
+    years: Annotated[int | None, Query(ge=1, le=10, description="同步最近多少年的公告")] = None,
 ) -> AnnouncementSyncResponse:
     company = _get_company_or_404(db, company_id)
     try:
-        items, fetched, created, updated, skipped, pruned, errors = sync_company_announcements(
-            db, company, years=years
-        )
+        runtime = get_runtime_parameter_config(db)
+        with parameter_config_context(runtime.snapshot):
+            effective_years = years or int(
+                runtime.snapshot["data_sampling"]["announcement_lookback_years"]
+            )
+            items, fetched, created, updated, skipped, pruned, errors = sync_company_announcements(
+                db, company, years=effective_years
+            )
     except UnsupportedAnnouncementSourceError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

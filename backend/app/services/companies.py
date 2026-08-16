@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy import String, and_, case, cast, delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.configuration.runtime import parameter_value
 from app.data_sources.announcement_content import (
     EASTMONEY_PAGE_SHELL_MARKERS,
     looks_like_eastmoney_page_shell,
@@ -389,11 +390,14 @@ def sync_company_announcements(
     data_client: EastmoneyAnnouncementClient | None = None,
     years: int = 1,
 ) -> tuple[list[Announcement], int, int, int, int, int, list[str]]:
-    client = data_client or EastmoneyAnnouncementClient()
+    client = data_client or EastmoneyAnnouncementClient(
+        page_size=int(parameter_value("data_sampling.announcement_page_size", 50)),
+        max_pages=int(parameter_value("data_sampling.announcement_max_pages", 200)),
+    )
     fetched_announcements = client.fetch_announcements(
         company.ticker,
         years=years,
-        limit=ANNOUNCEMENT_RETENTION_LIMIT,
+        limit=int(parameter_value("data_sampling.announcement_retention_limit", 50)),
     )
     published_since = _announcement_window_start(years)
 
@@ -425,7 +429,7 @@ def sync_company_announcements(
     pruned += _prune_company_announcements_over_limit(
         session,
         company.id,
-        limit=ANNOUNCEMENT_RETENTION_LIMIT,
+        limit=int(parameter_value("data_sampling.announcement_retention_limit", 50)),
     )
     session.commit()
     changed_item_ids = [item.id for item in changed_items if item.id is not None]
