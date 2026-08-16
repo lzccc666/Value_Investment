@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import String, and_, cast, delete, func, or_, select
+from sqlalchemy import String, and_, case, cast, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.data_sources.announcement_content import (
@@ -26,6 +26,13 @@ from app.schemas.company import CompanyCreate
 from app.services.financial_metrics import order_financial_statement_query
 
 ANNOUNCEMENT_RETENTION_LIMIT = 50
+
+COMPANY_MARKET_ORDER = case(
+    (Company.exchange.in_(["SSE", "SZSE", "BSE"]), 0),
+    (Company.exchange == "HKEX", 1),
+    (Company.exchange.in_(["NASDAQ", "NYSE", "AMEX"]), 2),
+    else_=3,
+)
 
 
 def list_companies(
@@ -54,7 +61,11 @@ def list_companies(
     if filters:
         total_stmt = total_stmt.where(*filters)
 
-    items = session.scalars(base_stmt.order_by(Company.name).offset(offset).limit(limit)).all()
+    items = session.scalars(
+        base_stmt.order_by(Company.name, COMPANY_MARKET_ORDER, Company.ticker)
+        .offset(offset)
+        .limit(limit)
+    ).all()
     total = session.scalar(total_stmt) or 0
     return items, total
 

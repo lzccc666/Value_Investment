@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
+from app.analysis.analyst_profiles import list_analyst_profiles
 from app.analysis.model_gateway import ModelOutputValidationError
 from app.db.init_db import init_db
 from app.db.models import AnalysisRun, Company, InvestmentMemo
@@ -16,11 +17,103 @@ from app.schemas.memo import InvestmentMemoOutput
 from app.services.memo_service import (
     InvestmentMemoInsufficientSourcesError,
     archive_investment_memo,
+    build_analyst_scorecard,
     build_investment_memo_snapshot,
     delete_investment_memo,
     get_latest_memo_for_valuation,
     run_company_investment_memo,
 )
+
+
+def test_analyst_scorecard_uses_equal_rule_weights_and_safety_margin_mapping() -> None:
+    profiles = list_analyst_profiles()
+    statuses = ("pass", "fail", "warn", "unknown")
+    source_runs = []
+    for index, profile in enumerate(profiles):
+        status = statuses[index % len(statuses)]
+        source_runs.append(
+            {
+                "run_id": index + 1,
+                "analyst_profile": profile.id,
+                "confidence": 0.55 + (index * 0.03),
+                "profile_fit_score": 0.60 + (index * 0.025),
+                "result": {
+                    "rule_checks": [
+                        {"rule_id": rule.id, "status": status} for rule in profile.rules
+                    ]
+                },
+            }
+        )
+
+    scorecard = build_analyst_scorecard(source_runs)
+
+    assert scorecard["status_score_policy"] == {
+        "pass": 1.0,
+        "warn": -0.3,
+        "fail": -2.0,
+        "unknown": -0.1,
+    }
+    assert scorecard["independent_from_valuation"] is True
+    assert scorecard["coverage"] == {
+        "successful_profiles": 10,
+        "total_profiles": 10,
+        "known_rules": 32,
+        "total_rules": 40,
+    }
+    items = scorecard["analyst_items"]
+    assert [item["rule_score_total"] for item in items[:4]] == [4.0, -8.0, -1.2, -0.4]
+    assert sum(item["analyst_weight"] for item in items) == pytest.approx(1.0)
+    assert [item["analyst_weight"] for item in items] == pytest.approx([0.1] * 10)
+    assert [item["weighted_score"] for item in items[:4]] == pytest.approx(
+        [0.1, -0.2, -0.03, -0.01]
+    )
+    assert scorecard["total_score"] == pytest.approx(
+        sum(item["weighted_score"] for item in items)
+    )
+    assert scorecard["total_score"] == pytest.approx(-0.38)
+    assert scorecard["suggested_safety_margin"] == pytest.approx(0.23)
+    assert scorecard["score_range"] == {"minimum": -2.0, "maximum": 1.0}
+    assert scorecard["weight_policy"] == {
+        "mode": "equal_weight_per_rule",
+        "rule_weight": 0.025,
+        "total_rules": 40,
+        "formula": "sum(rule_status_score * 1/40)",
+        "uses_data_confidence": False,
+        "uses_profile_fit_score": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_score", "expected_margin"),
+    (
+        ("pass", 1.0, 0.0),
+        ("unknown", -0.1, 0.1833333333),
+        ("warn", -0.3, 0.2166666667),
+        ("fail", -2.0, 0.5),
+    ),
+)
+def test_analyst_scorecard_maps_pure_statuses_to_safety_margin(
+    status: str,
+    expected_score: float,
+    expected_margin: float,
+) -> None:
+    source_runs = [
+        {
+            "run_id": index + 1,
+            "analyst_profile": profile.id,
+            "result": {
+                "rule_checks": [
+                    {"rule_id": rule.id, "status": status} for rule in profile.rules
+                ]
+            },
+        }
+        for index, profile in enumerate(list_analyst_profiles())
+    ]
+
+    scorecard = build_analyst_scorecard(source_runs)
+
+    assert scorecard["total_score"] == pytest.approx(expected_score)
+    assert scorecard["suggested_safety_margin"] == pytest.approx(expected_margin)
 
 
 def _make_test_db(tmp_path: Path):
@@ -145,6 +238,10 @@ def test_memo_generation_marks_valuation_signal_pack_deprecated(
     assert pack["source"] == "deprecated_009_display_compatibility_only"
     assert pack["user_confirmation_required"] is True
     assert pack["analyst_signals"] == []
+    scorecard = memo.sections["analyst_scorecard"]
+    assert scorecard["source"] == "latest_successful_008_rule_checks"
+    assert scorecard["coverage"]["successful_profiles"] == 3
+    assert len(scorecard["analyst_items"]) == 10
 
 
 def test_valuation_signal_pack_scrubs_price_anchors(tmp_path: Path) -> None:

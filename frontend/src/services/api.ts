@@ -248,6 +248,18 @@ export type EvidenceSearchResponse = {
   diagnostics?: Record<string, unknown> | null;
 };
 
+export type EvidenceImportTextRequest = {
+  title?: string;
+  content: string;
+  source?: string;
+  source_url?: string;
+  published_at?: string;
+  source_type?: EvidenceSourceType;
+  notes?: string;
+};
+
+export type EvidenceImportTextResponse = EvidenceSearchResponse;
+
 export type EvidenceDeleteResponse = {
   id: number;
   deleted: boolean;
@@ -496,6 +508,57 @@ export type ValuationRunListResponse = {
 export type ValuationRunMutationResponse = {
   company_id: number;
   item: ValuationRun;
+};
+
+export type PriceDecisionRun = {
+  id: number;
+  company_id: number;
+  valuation_run_id: number;
+  memo_id: number;
+  version_no: number;
+  run_version: string;
+  formula_version: string;
+  status: "active" | "deleted";
+  input_snapshot: Record<string, unknown>;
+  input_snapshot_hash: string;
+  intrinsic_values_per_share: Record<string, number>;
+  current_price: number;
+  market_data_updated_at: string;
+  analyst_score_total: number;
+  analyst_scorecard_snapshot: Record<string, unknown>;
+  suggested_safety_margin: number;
+  safety_margin_override: number | null;
+  effective_safety_margin: number;
+  scenario_buy_prices: Record<string, number>;
+  suggested_buy_price: number;
+  current_margin: number;
+  price_status: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
+
+export type PriceDecisionLatestResponse = {
+  company_id: number;
+  item: PriceDecisionRun | null;
+};
+
+export type PriceDecisionListResponse = {
+  items: PriceDecisionRun[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type PriceDecisionMutationResponse = {
+  company_id: number;
+  item: PriceDecisionRun;
+};
+
+export type PriceDecisionDeleteResponse = {
+  id: number;
+  deleted: boolean;
+  latest_price_decision_run_id: number | null;
 };
 
 type RequestJsonOptions = {
@@ -824,6 +887,18 @@ export async function searchCompanyEvidence(
   });
 }
 
+export async function importTextEvidence(
+  companyId: number,
+  payload: EvidenceImportTextRequest,
+  signal?: AbortSignal
+): Promise<EvidenceImportTextResponse> {
+  return fetchJson<EvidenceImportTextResponse>(`/companies/${companyId}/evidence/import-text`, {
+    method: "POST",
+    body: payload,
+    signal
+  });
+}
+
 export async function deleteEvidence(
   evidenceId: number,
   signal?: AbortSignal
@@ -1097,12 +1172,54 @@ export async function recalculateValuationRun(
   });
 }
 
-export async function lockValuationRun(
+export async function getLatestPriceDecisionRun(
+  companyId: number,
+  signal?: AbortSignal
+): Promise<PriceDecisionLatestResponse> {
+  return fetchJson<PriceDecisionLatestResponse>(
+    `/companies/${companyId}/price-decision-runs/latest`,
+    { signal }
+  );
+}
+
+export async function getPriceDecisionRuns(
+  companyId: number,
+  params: { limit?: number; offset?: number; signal?: AbortSignal } = {}
+): Promise<PriceDecisionListResponse> {
+  const queryString = buildPaginationQuery(params);
+  return fetchJson<PriceDecisionListResponse>(
+    `/companies/${companyId}/price-decision-runs${queryString}`,
+    { signal: params.signal }
+  );
+}
+
+export async function createPriceDecisionRun(
+  companyId: number,
+  params: {
+    valuation_run_id?: number | null;
+    safety_margin_override?: number | null;
+    signal?: AbortSignal;
+  } = {}
+): Promise<PriceDecisionMutationResponse> {
+  return fetchJson<PriceDecisionMutationResponse>(
+    `/companies/${companyId}/price-decision-runs`,
+    {
+      method: "POST",
+      body: {
+        valuation_run_id: params.valuation_run_id ?? null,
+        safety_margin_override: params.safety_margin_override ?? null
+      },
+      signal: params.signal
+    }
+  );
+}
+
+export async function deletePriceDecisionRun(
   runId: number,
   signal?: AbortSignal
-): Promise<ValuationRunMutationResponse> {
-  return fetchJson<ValuationRunMutationResponse>(`/valuation-runs/${runId}/lock`, {
-    method: "POST",
+): Promise<PriceDecisionDeleteResponse> {
+  return fetchJson<PriceDecisionDeleteResponse>(`/price-decision-runs/${runId}`, {
+    method: "DELETE",
     signal
   });
 }

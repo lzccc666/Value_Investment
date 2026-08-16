@@ -2,8 +2,11 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { StatusPill } from "../components/StatusPill";
-import { getHealth, type HealthResponse } from "../services/api";
-import { CompanySearchView } from "./CompanySearchView";
+import { getHealth, type Company, type HealthResponse } from "../services/api";
+import {
+  CompanySearchView,
+  type CompanySearchLocation
+} from "./CompanySearchView";
 import {
   CompanyWorkspaceView,
   type CompanyWorkspaceSection
@@ -30,14 +33,13 @@ const navigationViewMap: Record<
   Evidence: { view: "company-workspace", section: "evidence" },
   "Analyst Views": { view: "company-workspace", section: "analyst-views" },
   "Valuation Lab": { view: "company-workspace", section: "valuation-lab" },
-  Portfolio: null,
   Memo: { view: "company-workspace", section: "memo" },
-  Settings: null
+  "Price Decision": { view: "company-workspace", section: "price-decision" },
 };
 
 const pageMeta: Record<WorkbenchView, { eyebrow: string; title: string }> = {
   dashboard: {
-    eyebrow: "本地开发环境",
+    eyebrow: "Research System · 004-011",
     title: "价值投资研究工作台"
   },
   "company-search": {
@@ -66,7 +68,13 @@ export function App() {
   const [activeView, setActiveView] = useState<WorkbenchView>("dashboard");
   const [activeCompanySection, setActiveCompanySection] =
     useState<CompanyWorkspaceSection>("overview");
-  const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
+  const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
+  const [companySearchLocation, setCompanySearchLocation] = useState<CompanySearchLocation>({
+    query: "",
+    offset: 0
+  });
+  const [companySearchScrollTop, setCompanySearchScrollTop] = useState(0);
+  const [companySearchRestoreToken, setCompanySearchRestoreToken] = useState(0);
   const [refreshToken, setRefreshToken] = useState(0);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [failed, setFailed] = useState(false);
@@ -95,14 +103,37 @@ export function App() {
   const apiState = formatApiState(health, failed);
   const currentPage = pageMeta[activeView];
 
-  function openCompany(companyId: number) {
-    setSelectedCompanyId(companyId);
+  function openCompany(company: Company) {
+    setSelectedCompany(company);
     setActiveCompanySection("overview");
     setActiveView("company-workspace");
   }
 
+  function openCompanyFromSearch(company: Company) {
+    setCompanySearchScrollTop(window.scrollY);
+    openCompany(company);
+  }
+
+  function returnToCompanySearch() {
+    if (activeView !== "company-search") {
+      setCompanySearchRestoreToken((value) => value + 1);
+    }
+    setActiveView("company-search");
+  }
+
+  function openCompanySection(section: CompanyWorkspaceSection) {
+    if (!selectedCompany) {
+      returnToCompanySearch();
+      return;
+    }
+
+    setActiveCompanySection(section);
+    setActiveView("company-workspace");
+  }
+
   const handleCompanyUnavailable = useCallback(() => {
-    setSelectedCompanyId(null);
+    setSelectedCompany(null);
+    setCompanySearchRestoreToken((value) => value + 1);
     setActiveView("company-search");
   }, []);
 
@@ -140,7 +171,11 @@ export function App() {
                     if (target.section) {
                       setActiveCompanySection(target.section);
                     }
-                    setActiveView(target.view);
+                    if (target.view === "company-search") {
+                      returnToCompanySearch();
+                    } else {
+                      setActiveView(target.view);
+                    }
                   }
                 }}
               >
@@ -171,20 +206,32 @@ export function App() {
           </div>
         </header>
 
-        {activeView === "dashboard" ? <DashboardView /> : null}
+        {activeView === "dashboard" ? (
+          <DashboardView
+            selectedCompany={selectedCompany}
+            refreshToken={refreshToken}
+            onOpenSearch={returnToCompanySearch}
+            onOpenCompany={openCompany}
+            onOpenSection={openCompanySection}
+          />
+        ) : null}
         {activeView === "company-search" ? (
           <CompanySearchView
-            selectedCompanyId={selectedCompanyId}
-            onSelectCompany={openCompany}
+            selectedCompanyId={selectedCompany?.id ?? null}
+            onSelectCompany={openCompanyFromSearch}
             refreshToken={refreshToken}
+            location={companySearchLocation}
+            onLocationChange={setCompanySearchLocation}
+            restoreScrollTop={companySearchScrollTop}
+            restoreToken={companySearchRestoreToken}
           />
         ) : null}
         {activeView === "company-workspace" ? (
           <CompanyWorkspaceView
-            companyId={selectedCompanyId}
+            companyId={selectedCompany?.id ?? null}
             activeSection={activeCompanySection}
             onSectionChange={setActiveCompanySection}
-            onBackToSearch={() => setActiveView("company-search")}
+            onBackToSearch={returnToCompanySearch}
             onCompanyUnavailable={handleCompanyUnavailable}
             refreshToken={refreshToken}
           />

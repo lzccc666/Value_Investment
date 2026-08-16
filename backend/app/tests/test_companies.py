@@ -84,11 +84,14 @@ def test_company_list_returns_seed_companies(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["total"] >= 25
+    assert payload["total"] >= 61
     assert payload["limit"] == 100
     assert payload["offset"] == 0
     tickers = {item["ticker"] for item in payload["items"]}
-    assert {"600519.SH", "00700.HK", "AAPL.US"}.issubset(tickers)
+    assert {"600519.SH", "600941.SH", "688981.SH", "00700.HK", "AAPL.US"}.issubset(
+        tickers
+    )
+    assert "00941.HK" not in tickers
     assert not {"VI0001", "VI0002", "VI0003"} & tickers
 
 
@@ -115,6 +118,55 @@ def test_company_list_filters_by_query(tmp_path: Path) -> None:
     code_payload = code_response.json()
     assert code_payload["total"] == 1
     assert code_payload["items"][0]["name"] == "贵州茅台"
+
+
+def test_company_list_prefers_a_share_then_hk_then_us_for_same_name(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        session.add_all(
+            [
+                Company(
+                    ticker="PREF.US",
+                    exchange="NYSE",
+                    name="多地上市测试公司",
+                    status="未研究",
+                    tags=["美股"],
+                ),
+                Company(
+                    ticker="09999.HK",
+                    exchange="HKEX",
+                    name="多地上市测试公司",
+                    status="未研究",
+                    tags=["港股"],
+                ),
+                Company(
+                    ticker="600999.SH",
+                    exchange="SSE",
+                    name="多地上市测试公司",
+                    status="未研究",
+                    tags=["A股"],
+                ),
+            ]
+        )
+        session.commit()
+
+    app = create_app(initialize_database=False)
+
+    def override_get_db():
+        with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    with TestClient(app) as client:
+        response = client.get("/api/companies", params={"q": "多地上市测试公司"})
+
+    assert response.status_code == 200
+    assert [item["exchange"] for item in response.json()["items"]] == [
+        "SSE",
+        "HKEX",
+        "NYSE",
+    ]
 
 
 def test_company_detail_returns_seed_company(tmp_path: Path) -> None:
@@ -2730,6 +2782,50 @@ def test_seed_db_adds_real_companies_when_database_already_has_existing_data(
 
     assert company is not None
     assert company.name == "贵州茅台"
+
+
+def test_seed_db_promotes_existing_hk_listing_to_a_share_without_changing_id(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'existing-china-mobile.db').as_posix()}"
+    engine = create_sqlalchemy_engine(database_url)
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as session:
+        company = Company(
+            ticker="00941.HK",
+            exchange="HKEX",
+            name="中国移动",
+            industry="电信运营",
+            description="港股电信运营商，真实公司主数据种子；不包含实时行情或投资建议。",
+            listed_date=datetime(1997, 10, 23).date(),
+            status="观察中",
+            tags=["港股", "通信"],
+            current_price=80.0,
+            market_cap=1_600_000_000_000.0,
+            market_data_source="old_hk_snapshot",
+        )
+        session.add(company)
+        session.commit()
+        company_id = company.id
+
+    init_db(engine)
+
+    with Session(engine) as session:
+        companies = session.scalars(select(Company).where(Company.name == "中国移动")).all()
+
+    assert len(companies) == 1
+    assert companies[0].id == company_id
+    assert companies[0].ticker == "600941.SH"
+    assert companies[0].exchange == "SSE"
+    assert companies[0].status == "观察中"
+    assert companies[0].tags == ["A股", "通信", "运营商"]
+    assert companies[0].description is not None
+    assert companies[0].description.startswith("A股")
+    assert companies[0].listed_date is None
+    assert companies[0].current_price is None
+    assert companies[0].market_cap is None
+    assert companies[0].market_data_source is None
 
 
 class FakeFinancialClient:

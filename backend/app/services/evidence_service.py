@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -35,6 +36,7 @@ from app.data_sources.web_search_provider import (
 from app.db.models import AnalysisRun, Announcement, Company, Evidence
 from app.schemas.evidence import (
     EvidenceExtractionOutput,
+    EvidenceImportTextRequest,
     EvidenceModelOutput,
     EvidenceSearchRequest,
     EvidenceUseScope,
@@ -160,6 +162,37 @@ COMPANY_DISCLOSURE_DUPLICATE_PATTERNS = (
     "interim report",
     "dividend",
     "share repurchase",
+)
+
+MANUAL_IMPORT_DISCLOSURE_FACT_PATTERNS = (
+    "股东结构",
+    "前十大股东",
+    "十大股东",
+    "机构持股",
+    "持股变化",
+    "股权结构",
+    "治理结构",
+    "产能",
+    "产量",
+    "销量",
+    "渠道",
+    "库存",
+    "经销商",
+    "营收",
+    "收入",
+    "利润",
+    "毛利",
+    "现金流",
+    "监管",
+    "处罚",
+    "诉讼",
+    "环保",
+    "食品安全",
+    "安全生产",
+    "资金占用",
+    "关联交易",
+    "担保",
+    "债务",
 )
 
 OFFICIAL_SOURCE_PATTERNS = (
@@ -337,6 +370,73 @@ def delete_evidence(session: Session, evidence: Evidence) -> int:
     session.delete(evidence)
     session.commit()
     return evidence_id
+
+
+def import_text_evidence(
+    session: Session,
+    company: Company,
+    payload: EvidenceImportTextRequest,
+    *,
+    gateway: ModelGateway | None = None,
+) -> tuple[list[Evidence], AnalysisRun]:
+    model_gateway = gateway or ModelGateway()
+    company_snapshot = _company_snapshot(company)
+    manual_snapshot = _manual_text_import_snapshot(payload)
+    input_snapshot = {
+        "mode": "manual_text_import",
+        "company": company_snapshot,
+        "title": payload.title,
+        "source": payload.source,
+        "source_url": payload.source_url,
+        "published_at": payload.published_at.isoformat()
+        if payload.published_at is not None
+        else None,
+        "source_type": payload.source_type,
+        "notes": payload.notes,
+        "requires_review": True,
+        "content_excerpt": _truncate_lead_text(payload.content, max_length=1800),
+    }
+    run = _create_import_text_run(
+        session,
+        company_id=company.id,
+        model_name=model_gateway.model_name,
+        input_snapshot=input_snapshot,
+    )
+
+    try:
+        prompt = _build_manual_text_import_prompt(
+            company=company_snapshot,
+            manual_snapshot=manual_snapshot,
+            payload=payload,
+        )
+        extraction = model_gateway.generate_structured(
+            system_prompt=EVIDENCE_SYSTEM_PROMPT,
+            user_prompt=prompt,
+            schema=EvidenceExtractionOutput,
+            temperature=0.1,
+        )
+        if not extraction.evidences:
+            raise EvidenceImportTextError("模型未从手动导入文本中生成可入库外部证据")
+        outputs = _prepare_manual_import_outputs(
+            extraction.evidences,
+            payload=payload,
+            manual_snapshot=manual_snapshot,
+        )
+        evidence_items = _create_evidence_items(session, company.id, outputs)
+        if not evidence_items:
+            raise EvidenceImportTextError(
+                "模型输出均被过滤为价格敏感、公告重复或非默认基本面证据，未入库"
+            )
+        _complete_import_text_run(
+            session,
+            run,
+            manual_snapshot=manual_snapshot,
+            evidence_items=evidence_items,
+        )
+        return evidence_items, run
+    except Exception as exc:
+        _fail_import_text_run(session, run, exc)
+        raise
 
 
 def search_company_evidence(
@@ -578,6 +678,30 @@ def _create_search_run(
     return run
 
 
+def _create_import_text_run(
+    session: Session,
+    *,
+    company_id: int,
+    model_name: str | None,
+    input_snapshot: dict[str, object],
+) -> AnalysisRun:
+    run = AnalysisRun(
+        company_id=company_id,
+        run_type="evidence_import_text",
+        analyst_profile="evidence_import_text",
+        run_version="007_v1",
+        model_name=model_name,
+        prompt_version=PROMPT_VERSION,
+        input_snapshot=input_snapshot,
+        result={},
+        status="running",
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return run
+
+
 def _complete_search_run(
     session: Session,
     run: AnalysisRun,
@@ -606,6 +730,30 @@ def _complete_search_run(
     session.refresh(run)
 
 
+def _complete_import_text_run(
+    session: Session,
+    run: AnalysisRun,
+    *,
+    manual_snapshot: dict[str, object],
+    evidence_items: list[Evidence],
+) -> None:
+    run.status = "success"
+    run.result = {
+        "mode": "manual_text_import",
+        "raw_result_count": 1,
+        "created_evidence_ids": [item.id for item in evidence_items],
+        "created_evidence_count": len(evidence_items),
+        "diagnostics": {
+            "mode": "manual_text_import",
+            "sent_to_model_count": 1,
+            "created_evidence_count": len(evidence_items),
+            "source_url_provided": bool(manual_snapshot.get("url")),
+        },
+    }
+    session.commit()
+    session.refresh(run)
+
+
 def _fail_search_run(
     session: Session,
     run: AnalysisRun,
@@ -622,6 +770,168 @@ def _fail_search_run(
         run.result["search_stats"] = search_stats
     session.commit()
     session.refresh(run)
+
+
+def _fail_import_text_run(
+    session: Session,
+    run: AnalysisRun,
+    exc: Exception,
+) -> None:
+    run.status = "failed"
+    run.result = {
+        "mode": "manual_text_import",
+        "error": str(exc),
+        "error_type": exc.__class__.__name__,
+        "created_evidence_ids": [],
+        "created_evidence_count": 0,
+        "diagnostics": {
+            "mode": "manual_text_import",
+            "sent_to_model_count": 1,
+            "created_evidence_count": 0,
+        },
+    }
+    session.commit()
+    session.refresh(run)
+
+
+def _manual_text_import_snapshot(payload: EvidenceImportTextRequest) -> dict[str, object]:
+    content_excerpt = _truncate_lead_text(payload.content, max_length=3600)
+    return {
+        "query": "manual_text_import",
+        "title": payload.title or "手动导入外部信息",
+        "url": payload.source_url,
+        "source": payload.source or "manual_text_import",
+        "snippet": _truncate_lead_text(payload.content, max_length=500),
+        "published_at": payload.published_at.isoformat()
+        if payload.published_at is not None
+        else None,
+        "manual_import": True,
+        "import_mode": "manual_text_import",
+        "notes": payload.notes,
+        "source_type_hint": payload.source_type,
+        "requires_review": True,
+        "page_snapshot": {
+            "page_title": payload.title,
+            "page_description": payload.notes,
+            "content_excerpt": content_excerpt,
+            "content_fetched_at": datetime.now(UTC).isoformat(),
+            "source": "manual_text_import",
+        },
+    }
+
+
+def _build_manual_text_import_prompt(
+    *,
+    company: dict[str, Any],
+    manual_snapshot: dict[str, object],
+    payload: EvidenceImportTextRequest,
+) -> str:
+    prompt = build_evidence_prompt(
+        company=company,
+        search_results=[manual_snapshot],
+    )
+    manual_rules = {
+        "manual_text_import_rules": [
+            "这是用户手动粘贴的文本，不是系统自动联网验证的网页正文。",
+            "只能基于 page_snapshot.content_excerpt 中的用户文本抽取事实，不要补造文本外信息。",
+            (
+                "如果文本与目标公司、行业基本面、政策、监管、公开数据或社会责任无关，"
+                "返回空 evidences。"
+            ),
+            (
+                "手动导入是用户主动提供的待结构化文本：如果文本包含股东结构、前十大股东变化、"
+                "机构持股变化、治理结构、经营数据、产能、渠道、库存、监管、诉讼、环保、"
+                "食品安全或社会责任等具体事实，即使这些事实引用了年报、半年报、季报或公告，"
+                "也应抽取为 requires_review=true 的 Evidence，并在 analysis_note 中说明"
+                "需追到原始披露复核。"
+            ),
+            (
+                "只有在文本仅描述公告发布、报告标题、会议程序、分红回购、业绩预告或无法确认的"
+                "泛化入口信息，且没有可复核的具体基本面事实时，才返回空 evidences。"
+            ),
+            "默认 requires_review=true。",
+            "analysis_note 必须说明该证据由用户手动导入文本生成，需要人工复核来源。",
+            (
+                "如果 source_url 为空，credibility_score 不应超过 0.6，"
+                "analysis_note 必须说明缺少可复核来源链接。"
+            ),
+            (
+                "如果内容主要是行情、当前股价、目标价、荐股、评级、短线交易观点或技术分析，"
+                "请标记 price_sensitive=true 或返回空 evidences。"
+            ),
+        ],
+        "user_metadata": {
+            "title": payload.title,
+            "source": payload.source,
+            "source_url": payload.source_url,
+            "published_at": payload.published_at.isoformat()
+            if payload.published_at is not None
+            else None,
+            "source_type_hint": payload.source_type,
+            "notes": payload.notes,
+        },
+    }
+    return f"{prompt}\n\n{json.dumps(manual_rules, ensure_ascii=False)}"
+
+
+def _prepare_manual_import_outputs(
+    outputs: list[EvidenceModelOutput],
+    *,
+    payload: EvidenceImportTextRequest,
+    manual_snapshot: dict[str, object],
+) -> list[EvidenceModelOutput]:
+    prepared: list[EvidenceModelOutput] = []
+    missing_source_url = not bool(payload.source_url)
+    for output in outputs:
+        raw_snapshot = dict(output.raw_snapshot or {})
+        raw_snapshot.update(
+            {
+                "import_mode": "manual_text_import",
+                "manual_import": True,
+                "manual_text_snapshot": manual_snapshot,
+            }
+        )
+        source_url = output.source_url or payload.source_url
+        source = output.source or payload.source or "manual_text_import"
+        title = output.title or payload.title or "手动导入外部信息"
+        credibility_score = output.credibility_score
+        if missing_source_url:
+            credibility_score = min(credibility_score, 0.6)
+        analysis_note = _manual_import_analysis_note(
+            output.analysis_note,
+            missing_source_url=missing_source_url,
+        )
+        prepared.append(
+            output.model_copy(
+                update={
+                    "title": title,
+                    "source": source,
+                    "source_url": source_url,
+                    "published_at": output.published_at or payload.published_at,
+                    "source_type": output.source_type or payload.source_type,
+                    "requires_review": True,
+                    "credibility_score": credibility_score,
+                    "analysis_status": "model_analyzed",
+                    "analysis_note": analysis_note,
+                    "raw_snapshot": raw_snapshot,
+                }
+            )
+        )
+    return prepared
+
+
+def _manual_import_analysis_note(
+    value: str | None,
+    *,
+    missing_source_url: bool,
+) -> str:
+    notes: list[str] = []
+    if value:
+        notes.append(value)
+    notes.append("该证据由用户手动导入文本生成，需要人工复核来源。")
+    if missing_source_url:
+        notes.append("缺少可复核来源链接，可信度已按手动导入文本降级处理。")
+    return " ".join(notes)
 
 
 def _default_fallback_search_provider(
@@ -1711,6 +2021,21 @@ def _normalize_price_sensitive_text(*parts: object) -> str:
     return " ".join(strings)
 
 
+def _is_manual_import_substantive_disclosure_fact(output: EvidenceModelOutput) -> bool:
+    raw_snapshot = output.raw_snapshot if isinstance(output.raw_snapshot, dict) else {}
+    if raw_snapshot.get("import_mode") != "manual_text_import":
+        return False
+
+    text = _normalize_price_sensitive_text(
+        output.title,
+        output.summary,
+        output.key_facts,
+        output.tags,
+        raw_snapshot,
+    )
+    return any(pattern in text for pattern in MANUAL_IMPORT_DISCLOSURE_FACT_PATTERNS)
+
+
 def _resolve_evidence_scope(output: EvidenceModelOutput) -> tuple[bool, list[EvidenceUseScope]]:
     price_sensitive = output.price_sensitive or _is_price_sensitive_payload(
         title=output.title,
@@ -1792,7 +2117,7 @@ def _create_evidence_items(
                 "url": output.source_url,
                 "snippet": output.summary,
             }
-        ):
+        ) and not _is_manual_import_substantive_disclosure_fact(output):
             continue
         evidence = Evidence(
             company_id=company_id,
@@ -1915,4 +2240,8 @@ def _company_snapshot(company: Company) -> dict[str, Any]:
 
 
 class EvidenceSearchError(RuntimeError):
+    pass
+
+
+class EvidenceImportTextError(RuntimeError):
     pass

@@ -40,6 +40,40 @@ const mocks = vi.hoisted(() => {
       executive_summary: "多视角显示公司质量较好，但估值输入仍需复核。",
       core_thesis: ["现金流质量是后续估值的核心输入。"],
       key_risks: ["渠道库存恶化会削弱增长质量。"],
+      analyst_scorecard: {
+        total_score: 0.07,
+        suggested_safety_margin: 0.155,
+        coverage: {
+          successful_profiles: 2,
+          total_profiles: 10,
+          known_rules: 8,
+          total_rules: 40
+        },
+        analyst_items: [
+          {
+            profile_id: "buffett",
+            profile_name: "巴菲特",
+            availability: "success",
+            rule_score_total: 4,
+            analyst_weight: 0.1,
+            weighted_score: 0.1,
+            rule_scores: [
+              { rule_id: "moat", rule_label: "护城河", status: "pass", score: 1 },
+              { rule_id: "quality", rule_label: "盈利质量", status: "pass", score: 1 },
+              { rule_id: "management", rule_label: "管理层", status: "pass", score: 1 },
+              { rule_id: "margin_of_safety", rule_label: "安全边际", status: "pass", score: 1 }
+            ]
+          },
+          {
+            profile_id: "fisher",
+            profile_name: "费雪",
+            availability: "success",
+            rule_score_total: -1.2,
+            analyst_weight: 0.1,
+            weighted_score: -0.03
+          }
+        ]
+      },
       valuation_assumption_queue: [
         {
           assumption_type: "base_free_cash_flow",
@@ -103,6 +137,7 @@ const mocks = vi.hoisted(() => {
     getEvidenceModelConfig: vi.fn(),
     runEvidenceModelSmokeTest: vi.fn(),
     searchCompanyEvidence: vi.fn(),
+    importTextEvidence: vi.fn(),
     deleteEvidence: vi.fn(),
     getAnalystProfiles: vi.fn(),
     getCompanyAnalysisRuns: vi.fn(),
@@ -121,7 +156,10 @@ const mocks = vi.hoisted(() => {
     getValuationRuns: vi.fn(),
     createValuationDraft: vi.fn(),
     recalculateValuationRun: vi.fn(),
-    lockValuationRun: vi.fn()
+    getLatestPriceDecisionRun: vi.fn(),
+    getPriceDecisionRuns: vi.fn(),
+    createPriceDecisionRun: vi.fn(),
+    deletePriceDecisionRun: vi.fn()
   };
 });
 
@@ -158,6 +196,7 @@ vi.mock("../services/api", () => ({
   getEvidenceModelConfig: mocks.getEvidenceModelConfig,
   runEvidenceModelSmokeTest: mocks.runEvidenceModelSmokeTest,
   searchCompanyEvidence: mocks.searchCompanyEvidence,
+  importTextEvidence: mocks.importTextEvidence,
   deleteEvidence: mocks.deleteEvidence,
   getAnalystProfiles: mocks.getAnalystProfiles,
   getCompanyAnalysisRuns: mocks.getCompanyAnalysisRuns,
@@ -176,7 +215,10 @@ vi.mock("../services/api", () => ({
   getValuationRuns: mocks.getValuationRuns,
   createValuationDraft: mocks.createValuationDraft,
   recalculateValuationRun: mocks.recalculateValuationRun,
-  lockValuationRun: mocks.lockValuationRun
+  getLatestPriceDecisionRun: mocks.getLatestPriceDecisionRun,
+  getPriceDecisionRuns: mocks.getPriceDecisionRuns,
+  createPriceDecisionRun: mocks.createPriceDecisionRun,
+  deletePriceDecisionRun: mocks.deletePriceDecisionRun
 }));
 
 import { App } from "../app/App";
@@ -536,6 +578,41 @@ beforeEach(() => {
       }
     ]
   });
+  mocks.importTextEvidence.mockResolvedValue({
+    company_id: 1,
+    run_id: 10,
+    status: "success",
+    created: 1,
+    diagnostics: {
+      mode: "manual_text_import"
+    },
+    items: [
+      {
+        id: 7,
+        company_id: 1,
+        source_type: "web",
+        title: "手动导入渠道调研纪要",
+        source: "用户粘贴资料",
+        source_url: "https://example.test/manual-source",
+        published_at: "2026-08-10T00:00:00Z",
+        summary: "手动导入文本提到渠道库存和经销商回款节奏需要继续复核。",
+        key_facts: ["渠道库存去化节奏仍需复核"],
+        impact_direction: "mixed",
+        importance_score: 0.68,
+        credibility_score: 0.6,
+        tags: ["手动导入", "渠道"],
+        requires_review: true,
+        price_sensitive: false,
+        use_scope: ["fundamental_analysis", "analyst_view", "intrinsic_valuation"],
+        analysis_status: "model_analyzed",
+        analysis_note: "由用户手动导入文本生成，需复核来源。",
+        raw_snapshot: {
+          import_mode: "manual_text_import"
+        },
+        created_at: "2026-08-10T00:00:00Z"
+      }
+    ]
+  });
   mocks.deleteEvidence.mockResolvedValue({ id: 1, deleted: true });
   mocks.getAnalystProfiles.mockResolvedValue({
     items: [
@@ -650,7 +727,20 @@ beforeEach(() => {
                       accounting_event_count: 1,
                       accounting_event_labels: ["收入确认/核算方式变化"],
                       notes: ["缺少 007 外部信息。"]
-                    }
+                    },
+                    accounting_events: [
+                      {
+                        event_type: "accounting_policy_change",
+                        label: "会计政策变更",
+                        source_type: "announcement",
+                        source_id: 1336,
+                        source_title: "会计政策变更公告",
+                        summary: "会计政策或核算政策发生变化，跨期同比需要先确认可比口径。",
+                        comparability_impact: "同比变化需要按可比口径复核。",
+                        matched_keywords: ["会计政策变更"],
+                        confidence: 0.76
+                      }
+                    ]
                   },
                   confidence: 0.73,
                   parent_run_id: null,
@@ -782,7 +872,20 @@ beforeEach(() => {
           counter_evidence: ["如果渠道库存恶化，护城河判断需要下调。"],
           valuation_assumption_suggestions: ["后续估值模块应验证自由现金流可持续性。"],
           data_gaps: ["缺少估值和更长周期财务数据。", "缺少渠道库存数据。"],
-          follow_up_questions: ["现金流是否能连续多年覆盖利润？"]
+          follow_up_questions: ["现金流是否能连续多年覆盖利润？"],
+          accounting_events: [
+            {
+              event_type: "accounting_policy_change",
+              label: "会计政策变更",
+              source_type: "announcement",
+              source_id: 1336,
+              source_title: "会计政策变更公告",
+              summary: "会计政策或核算政策发生变化，跨期同比需要先确认可比口径。",
+              comparability_impact: "同比变化需要按可比口径复核。",
+              matched_keywords: ["会计政策变更"],
+              confidence: 0.76
+            }
+          ]
         },
         confidence: 0.73,
         parent_run_id: null,
@@ -852,9 +955,21 @@ beforeEach(() => {
     company_id: 1,
     item: makeValuationRun({ id: 502 })
   });
-  mocks.lockValuationRun.mockResolvedValue({
+  mocks.getLatestPriceDecisionRun.mockResolvedValue({ company_id: 1, item: null });
+  mocks.getPriceDecisionRuns.mockResolvedValue({
+    items: [],
+    total: 0,
+    limit: 20,
+    offset: 0
+  });
+  mocks.createPriceDecisionRun.mockResolvedValue({
     company_id: 1,
-    item: makeValuationRun({ status: "locked" })
+    item: makePriceDecisionRun()
+  });
+  mocks.deletePriceDecisionRun.mockResolvedValue({
+    id: 601,
+    deleted: true,
+    latest_price_decision_run_id: null
   });
   mocks.runCompanyAnalysis.mockResolvedValue({
     id: 12,
@@ -904,6 +1019,7 @@ beforeEach(() => {
   mocks.getEvidenceModelConfig.mockClear();
   mocks.runEvidenceModelSmokeTest.mockClear();
   mocks.searchCompanyEvidence.mockClear();
+  mocks.importTextEvidence.mockClear();
   mocks.deleteEvidence.mockClear();
   mocks.getAnalystProfiles.mockClear();
   mocks.getCompanyAnalysisRuns.mockClear();
@@ -922,7 +1038,10 @@ beforeEach(() => {
   mocks.getValuationRuns.mockClear();
   mocks.createValuationDraft.mockClear();
   mocks.recalculateValuationRun.mockClear();
-  mocks.lockValuationRun.mockClear();
+  mocks.getLatestPriceDecisionRun.mockClear();
+  mocks.getPriceDecisionRuns.mockClear();
+  mocks.createPriceDecisionRun.mockClear();
+  mocks.deletePriceDecisionRun.mockClear();
 });
 
 function makeSyncedFinancialStatements() {
@@ -969,6 +1088,7 @@ function makeValuationRun(
   overrides: Partial<{
     id: number;
     status: "draft" | "locked" | "archived" | "failed";
+    analystParameterMatrixSnapshot: Record<string, unknown>;
   }> = {}
 ) {
   const id = overrides.id ?? 501;
@@ -1023,11 +1143,28 @@ function makeValuationRun(
       latest_period: "2025年报"
     },
     model_suggested_assumptions: {
-      scenarios
+      scenarios,
+      model_weights: {
+        owner_earnings: 0.35,
+        dcf: 0.35,
+        residual_income: 0.15,
+        dividend_discount: 0.1,
+        asset_value: 0.05
+      },
+      ...(overrides.analystParameterMatrixSnapshot
+        ? { analyst_parameter_matrix_snapshot: overrides.analystParameterMatrixSnapshot }
+        : {})
     },
     user_adjusted_assumptions: {},
     assumptions: {
       scenarios,
+      model_weights: {
+        owner_earnings: 0.35,
+        dcf: 0.35,
+        residual_income: 0.15,
+        dividend_discount: 0.1,
+        asset_value: 0.05
+      },
       memo_assumption_queue: [
         {
           assumption_type: "base_free_cash_flow",
@@ -1038,16 +1175,24 @@ function makeValuationRun(
     methods: {
       selected_methods: ["dcf", "owner_earnings"],
       reserved_methods: ["residual_income", "dividend_discount", "asset_value"],
+      base_weights: {
+        owner_earnings: 0.35,
+        dcf: 0.35,
+        residual_income: 0.15,
+        dividend_discount: 0.1,
+        asset_value: 0.05
+      },
       forecast_years: 5
     },
     results: {
+      status: "calculated_after_user_confirmation",
       title: "无锚定估值实验",
       price_blind: true,
       method_results: [
         {
           method: "dcf",
           status: "success",
-          applicability: 0.9,
+          applicability: 0.35,
           reason: "自由现金流口径可用，DCF 作为无锚定主模型。",
           scenario_values: {
             conservative: 900000000000,
@@ -1064,7 +1209,7 @@ function makeValuationRun(
         {
           method: "owner_earnings",
           status: "success",
-          applicability: 0.82,
+          applicability: 0.35,
           reason: "采用所有者盈余和 DCF 交叉验证。",
           scenario_values: {
             conservative: 850000000000,
@@ -1088,13 +1233,13 @@ function makeValuationRun(
       model_weighting: [
         {
           method: "dcf",
-          weight: 0.5233,
-          reason: "按方法适用性和输入完整度参与综合。"
+          weight: 0.5,
+          reason: "按用户确认的模型基准权重分配；缺失模型剔除后按比例重分配。"
         },
         {
           method: "owner_earnings",
-          weight: 0.4767,
-          reason: "按方法适用性和输入完整度参与综合。"
+          weight: 0.5,
+          reason: "按用户确认的模型基准权重分配；缺失模型剔除后按比例重分配。"
         }
       ],
       intrinsic_value_range: {
@@ -1132,6 +1277,57 @@ function makeValuationRun(
     user_note: null,
     created_at: "2026-08-09T02:00:00Z",
     updated_at: "2026-08-09T02:00:00Z"
+  };
+}
+
+function makePriceDecisionRun(
+  overrides: Partial<{
+    id: number;
+    version_no: number;
+    price_status: string;
+    safety_margin_override: number | null;
+    effective_safety_margin: number;
+  }> = {}
+) {
+  const effectiveMargin = overrides.effective_safety_margin ?? 0.155;
+  const intrinsicValues = {
+    conservative: 697.47,
+    base: 924.84,
+    optimistic: 1163.71
+  };
+  return {
+    id: overrides.id ?? 601,
+    company_id: 1,
+    valuation_run_id: 501,
+    memo_id: 101,
+    version_no: overrides.version_no ?? 1,
+    run_version: "011_v1",
+    formula_version: "011_v1",
+    status: "active",
+    input_snapshot: {
+      memo: { id: 101, version_no: 1 },
+      valuation_run: { id: 501 }
+    },
+    input_snapshot_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    intrinsic_values_per_share: intrinsicValues,
+    current_price: 1355.29,
+    market_data_updated_at: "2026-08-13T12:00:00Z",
+    analyst_score_total: 0.07,
+    analyst_scorecard_snapshot: mocks.investmentMemo.sections.analyst_scorecard,
+    suggested_safety_margin: 0.155,
+    safety_margin_override: overrides.safety_margin_override ?? null,
+    effective_safety_margin: effectiveMargin,
+    scenario_buy_prices: {
+      conservative: intrinsicValues.conservative * (1 - effectiveMargin),
+      base: intrinsicValues.base * (1 - effectiveMargin),
+      optimistic: intrinsicValues.optimistic * (1 - effectiveMargin)
+    },
+    suggested_buy_price: intrinsicValues.base * (1 - effectiveMargin),
+    current_margin: 1 - 1355.29 / intrinsicValues.base,
+    price_status: overrides.price_status ?? "高于乐观内在价值",
+    created_at: "2026-08-16T04:00:00Z",
+    updated_at: "2026-08-16T04:00:00Z",
+    deleted_at: null
   };
 }
 
@@ -1178,7 +1374,14 @@ function makeFinancialEvidencePack(
       note: "已有经营现金流代理指标，但缺少经营现金流绝对值。"
     },
     financial_trends: {},
-    financial_flags: [],
+    financial_flags: [
+      {
+        code: "profit_growth_negative",
+        severity: "risk",
+        message: "净利润同比为负，需要结合公告复核原因。",
+        period: latestPeriod
+      }
+    ],
     financial_data_gaps: [
       {
         field: "capital_expenditure",
@@ -1240,7 +1443,34 @@ describe("App", () => {
     expect(mainNavigationText.indexOf("Memo")).toBeLessThan(
       mainNavigationText.indexOf("Valuation Lab")
     );
+    expect(mainNavigationText).not.toContain("Portfolio");
+    expect(mainNavigationText).not.toContain("Settings");
+    expect(screen.queryByText("假设追踪")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "研究主链路" })).toBeInTheDocument();
+    expect(screen.getByText("8 / 8")).toBeInTheDocument();
+    expect(screen.getByText("8 / 8 已接通")).toBeInTheDocument();
+    expect(screen.getAllByText("价格对照与投资决策")).toHaveLength(1);
+    expect(screen.queryByTitle("模块待实现")).not.toBeInTheDocument();
+    expect(screen.queryByText("下一阶段")).not.toBeInTheDocument();
+    expect(screen.queryByText("仓位与组合管理")).not.toBeInTheDocument();
+    expect(screen.queryByText("阶段边界")).not.toBeInTheDocument();
+    expect(await within(screen.getByLabelText("研究公司")).findByText("1")).toBeInTheDocument();
     expect(await screen.findByText("Value Investment API 0.1.0")).toBeInTheDocument();
+  });
+
+  it("opens a recent company from the dashboard", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开贵州茅台公司档案" }));
+
+    expect(await screen.findByRole("heading", { name: "公司档案", level: 1 })).toBeInTheDocument();
+    expect(await screen.findByText("基础档案")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+    expect(await within(screen.getByLabelText("研究公司")).findByText("1")).toBeInTheDocument();
+    const currentCompanyMetric = screen.getByLabelText("当前研究对象");
+    expect(within(currentCompanyMetric).getByText("贵州茅台 600519.SH")).toBeInTheDocument();
+    expect(within(currentCompanyMetric).getByText("已选择")).toBeInTheDocument();
   });
 
   it("opens company search and company workspace", async () => {
@@ -1282,6 +1512,11 @@ describe("App", () => {
     expect(await screen.findByText("最新期间")).toBeInTheDocument();
     expect(await screen.findByText("财务旗标")).toBeInTheDocument();
     expect(await screen.findByText("数据缺口")).toBeInTheDocument();
+    expect(await screen.findByText("财务旗标明细")).toBeInTheDocument();
+    expect(await screen.findByText("净利润同比为负，需要结合公告复核原因。")).toBeInTheDocument();
+    expect(await screen.findByText("数据缺口明细")).toBeInTheDocument();
+    expect(await screen.findByText("资本开支")).toBeInTheDocument();
+    expect(await screen.findByText(/缺少资本开支，无法计算严格自由现金流。/)).toBeInTheDocument();
     expect((await screen.findAllByText("收入")).length).toBeGreaterThan(0);
 
     await openWorkspaceSection("Announcements");
@@ -1317,6 +1552,12 @@ describe("App", () => {
     const analysisBasis = screen.getByText("本次分析依据").closest(".analyst-basis");
     expect(analysisBasis).toHaveTextContent("会计口径事件 1 个 缺少 007 外部信息");
     expect(analysisBasis?.textContent).not.toContain("个缺少");
+    expect(screen.getAllByText("会计口径提示")).toHaveLength(1);
+    const accountingAlert = screen.getByText("会计口径提示").closest(".analyst-accounting-alert");
+    expect(accountingAlert).toHaveClass("analyst-accounting-alert--panel");
+    expect(accountingAlert).toHaveTextContent(
+      "会计政策变更：会计政策或核算政策发生变化，跨期同比需要先确认可比口径。 来源 announcement #1336"
+    );
     expect(await screen.findByText("种子财务显示利润和现金流匹配")).toBeInTheDocument();
     expect(await screen.findByText("2025A 毛利率 58%")).toBeInTheDocument();
     expect(
@@ -1337,7 +1578,7 @@ describe("App", () => {
 
     await openWorkspaceSection("Memo");
     expect(await screen.findByText("综合备忘录准备区")).toBeInTheDocument();
-    expect(await screen.findByText(/当前内容不是买卖或仓位建议/)).toBeInTheDocument();
+    expect(screen.queryByText(/当前内容不是买卖或仓位建议/)).not.toBeInTheDocument();
     expect(await screen.findByText("可用于综合的成功视角")).toBeInTheDocument();
   });
 
@@ -1388,7 +1629,48 @@ describe("App", () => {
     });
     mocks.getLatestValuationRun.mockResolvedValue({
       company_id: 1,
-      item: makeValuationRun()
+      item: makeValuationRun({
+        analystParameterMatrixSnapshot: {
+          analyst_weights: [
+            {
+              profile_id: "george_soros",
+              profile_name: "乔治索罗斯",
+              source_run_id: 92,
+              weight: 0.4
+            },
+            {
+              profile_id: "buffett",
+              profile_name: "巴菲特",
+              source_run_id: 91,
+              weight: 0.6
+            }
+          ],
+          rule_impacts: [
+            {
+              profile_id: "george_soros",
+              profile_name: "乔治索罗斯",
+              source_run_id: 92,
+              rule_id: "reflexivity",
+              rule_label: "反身性",
+              status: "warn",
+              dimensions: { cyclicality: 1 },
+              calculation_role: "compute"
+            },
+            {
+              profile_id: "buffett",
+              profile_name: "巴菲特",
+              source_run_id: 91,
+              rule_id: "moat",
+              rule_label: "护城河",
+              status: "pass",
+              dimensions: { moat_durability: 1 },
+              calculation_role: "compute"
+            }
+          ],
+          price_reference_rules: [],
+          parameter_contributions: {}
+        }
+      })
     });
 
     render(<App />);
@@ -1410,12 +1692,26 @@ describe("App", () => {
     expect(await screen.findByText("010 需要复核自由现金流基准。")).toBeInTheDocument();
     expect(screen.queryByText(/base_free_cash_flow:/)).not.toBeInTheDocument();
     expect(await screen.findByText("单模型交叉验证")).toBeInTheDocument();
-    expect(await screen.findByText("所有者盈余")).toBeInTheDocument();
-    expect(screen.queryByText("行情更新时间")).not.toBeInTheDocument();
-    expect(screen.queryByText("1,355.29")).not.toBeInTheDocument();
+    expect((await screen.findAllByText("所有者盈余")).length).toBeGreaterThan(0);
+    const analystAudit = screen.getByText("008 规则到参数审计").closest("article");
+    const analystAuditText = analystAudit?.textContent ?? "";
+    expect(analystAuditText.indexOf("巴菲特")).toBeLessThan(
+      analystAuditText.indexOf("乔治索罗斯")
+    );
+    expect(screen.getByText("行情更新时间")).toBeInTheDocument();
+    expect(screen.getByText("基本信息")).toBeInTheDocument();
+    expect(screen.getByText("1,355.29")).toBeInTheDocument();
 
     const discountRateInputs = screen.getAllByLabelText("折现率");
     fireEvent.change(discountRateInputs[1], { target: { value: "10.5" } });
+    expect(screen.getByLabelText("所有者盈余权重")).toHaveValue(35);
+    expect(screen.getByLabelText("DCF权重")).toHaveValue(35);
+    fireEvent.change(screen.getByLabelText("DCF权重"), { target: { value: "45" } });
+    expect(screen.getByRole("button", { name: "确认参数并计算" })).toBeDisabled();
+    expect(screen.getByText("五个模型的配比合计必须等于 100%。")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("所有者盈余权重"), {
+      target: { value: "25" }
+    });
     fireEvent.click(screen.getByRole("button", { name: "确认参数并计算" }));
 
     await waitFor(() => {
@@ -1425,16 +1721,158 @@ describe("App", () => {
             base: expect.objectContaining({
               discount_rate: 0.105
             })
-          })
+          }),
+          model_weights: {
+            owner_earnings: 0.25,
+            dcf: 0.45,
+            residual_income: 0.15,
+            dividend_discount: 0.1,
+            asset_value: 0.05
+          }
         })
       });
     });
     expect(await screen.findByText("已确认参数并生成估值草稿 #502")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /锁定/ })).not.toBeInTheDocument();
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "锁定估值" }));
-    await waitFor(() => {
-      expect(mocks.lockValuationRun).toHaveBeenCalledWith(502);
+  it("generates a deterministic price decision from the latest calculated valuation", async () => {
+    const valuation = makeValuationRun();
+    const priceDecision = makePriceDecisionRun();
+    mocks.getLatestValuationRun.mockResolvedValue({ company_id: 1, item: valuation });
+    mocks.getValuationRuns.mockResolvedValue({
+      items: [valuation], total: 1, limit: 20, offset: 0
     });
+    mocks.getLatestPriceDecisionRun
+      .mockResolvedValueOnce({ company_id: 1, item: null })
+      .mockResolvedValue({ company_id: 1, item: priceDecision });
+    mocks.getPriceDecisionRuns
+      .mockResolvedValueOnce({ items: [], total: 0, limit: 20, offset: 0 })
+      .mockResolvedValue({ items: [priceDecision], total: 1, limit: 20, offset: 0 });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Price Decision");
+
+    expect(await screen.findByRole("heading", { name: "价格对照与投资决策" })).toBeInTheDocument();
+    expect(screen.getByText("已确认并计算")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "生成价格决策" }));
+
+    await waitFor(() => {
+      expect(mocks.createPriceDecisionRun).toHaveBeenCalledWith(1, {
+        valuation_run_id: 501,
+        safety_margin_override: null
+      });
+    });
+    expect(await screen.findByText("已生成价格决策 v1")).toBeInTheDocument();
+    expect(screen.getAllByText("高于乐观内在价值").length).toBeGreaterThan(0);
+    expect(screen.getByText("建议买入上限")).toBeInTheDocument();
+    expect(screen.getByText("-46.54%")).toBeInTheDocument();
+    expect(screen.getByText(/Memo v1/)).toBeInTheDocument();
+    expect(screen.queryByText(/仓位建议|强制卖出/)).not.toBeInTheDocument();
+  });
+
+  it("allows a 0%-50% margin override while keeping the suggested margin visible", async () => {
+    const valuation = makeValuationRun();
+    const first = makePriceDecisionRun();
+    const overridden = makePriceDecisionRun({
+      id: 602,
+      version_no: 2,
+      safety_margin_override: 0.2,
+      effective_safety_margin: 0.2
+    });
+    mocks.getLatestValuationRun.mockResolvedValue({ company_id: 1, item: valuation });
+    mocks.getValuationRuns.mockResolvedValue({ items: [valuation], total: 1, limit: 20, offset: 0 });
+    mocks.getLatestPriceDecisionRun
+      .mockResolvedValueOnce({ company_id: 1, item: first })
+      .mockResolvedValue({ company_id: 1, item: overridden });
+    mocks.getPriceDecisionRuns
+      .mockResolvedValueOnce({ items: [first], total: 1, limit: 20, offset: 0 })
+      .mockResolvedValue({ items: [overridden, first], total: 2, limit: 20, offset: 0 });
+    mocks.createPriceDecisionRun.mockResolvedValue({ company_id: 1, item: overridden });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Price Decision");
+
+    expect(screen.getByText("系统建议值")).toBeInTheDocument();
+    expect(screen.getAllByText("15.50%").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByLabelText("手动覆盖安全边际"));
+    fireEvent.change(screen.getByLabelText("覆盖安全边际（%）"), {
+      target: { value: "20" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "重新计算" }));
+
+    await waitFor(() => {
+      expect(mocks.createPriceDecisionRun).toHaveBeenCalledWith(1, {
+        valuation_run_id: 501,
+        safety_margin_override: 0.2
+      });
+    });
+    expect(await screen.findByText("已生成价格决策 v2")).toBeInTheDocument();
+    expect(screen.getByText("用户覆盖值")).toBeInTheDocument();
+    expect(screen.getAllByText("20.00%").length).toBeGreaterThan(0);
+  });
+
+  it("views and manually deletes price decision history", async () => {
+    const valuation = makeValuationRun();
+    const first = makePriceDecisionRun();
+    const second = makePriceDecisionRun({ id: 602, version_no: 2 });
+    mocks.getLatestValuationRun.mockResolvedValue({ company_id: 1, item: valuation });
+    mocks.getValuationRuns.mockResolvedValue({ items: [valuation], total: 1, limit: 20, offset: 0 });
+    mocks.getLatestPriceDecisionRun
+      .mockResolvedValueOnce({ company_id: 1, item: second })
+      .mockResolvedValue({ company_id: 1, item: first });
+    mocks.getPriceDecisionRuns
+      .mockResolvedValueOnce({ items: [second, first], total: 2, limit: 20, offset: 0 })
+      .mockResolvedValue({ items: [first], total: 1, limit: 20, offset: 0 });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Price Decision");
+
+    fireEvent.click(screen.getByRole("button", { name: "查看价格决策 v1" }));
+    expect(screen.getAllByText("建议买入上限").length).toBeGreaterThan(1);
+    expect(screen.queryByText("公式版本")).not.toBeInTheDocument();
+    expect(screen.queryByText("快照")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除价格决策 v2" }));
+
+    await waitFor(() => expect(mocks.deletePriceDecisionRun).toHaveBeenCalledWith(602));
+    expect(await screen.findByText("已删除价格决策版本")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除价格决策 v2" })).not.toBeInTheDocument();
+  });
+
+  it("shows actionable missing-input and old Memo errors", async () => {
+    const firstRender = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Price Decision");
+    expect(await screen.findByText("缺少已完成计算的 010 估值")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "前往无锚定估值" })).toBeInTheDocument();
+    firstRender.unmount();
+
+    const valuation = makeValuationRun();
+    mocks.getLatestValuationRun.mockResolvedValue({ company_id: 1, item: valuation });
+    mocks.getValuationRuns.mockResolvedValue({ items: [valuation], total: 1, limit: 20, offset: 0 });
+    mocks.createPriceDecisionRun.mockRejectedValueOnce(
+      new Error("该估值绑定的旧 Memo 没有动态安全边际，请重新生成 Memo 和 010 估值。")
+    );
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Price Decision");
+    fireEvent.click(screen.getByRole("button", { name: "生成价格决策" }));
+    expect(
+      await screen.findByText("该估值绑定的旧 Memo 没有动态安全边际，请重新生成 Memo 和 010 估值。")
+    ).toBeInTheDocument();
   });
 
   it("generates and deletes investment memo history from the memo panel", async () => {
@@ -1464,6 +1902,17 @@ describe("App", () => {
       await screen.findByText("多视角显示公司质量较好，但估值输入仍需复核。")
     ).toBeInTheDocument();
     expect(await screen.findAllByText("010 需要复核自由现金流基准。")).not.toHaveLength(0);
+    expect(await screen.findByText("分析师评分")).toBeInTheDocument();
+    expect(await screen.findByText("+0.07")).toBeInTheDocument();
+    expect(await screen.findByText("+0.10")).toBeInTheDocument();
+    expect(await screen.findByText(/动态安全边际 15\.50%/)).toBeInTheDocument();
+    const latestMemoPanel = screen.getByText("最新综合备忘录").closest(".memo-latest");
+    expect(latestMemoPanel).not.toBeNull();
+    expect(within(latestMemoPanel as HTMLElement).queryByText("研究结论")).not.toBeInTheDocument();
+    expect(within(latestMemoPanel as HTMLElement).queryByText("来源视角")).not.toBeInTheDocument();
+    expect(within(latestMemoPanel as HTMLElement).queryByText("状态")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("40 项指标明细"));
+    expect(await screen.findByText(/护城河 \+1\.00/)).toBeInTheDocument();
     expect(screen.queryByText(/base_free_cash_flow:/)).not.toBeInTheDocument();
     expect(await screen.findByText("历史分析记录")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "查看备忘录 v1" }));
@@ -1492,7 +1941,8 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
 
     await openWorkspaceSection("Memo");
-    expect(await screen.findByText(/当前内容不是买卖或仓位建议/)).toBeInTheDocument();
+    expect(await screen.findByText("综合备忘录准备区")).toBeInTheDocument();
+    expect(screen.queryByText(/当前内容不是买卖或仓位建议/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /编辑|保存新版本/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/买入|卖出|持有|减仓/)).not.toBeInTheDocument();
 
@@ -2280,6 +2730,112 @@ describe("App", () => {
     );
   });
 
+  it("imports manual text evidence and refreshes the evidence list", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Evidence");
+    const evidencePanel = await screen.findByRole("region", { name: "外部信息" });
+
+    mocks.getCompanyEvidence.mockResolvedValueOnce({
+      items: [
+        {
+          id: 7,
+          company_id: 1,
+          source_type: "web",
+          title: "手动导入渠道调研纪要",
+          source: "用户粘贴资料",
+          source_url: "https://example.test/manual-source",
+          published_at: "2026-08-10T00:00:00Z",
+          summary: "手动导入文本提到渠道库存和经销商回款节奏需要继续复核。",
+          key_facts: ["渠道库存去化节奏仍需复核"],
+          impact_direction: "mixed",
+          importance_score: 0.68,
+          credibility_score: 0.6,
+          tags: ["手动导入", "渠道"],
+          requires_review: true,
+          price_sensitive: false,
+          use_scope: ["fundamental_analysis", "analyst_view", "intrinsic_valuation"],
+          analysis_status: "model_analyzed",
+          analysis_note: "由用户手动导入文本生成，需复核来源。",
+          raw_snapshot: {
+            import_mode: "manual_text_import"
+          },
+          created_at: "2026-08-10T00:00:00Z"
+        }
+      ],
+      total: 1,
+      limit: 10,
+      offset: 0
+    });
+
+    fireEvent.change(within(evidencePanel).getByLabelText("标题"), {
+      target: { value: "手动导入渠道调研纪要" }
+    });
+    fireEvent.change(within(evidencePanel).getByLabelText("来源名称"), {
+      target: { value: "用户粘贴资料" }
+    });
+    fireEvent.change(within(evidencePanel).getByLabelText("来源链接"), {
+      target: { value: "https://example.test/manual-source" }
+    });
+    fireEvent.change(within(evidencePanel).getByLabelText("正文内容"), {
+      target: {
+        value:
+          "渠道调研文本显示，经销商回款节奏和库存去化仍需结合后续公告与经营数据继续复核。"
+      }
+    });
+
+    fireEvent.click(within(evidencePanel).getByRole("button", { name: "导入文本" }));
+
+    await waitFor(() => {
+      expect(mocks.importTextEvidence).toHaveBeenCalledWith(1, {
+        title: "手动导入渠道调研纪要",
+        content: "渠道调研文本显示，经销商回款节奏和库存去化仍需结合后续公告与经营数据继续复核。",
+        source: "用户粘贴资料",
+        source_url: "https://example.test/manual-source",
+        published_at: undefined,
+        source_type: "web",
+        notes: undefined
+      });
+    });
+
+    expect(await screen.findByText("已导入 1 条外部证据：#7，运行记录 #10")).toBeInTheDocument();
+    expect(await screen.findByText("手动导入渠道调研纪要")).toBeInTheDocument();
+    expect(screen.getByText("#7")).toBeInTheDocument();
+  });
+
+  it("shows manual text import failures", async () => {
+    mocks.importTextEvidence.mockRejectedValueOnce(
+      new Error("模型未从手动导入文本中生成可入库外部证据")
+    );
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Company Search" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Evidence");
+    const evidencePanel = await screen.findByRole("region", { name: "外部信息" });
+
+    fireEvent.change(within(evidencePanel).getByLabelText("正文内容"), {
+      target: {
+        value: "这段导入文本只有短线交易观点和目标价，不应该污染默认基本面外部证据库。"
+      }
+    });
+    fireEvent.click(within(evidencePanel).getByRole("button", { name: "导入文本" }));
+
+    await waitFor(() => {
+      expect(mocks.importTextEvidence).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      await screen.findByText("模型未从手动导入文本中生成可入库外部证据")
+    ).toBeInTheDocument();
+  });
+
   it("deletes an irrelevant external evidence item and refreshes the list", async () => {
     render(<App />);
 
@@ -2882,6 +3438,10 @@ describe("App", () => {
     expect(await screen.findByText("公司池共 21 家，第 1-20 家")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
 
+    const searchInput = screen.getByPlaceholderText("输入代码、名称、交易所、行业或标签");
+    fireEvent.change(searchInput, { target: { value: "白酒" } });
+    expect(await screen.findByText("匹配 21 家公司，第 1-20 家")).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
 
     expect(await screen.findByText("五粮液")).toBeInTheDocument();
@@ -2896,6 +3456,29 @@ describe("App", () => {
     });
     expect(screen.getByText("21-21 / 21")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "下一页" })).toBeDisabled();
+
+    const scrollTo = vi.fn();
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 640 });
+    Object.defineProperty(window, "scrollTo", { configurable: true, value: scrollTo });
+
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    expect(await screen.findByRole("heading", { name: "公司档案", level: 1 })).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "返回搜索" }));
+
+    expect(await screen.findByText("五粮液")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("输入代码、名称、交易所、行业或标签")).toHaveValue("白酒");
+    await waitFor(() => {
+      expect(mocks.getCompanies).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          q: "白酒",
+          limit: 20,
+          offset: 20,
+          signal: expect.any(AbortSignal)
+        })
+      );
+      expect(scrollTo).toHaveBeenCalledWith(0, 640);
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "上一页" }));
 

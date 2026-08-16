@@ -18,8 +18,8 @@ from app.db.init_db import init_db
 from app.db.models import AnalysisRun, Announcement, Company, Evidence
 from app.db.session import create_sqlalchemy_engine, get_db
 from app.main import create_app
-from app.schemas.evidence import EvidenceSearchRequest
-from app.services.evidence_service import search_company_evidence
+from app.schemas.evidence import EvidenceImportTextRequest, EvidenceSearchRequest
+from app.services.evidence_service import import_text_evidence, search_company_evidence
 
 
 def _make_test_db(tmp_path: Path):
@@ -43,6 +43,242 @@ def _get_company_id(client: TestClient, query: str) -> int:
     payload = response.json()
     assert payload["total"] >= 1
     return int(payload["items"][0]["id"])
+
+
+def test_import_text_evidence_creates_model_analyzed_evidence_and_history_run(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    gateway = FakeManualImportGateway()
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+
+        items, run = import_text_evidence(
+            session,
+            company,
+            EvidenceImportTextRequest(
+                title="白酒渠道监管访谈纪要",
+                content=(
+                    "市场监管公开材料显示，白酒渠道治理重点包括经销商价格秩序、"
+                    "食品安全追溯和区域库存监测，这些事项会影响高端白酒企业的渠道管理。"
+                ),
+                source="manual_source",
+                source_url="https://example.test/manual-evidence",
+                published_at=datetime(2026, 8, 15, tzinfo=UTC),
+                source_type="regulatory",
+                notes="用户手动导入的外部公开材料摘录。",
+            ),
+            gateway=gateway,
+        )
+
+    assert run.status == "success"
+    assert run.run_type == "evidence_import_text"
+    assert run.input_snapshot["mode"] == "manual_text_import"
+    assert run.result["created_evidence_count"] == 1
+    assert run.result["diagnostics"]["mode"] == "manual_text_import"
+    assert len(items) == 1
+    assert items[0].analysis_status == "model_analyzed"
+    assert items[0].requires_review is True
+    assert items[0].source_url == "https://example.test/manual-evidence"
+    assert items[0].raw_snapshot["import_mode"] == "manual_text_import"
+    assert "用户手动导入文本生成" in (items[0].analysis_note or "")
+    assert gateway.saw_manual_text is True
+
+
+def test_import_text_evidence_without_source_url_caps_credibility_and_notes(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+
+        items, _run = import_text_evidence(
+            session,
+            company,
+            EvidenceImportTextRequest(
+                title="白酒库存调研摘要",
+                content="调研摘要显示部分区域渠道库存上升，经销商回款节奏放缓，需要继续复核来源。",
+                source="manual_note",
+            ),
+            gateway=FakeManualImportGateway(),
+        )
+
+    assert len(items) == 1
+    assert items[0].requires_review is True
+    assert items[0].credibility_score == 0.6
+    assert "缺少可复核来源链接" in (items[0].analysis_note or "")
+
+
+def test_import_text_evidence_allows_shareholder_fact_from_report_quote(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    gateway = FakeManualShareholderFactGateway()
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+
+        items, run = import_text_evidence(
+            session,
+            company,
+            EvidenceImportTextRequest(
+                title="香港中央结算退出贵州茅台十大股东名单",
+                content=(
+                    "8月14日，贵州茅台披露2026年半年报。报告显示，截至期末，"
+                    "香港中央结算有限公司已退出贵州茅台前十大股东名单；上一期末，"
+                    "香港中央结算有限公司分别持有贵州茅台0.83%和0.32%股份，"
+                    "为公司的第九和第十股东。"
+                ),
+                source="东方财富",
+                source_url="https://finance.eastmoney.com/a/202608143842073818.html",
+                published_at=datetime(2026, 8, 14, tzinfo=UTC),
+                source_type="web",
+            ),
+            gateway=gateway,
+        )
+
+    assert run.status == "success"
+    assert len(items) == 1
+    assert items[0].analysis_status == "model_analyzed"
+    assert items[0].requires_review is True
+    assert items[0].price_sensitive is False
+    assert "十大股东" in items[0].summary
+    assert gateway.saw_shareholder_rule is True
+
+
+def test_import_text_evidence_records_failed_run_when_model_is_not_configured(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+
+        with pytest.raises(ModelNotConfiguredError):
+            import_text_evidence(
+                session,
+                company,
+                EvidenceImportTextRequest(
+                    content="外部公开资料显示白酒行业监管政策持续关注食品安全和渠道秩序。"
+                ),
+                gateway=FakeUnconfiguredGateway(),
+            )
+
+        evidence_count = session.scalar(
+            select(func.count()).select_from(Evidence).where(Evidence.company_id == company.id)
+        )
+        run = session.scalar(
+            select(AnalysisRun)
+            .where(
+                AnalysisRun.company_id == company.id,
+                AnalysisRun.run_type == "evidence_import_text",
+            )
+            .order_by(AnalysisRun.id.desc())
+        )
+
+    assert evidence_count == 0
+    assert run is not None
+    assert run.status == "failed"
+    assert run.result["created_evidence_count"] == 0
+    assert run.result["error_type"] == "ModelNotConfiguredError"
+
+
+def test_import_text_evidence_does_not_store_price_sensitive_output(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+
+        with pytest.raises(Exception, match="未入库"):
+            import_text_evidence(
+                session,
+                company,
+                EvidenceImportTextRequest(
+                    content="文本主要讨论贵州茅台当前股价、目标价和短线交易评级。"
+                ),
+                gateway=FakeManualPriceSensitiveGateway(),
+            )
+
+        evidence_count = session.scalar(
+            select(func.count()).select_from(Evidence).where(Evidence.company_id == company.id)
+        )
+        run = session.scalar(
+            select(AnalysisRun)
+            .where(
+                AnalysisRun.company_id == company.id,
+                AnalysisRun.run_type == "evidence_import_text",
+            )
+            .order_by(AnalysisRun.id.desc())
+        )
+
+    assert evidence_count == 0
+    assert run is not None
+    assert run.status == "failed"
+
+
+def test_import_text_evidence_api_validates_required_content(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    app = create_app(initialize_database=False)
+    _override_db(app, session_factory)
+
+    with TestClient(app) as client:
+        company_id = _get_company_id(client, "贵州茅台")
+        response = client.post(
+            f"/api/companies/{company_id}/evidence/import-text",
+            json={"title": "缺少正文"},
+        )
+
+    assert response.status_code == 422
+
+
+def test_import_text_evidence_api_creates_evidence_and_refresh_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    app = create_app(initialize_database=False)
+    _override_db(app, session_factory)
+
+    from app.api.routes import evidence as evidence_routes
+
+    def fake_import_text_evidence(db, company, payload):
+        return import_text_evidence(
+            db,
+            company,
+            payload,
+            gateway=FakeManualImportGateway(),
+        )
+
+    monkeypatch.setattr(evidence_routes, "import_text_evidence", fake_import_text_evidence)
+
+    with TestClient(app) as client:
+        company_id = _get_company_id(client, "贵州茅台")
+        response = client.post(
+            f"/api/companies/{company_id}/evidence/import-text",
+            json={
+                "title": "白酒渠道监管访谈纪要",
+                "content": "公开材料显示白酒渠道监管关注食品安全追溯和经销商库存监测。",
+                "source": "manual_source",
+                "source_url": "https://example.test/manual-evidence",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["created"] == 1
+    assert payload["items"][0]["analysis_status"] == "model_analyzed"
+    assert payload["items"][0]["raw_snapshot"]["import_mode"] == "manual_text_import"
+    assert payload["diagnostics"]["mode"] == "manual_text_import"
 
 
 def test_evidence_search_returns_clear_error_when_model_is_not_configured(tmp_path: Path) -> None:
@@ -1244,6 +1480,128 @@ class FakeMoutaiDisclosureClient:
                 raw_url="https://pdf.dfcfw.com/pdf/H2_3_1.pdf",
             ),
         ]
+
+
+class FakeManualImportGateway:
+    model_name = "fake-model"
+
+    def __init__(self) -> None:
+        self.saw_manual_text = False
+
+    def generate_structured(self, **kwargs):
+        schema = kwargs["schema"]
+        user_prompt = str(kwargs["user_prompt"])
+        self.saw_manual_text = "manual_text_import" in user_prompt and "只能基于" in user_prompt
+        return schema.model_validate(
+            {
+                "evidences": [
+                    {
+                        "source_type": "regulatory",
+                        "title": "白酒渠道监管访谈纪要",
+                        "source": "manual_source",
+                        "source_url": "https://example.test/manual-evidence",
+                        "published_at": "2026-08-15T00:00:00+00:00",
+                        "summary": "用户导入文本显示白酒渠道治理关注食品安全追溯和库存监测。",
+                        "key_facts": ["白酒渠道治理关注食品安全追溯", "监管关注库存监测"],
+                        "impact_direction": "mixed",
+                        "importance_score": 0.7,
+                        "credibility_score": 0.9,
+                        "tags": ["监管", "渠道"],
+                        "requires_review": False,
+                        "price_sensitive": False,
+                        "use_scope": [
+                            "fundamental_analysis",
+                            "analyst_view",
+                            "intrinsic_valuation",
+                        ],
+                        "analysis_status": "model_analyzed",
+                        "analysis_note": "模型基于用户导入文本完成结构化。",
+                        "raw_snapshot": {"title": "白酒渠道监管访谈纪要"},
+                    }
+                ]
+            }
+        )
+
+
+class FakeManualShareholderFactGateway:
+    model_name = "fake-model"
+
+    def __init__(self) -> None:
+        self.saw_shareholder_rule = False
+
+    def generate_structured(self, **kwargs):
+        schema = kwargs["schema"]
+        user_prompt = str(kwargs["user_prompt"])
+        self.saw_shareholder_rule = (
+            "前十大股东变化" in user_prompt and "机构持股变化" in user_prompt
+        )
+        return schema.model_validate(
+            {
+                "evidences": [
+                    {
+                        "source_type": "web",
+                        "title": "香港中央结算退出贵州茅台十大股东名单",
+                        "source": "东方财富",
+                        "source_url": "https://finance.eastmoney.com/a/202608143842073818.html",
+                        "published_at": "2026-08-14T00:00:00+00:00",
+                        "summary": (
+                            "手动导入文本显示香港中央结算已退出贵州茅台前十大股东名单，"
+                            "需追到半年报原文复核。"
+                        ),
+                        "key_facts": [
+                            "香港中央结算已退出贵州茅台前十大股东名单",
+                            "上一期末香港中央结算曾为公司第九和第十股东",
+                        ],
+                        "impact_direction": "unknown",
+                        "importance_score": 0.58,
+                        "credibility_score": 0.65,
+                        "tags": ["股东结构", "手动导入"],
+                        "requires_review": True,
+                        "price_sensitive": False,
+                        "use_scope": [
+                            "fundamental_analysis",
+                            "analyst_view",
+                            "intrinsic_valuation",
+                        ],
+                        "analysis_status": "model_analyzed",
+                        "analysis_note": "模型基于用户导入文本完成结构化，需追到半年报原文复核。",
+                        "raw_snapshot": {"title": "香港中央结算退出贵州茅台十大股东名单"},
+                    }
+                ]
+            }
+        )
+
+
+class FakeManualPriceSensitiveGateway:
+    model_name = "fake-model"
+
+    def generate_structured(self, **kwargs):
+        schema = kwargs["schema"]
+        return schema.model_validate(
+            {
+                "evidences": [
+                    {
+                        "source_type": "web",
+                        "title": "贵州茅台当前股价与目标价摘要",
+                        "source": "manual_source",
+                        "source_url": None,
+                        "published_at": None,
+                        "summary": "文本主要讨论当前股价、目标价、短线评级和交易观点。",
+                        "key_facts": ["当前股价和目标价属于价格敏感信息"],
+                        "impact_direction": "unknown",
+                        "importance_score": 0.4,
+                        "credibility_score": 0.4,
+                        "tags": ["股价", "目标价"],
+                        "requires_review": True,
+                        "price_sensitive": True,
+                        "use_scope": [],
+                        "analysis_status": "model_analyzed",
+                        "analysis_note": "价格敏感文本不应进入默认基本面证据库。",
+                        "raw_snapshot": {"title": "贵州茅台当前股价与目标价摘要"},
+                    }
+                ]
+            }
+        )
 
 
 class FakeConfiguredGateway:

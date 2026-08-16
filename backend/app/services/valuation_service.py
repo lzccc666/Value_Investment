@@ -3,12 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from math import isfinite
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analysis.analyst_profiles import get_analyst_profile
+from app.analysis.analyst_weights import (
+    analyst_raw_weight,
+    differentiate_and_normalize_analyst_weights,
+)
 from app.analysis.valuation_parameter_matrix import (
     STATUS_SCORES,
     VALUATION_DIMENSIONS,
@@ -22,22 +27,14 @@ from app.services.memo_service import get_latest_memo_for_valuation
 RUN_VERSION = "010_v1"
 FORECAST_YEARS = 5
 ANALYST_PARAMETER_IMPACT_SCALE = 1.50
-ANALYST_METHOD_WEIGHT_IMPACT_SCALE = 1.50
-ANALYST_METHOD_MULTIPLIER_MIN = 0.40
-ANALYST_METHOD_MULTIPLIER_MAX = 1.80
 MODEL_BASE_WEIGHTS = {
     "owner_earnings": 0.35,
     "dcf": 0.35,
-    "residual_income": 0.10,
+    "residual_income": 0.15,
     "dividend_discount": 0.10,
-    "asset_value": 0.10,
+    "asset_value": 0.05,
 }
-MODEL_WEIGHT_FACTOR_EXPONENTS = {
-    "input_completeness": 1.50,
-    "data_quality": 1.50,
-    "risk_constraint": 1.50,
-    "analyst_signal": 1.50,
-}
+MODEL_WEIGHT_TOTAL_TOLERANCE = 1e-6
 FORBIDDEN_PRICE_FIELDS = {
     "current_price",
     "market_cap",
@@ -79,10 +76,6 @@ class ValuationRunError(ValueError):
 
 
 class ValuationInputError(ValuationRunError):
-    pass
-
-
-class ValuationLockError(ValuationRunError):
     pass
 
 
@@ -162,16 +155,14 @@ def _latest_analyst_parameter_matrices(
             continue
         seen_profiles.add(profile_id)
         result = _dict(run.result)
-        matrix = _dict(result.get("valuation_parameter_matrix"))
-        if not matrix:
-            profile = get_analyst_profile(profile_id)
-            if profile is None:
-                continue
-            matrix = derive_valuation_parameter_matrix(
-                source_run_id=run.id,
-                profile=profile,
-                result=result,
-            )
+        profile = get_analyst_profile(profile_id)
+        if profile is None:
+            continue
+        matrix = derive_valuation_parameter_matrix(
+            source_run_id=run.id,
+            profile=profile,
+            result=result,
+        )
         matrices.append(matrix)
     return matrices
 
@@ -234,24 +225,6 @@ def recalculate_valuation_run(
     )
 
 
-def lock_valuation_run(session: Session, run: ValuationRun) -> ValuationRun:
-    if run.status == "locked":
-        return run
-    if run.status != "draft":
-        raise ValuationLockError("只有 draft 状态的估值记录可以锁定。")
-    if run.results.get("status") != "calculated_after_user_confirmation":
-        raise ValuationLockError("估值参数尚未由用户确认，当前草稿不能锁定。")
-    high_gaps = _high_severity_gaps(run.results.get("valuation_input_gaps"))
-    if high_gaps:
-        fields = "、".join(str(item.get("field") or item.get("summary")) for item in high_gaps)
-        raise ValuationLockError(f"存在高严重度估值输入缺口，暂不能锁定：{fields}")
-    run.status = "locked"
-    run.updated_at = utc_now()
-    session.commit()
-    session.refresh(run)
-    return run
-
-
 def get_valuation_run(session: Session, run_id: int) -> ValuationRun | None:
     return session.get(ValuationRun, run_id)
 
@@ -308,6 +281,9 @@ def _calculate_valuation_payload(
     final_assumptions = (
         _deep_merge(suggested_assumptions, user_assumptions) if user_confirmed else {}
     )
+    configured_model_weights = _resolve_model_weights(
+        final_assumptions if user_confirmed else suggested_assumptions
+    )
     if user_confirmed:
         parameter_sources = _dict(final_assumptions.get("parameter_sources"))
         parameter_sources["user_adjusted"] = sorted(user_assumptions.keys())
@@ -316,24 +292,16 @@ def _calculate_valuation_payload(
         method_results = [
             _calculate_dcf(valuation_inputs, final_assumptions, input_gaps),
             _calculate_owner_earnings(valuation_inputs, final_assumptions, input_gaps),
-            _skipped_method(
-                "residual_income",
-                "剩余收益模型已预留，MVP 等股东权益、ROE 和权益资本成本口径稳定后完整计算。",
-            ),
-            _skipped_method(
-                "dividend_discount",
-                "分红折现模型已预留，MVP 先展示适配和输入缺口。",
-            ),
-            _skipped_method(
-                "asset_value",
-                "资产价值模型已预留，MVP 先展示资产负债底稿和缺口。",
-            ),
+            _calculate_residual_income(valuation_inputs, final_assumptions, input_gaps),
+            _calculate_dividend_discount(valuation_inputs, final_assumptions, input_gaps),
+            _calculate_asset_value(valuation_inputs, input_gaps),
         ]
+        for method_result in method_results:
+            method = _safe_str(method_result.get("method"))
+            method_result["applicability"] = configured_model_weights.get(method, 0.0)
         intrinsic_value_range, weighting, dispersion_warning = _combine_method_results(
             method_results,
             valuation_inputs,
-            input_gaps,
-            final_assumptions,
         )
     else:
         method_results = []
@@ -365,9 +333,16 @@ def _calculate_valuation_payload(
         "user_adjusted_assumptions": user_assumptions,
         "assumptions": final_assumptions,
         "methods": {
-            "selected_methods": ["dcf", "owner_earnings"],
-            "reserved_methods": ["residual_income", "dividend_discount", "asset_value"],
-            "base_weights": dict(MODEL_BASE_WEIGHTS),
+            "selected_methods": [
+                "dcf",
+                "owner_earnings",
+                "residual_income",
+                "dividend_discount",
+                "asset_value",
+            ],
+            "reserved_methods": [],
+            "base_weights": configured_model_weights,
+            "default_base_weights": dict(MODEL_BASE_WEIGHTS),
             "forecast_years": FORECAST_YEARS,
         },
         "results": {
@@ -384,7 +359,7 @@ def _calculate_valuation_payload(
             "valuation_input_gaps": input_gaps,
             "dispersion_warning": dispersion_warning,
             "next_step": (
-                "参数已确认，可在复核后锁定估值。"
+                "参数已确认，估值结果已生成。"
                 if user_confirmed
                 else "请先确认或调整模型建议参数。"
             ),
@@ -451,7 +426,9 @@ def _derive_valuation_inputs(financial_pack: dict[str, object]) -> dict[str, obj
         "shareholders_equity": _num(latest.get("shareholders_equity")),
         "total_assets": _num(latest.get("total_assets")),
         "total_liabilities": _num(latest.get("total_liabilities")),
-        "dividend": _num(capital_allocation.get("dividend")) or _num(latest.get("dividend")),
+        "dividend": _num(normalized_base_values.get("dividend"))
+        or _num(capital_allocation.get("dividend"))
+        or _num(latest.get("dividend")),
         "shares_outstanding": _num(capital_allocation.get("shares_outstanding"))
         or _num(latest.get("shares_outstanding")),
         "roe": _num(profitability.get("roe")),
@@ -481,6 +458,7 @@ def _derive_normalized_statement_bases(financial_pack: dict[str, object]) -> dic
         "capital_expenditure",
         "depreciation_and_amortization",
         "working_capital_change",
+        "dividend",
     ]
     values: dict[str, float | None] = {}
     method = "latest_period"
@@ -917,10 +895,6 @@ def _derive_assumptions(
 ) -> dict[str, object]:
     trends = _dict(financial_pack.get("financial_trends"))
     flags = _list(financial_pack.get("financial_flags"))
-    data_quality = _dict(financial_pack.get("data_quality"))
-    memo_risk_items = _list(memo_inputs.get("key_risks")) + _list(
-        memo_inputs.get("counter_evidence"),
-    )
     base_growth = _first_number(
         trends.get("free_cash_flow_cagr_5y"),
         trends.get("free_cash_flow_cagr_3y"),
@@ -990,13 +964,18 @@ def _derive_assumptions(
     return {
         "forecast_years": FORECAST_YEARS,
         "scenarios": scenario_inputs,
+        "model_weights": dict(MODEL_BASE_WEIGHTS),
         "source": {
             "growth": "financial_evidence_pack.financial_trends",
             "discount_rate": "rule_based_quality_and_gap_adjustment",
             "terminal_growth_rate": "system_default_with_conservative_cap",
         },
         "parameter_sources": {
-            "system_default": ["forecast_years", "terminal_growth_rate_bounds"],
+            "system_default": [
+                "forecast_years",
+                "terminal_growth_rate_bounds",
+                "model_weights",
+            ],
             "financial_evidence_pack": [
                 "growth_rates",
                 "cash_flow_quality",
@@ -1017,19 +996,11 @@ def _derive_assumptions(
                 "growth_score",
                 "risk_score",
                 "scenario_spread",
-                "method_multipliers",
             ]
             if analyst_adjustment["has_signals"]
             else [],
             "model_suggested": [],
             "user_adjusted": [],
-        },
-        "weighting_constraints": {
-            "input_gap_count": len(input_gaps),
-            "financial_flag_count": len(flags),
-            "data_quality_penalty_count": len(_list(data_quality.get("confidence_penalties"))),
-            "memo_risk_count": len(memo_risk_items),
-            "analyst_method_multipliers": analyst_adjustment["method_multipliers"],
         },
         "rules": {
             "terminal_growth_rate_max": 0.035,
@@ -1070,7 +1041,10 @@ def _derive_analyst_matrix_adjustment(
             confidence = _clamp(_num(item.get("data_confidence")) or 0.6, 0.2, 1.0)
             known_completeness = known_count / total_count
             price_blind_completeness = compute_count / total_count
-            raw_weight = 0.50 * confidence + 0.50 * fit
+            raw_weight = analyst_raw_weight(
+                data_confidence=confidence,
+                profile_fit_score=fit,
+            )
             analyst_rows.append(
                 {
                     "profile_id": item.get("profile_id"),
@@ -1085,11 +1059,11 @@ def _derive_analyst_matrix_adjustment(
                 }
             )
 
-    total_raw_weight = sum(float(item["raw_weight"]) for item in analyst_rows)
-    for item in analyst_rows:
-        item["weight"] = (
-            float(item["raw_weight"]) / total_raw_weight if total_raw_weight > 0 else 0.0
-        )
+    weight_components = differentiate_and_normalize_analyst_weights(
+        [float(item["raw_weight"]) for item in analyst_rows]
+    )
+    for item, components in zip(analyst_rows, weight_components, strict=True):
+        item.update(components)
 
     dimension_scores: dict[str, float] = {}
     dimension_disagreement: dict[str, float] = {}
@@ -1238,7 +1212,6 @@ def _derive_analyst_matrix_adjustment(
         "source": "latest_successful_008_analyst_view_runs",
         "has_signals": bool(analyst_rows),
         "analyst_parameter_impact_scale": ANALYST_PARAMETER_IMPACT_SCALE,
-        "analyst_method_weight_impact_scale": ANALYST_METHOD_WEIGHT_IMPACT_SCALE,
         "status_score_policy": dict(STATUS_SCORES),
         "analyst_weights": [
             {key: value for key, value in item.items() if key != "rules"} for item in analyst_rows
@@ -1261,15 +1234,6 @@ def _derive_analyst_matrix_adjustment(
         "delta_discount": delta_discount,
         "delta_terminal": delta_terminal,
         "scenario_spread": scenario_spread,
-        "method_multipliers": _derive_method_multipliers(
-            business_quality=dimension_scores["business_quality"],
-            moat_durability=dimension_scores["moat_durability"],
-            cash_flow_reliability=dimension_scores["cash_flow_reliability"],
-            management_capital_allocation=dimension_scores["management_quality"],
-            capital_intensity=dimension_scores["capital_intensity"],
-            cyclicality=dimension_scores["cyclicality"],
-            risk_score=risk_score,
-        ),
     }
 
 
@@ -1312,7 +1276,6 @@ def _derive_analyst_signal_adjustment(
         "delta_discount": 0.0,
         "delta_terminal": 0.0,
         "scenario_spread": 0.02 + 0.01 * _data_gap_penalty(input_gaps, pack),
-        "method_multipliers": {"dcf": 1.0, "owner_earnings": 1.0},
     }
     if not analysts:
         return empty
@@ -1454,15 +1417,6 @@ def _derive_analyst_signal_adjustment(
         "delta_discount": delta_discount,
         "delta_terminal": delta_terminal,
         "scenario_spread": scenario_spread,
-        "method_multipliers": _derive_method_multipliers(
-            business_quality=business_quality,
-            moat_durability=moat_durability,
-            cash_flow_reliability=cash_flow_reliability,
-            management_capital_allocation=management_capital_allocation,
-            capital_intensity=capital_intensity,
-            cyclicality=cyclicality,
-            risk_score=risk_score,
-        ),
     }
 
 
@@ -1480,7 +1434,10 @@ def _analyst_weights(
             if not _is_unknown_signal(str(analyst.get(dimension) or "unknown"))
         )
         known_ratio = known_count / len(dimensions) if dimensions else 0.0
-        raw_weight = 0.50 * confidence + 0.50 * fit
+        raw_weight = analyst_raw_weight(
+            data_confidence=confidence,
+            profile_fit_score=fit,
+        )
         weighted.append(
             {
                 "analyst": analyst,
@@ -1491,10 +1448,13 @@ def _analyst_weights(
                 "raw_weight": raw_weight,
             }
         )
-    total = sum(float(item["raw_weight"]) for item in weighted)
-    if total <= 0:
-        return []
-    return [{**item, "weight": float(item["raw_weight"]) / total} for item in weighted]
+    weight_components = differentiate_and_normalize_analyst_weights(
+        [float(item["raw_weight"]) for item in weighted]
+    )
+    return [
+        {**item, **components}
+        for item, components in zip(weighted, weight_components, strict=True)
+    ]
 
 
 def _analyst_signal_score(signal: str, score_policy: dict[str, float]) -> float:
@@ -1534,43 +1494,6 @@ def _data_gap_penalty(input_gaps: list[dict[str, object]], pack: dict[str, objec
     low = sum(1 for item in input_gaps if item.get("severity") == "low")
     pack_gaps = len(_list(pack.get("data_gaps_for_valuation")))
     return _clamp((0.25 * high) + (0.12 * medium) + (0.05 * low) + (0.04 * pack_gaps), 0.0, 1.0)
-
-
-def _derive_method_multipliers(
-    *,
-    business_quality: float,
-    moat_durability: float,
-    cash_flow_reliability: float,
-    management_capital_allocation: float,
-    capital_intensity: float,
-    cyclicality: float,
-    risk_score: float,
-) -> dict[str, float]:
-    dcf_score = (
-        0.35 * max(0.0, cash_flow_reliability)
-        + 0.20 * max(0.0, business_quality)
-        + 0.15 * max(0.0, moat_durability)
-        - 0.15 * max(0.0, -cyclicality)
-        - 0.10 * risk_score
-    )
-    owner_score = (
-        0.30 * max(0.0, management_capital_allocation)
-        + 0.25 * max(0.0, capital_intensity)
-        + 0.20 * max(0.0, cash_flow_reliability)
-        - 0.12 * risk_score
-    )
-    return {
-        "dcf": _clamp(
-            1.0 + ANALYST_METHOD_WEIGHT_IMPACT_SCALE * dcf_score,
-            ANALYST_METHOD_MULTIPLIER_MIN,
-            ANALYST_METHOD_MULTIPLIER_MAX,
-        ),
-        "owner_earnings": _clamp(
-            1.0 + ANALYST_METHOD_WEIGHT_IMPACT_SCALE * owner_score,
-            ANALYST_METHOD_MULTIPLIER_MIN,
-            ANALYST_METHOD_MULTIPLIER_MAX,
-        ),
-    }
 
 
 def _calculate_dcf(
@@ -1666,6 +1589,285 @@ def _calculate_owner_earnings(
     return result
 
 
+def _calculate_residual_income(
+    valuation_inputs: dict[str, object],
+    assumptions: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> dict[str, object]:
+    equity = _num(valuation_inputs.get("shareholders_equity"))
+    net_profit = _num(valuation_inputs.get("base_net_profit"))
+    base_period_method = _safe_str(valuation_inputs.get("base_period_method"))
+    base_period_type = _safe_str(valuation_inputs.get("base_period_type"))
+    if base_period_type in {"half_year", "quarter"} and base_period_method != "ttm_adjusted":
+        return _needs_input_method(
+            "residual_income",
+            "剩余收益模型必须使用 TTM 或完整年度利润基数，不能直接使用中报或单季利润。",
+            input_gaps,
+            required_fields=["residual_income_annualized_base"],
+        )
+    if equity is None or equity <= 0 or net_profit is None:
+        required = []
+        if equity is None or equity <= 0:
+            required.append("shareholders_equity")
+        if net_profit is None:
+            required.append("base_net_profit")
+        return _needs_input_method(
+            "residual_income",
+            "缺少股东权益或年度化净利润，剩余收益模型不生成估值数字。",
+            input_gaps,
+            required_fields=required,
+        )
+
+    scenarios = _dict(assumptions.get("scenarios"))
+    shares = _num(valuation_inputs.get("shares_outstanding"))
+    scenario_values: dict[str, float | None] = {}
+    per_share_values: dict[str, float | None] = {}
+    scenario_basis: dict[str, dict[str, float]] = {}
+    for scenario_name in ("conservative", "base", "optimistic"):
+        scenario = _dict(scenarios.get(scenario_name))
+        discount_rate = _num(scenario.get("discount_rate")) or 0.1
+        growth_rate = _num(scenario.get("owner_earnings_growth_rate")) or 0.0
+        terminal_growth_rate = min(_num(scenario.get("terminal_growth_rate")) or 0.0, 0.035)
+        value, basis = _residual_income_value(
+            beginning_equity=equity,
+            base_net_profit=net_profit,
+            growth_rate=growth_rate,
+            cost_of_equity=discount_rate,
+            terminal_growth_rate=terminal_growth_rate,
+        )
+        scenario_values[scenario_name] = value
+        per_share_values[scenario_name] = value / shares if shares and shares > 0 else None
+        scenario_basis[scenario_name] = basis
+
+    return {
+        "method": "residual_income",
+        "status": "success",
+        "applicability": MODEL_BASE_WEIGHTS["residual_income"],
+        "reason": "股东权益和年度化净利润可用，剩余收益模型用于检验 ROE 是否覆盖权益资本成本。",
+        "scenario_values": scenario_values,
+        "per_share_values": per_share_values,
+        "key_assumptions": scenarios,
+        "input_gaps": [],
+        "source_refs": {"financial_periods": [_safe_str(valuation_inputs.get("latest_period"))]},
+        "calculation_basis": {
+            "formula": (
+                "shareholders_equity + PV(net_profit_t - cost_of_equity * beginning_equity) "
+                "+ PV(terminal_residual_income)"
+            ),
+            "components": {
+                "shareholders_equity": equity,
+                "base_net_profit": net_profit,
+                "period_method": base_period_method,
+                "period_type": base_period_type,
+            },
+            "scenario_basis": scenario_basis,
+            "policy": "book_equity_is_not_adjusted_by_cash_or_debt_to_avoid_double_counting",
+        },
+    }
+
+
+def _residual_income_value(
+    *,
+    beginning_equity: float,
+    base_net_profit: float,
+    growth_rate: float,
+    cost_of_equity: float,
+    terminal_growth_rate: float,
+) -> tuple[float, dict[str, float]]:
+    cost_of_equity = max(cost_of_equity, terminal_growth_rate + 0.01)
+    present_value = beginning_equity
+    net_profit = base_net_profit
+    last_residual_income = 0.0
+    for year in range(1, FORECAST_YEARS + 1):
+        net_profit *= 1 + growth_rate
+        residual_income = net_profit - (cost_of_equity * beginning_equity)
+        last_residual_income = residual_income
+        present_value += residual_income / ((1 + cost_of_equity) ** year)
+    terminal_residual_income = last_residual_income * (1 + terminal_growth_rate)
+    terminal_value = terminal_residual_income / (cost_of_equity - terminal_growth_rate)
+    present_value += terminal_value / ((1 + cost_of_equity) ** FORECAST_YEARS)
+    return max(0.0, present_value), {
+        "beginning_equity": beginning_equity,
+        "base_net_profit": base_net_profit,
+        "cost_of_equity": cost_of_equity,
+        "growth_rate": growth_rate,
+        "terminal_growth_rate": terminal_growth_rate,
+        "year_5_residual_income": last_residual_income,
+        "terminal_residual_income": terminal_residual_income,
+    }
+
+
+def _calculate_dividend_discount(
+    valuation_inputs: dict[str, object],
+    assumptions: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> dict[str, object]:
+    dividend = _num(valuation_inputs.get("dividend"))
+    base_period_method = _safe_str(valuation_inputs.get("base_period_method"))
+    base_period_type = _safe_str(valuation_inputs.get("base_period_type"))
+    if base_period_type in {"half_year", "quarter"} and base_period_method != "ttm_adjusted":
+        return _needs_input_method(
+            "dividend_discount",
+            "分红折现模型必须使用 TTM 或完整年度分红基数，不能直接使用中报或单季分红。",
+            input_gaps,
+            required_fields=["dividend_annualized_base"],
+        )
+    if dividend is None or dividend <= 0:
+        return _needs_input_method(
+            "dividend_discount",
+            "缺少年度化现金分红或分红为零，分红折现模型不生成估值数字。",
+            input_gaps,
+            required_fields=["dividend"],
+        )
+
+    scenarios = _dict(assumptions.get("scenarios"))
+    shares = _num(valuation_inputs.get("shares_outstanding"))
+    scenario_values: dict[str, float | None] = {}
+    per_share_values: dict[str, float | None] = {}
+    scenario_basis: dict[str, dict[str, float]] = {}
+    for scenario_name in ("conservative", "base", "optimistic"):
+        scenario = _dict(scenarios.get(scenario_name))
+        discount_rate = _num(scenario.get("discount_rate")) or 0.1
+        growth_rate = _num(scenario.get("owner_earnings_growth_rate")) or 0.0
+        terminal_growth_rate = min(_num(scenario.get("terminal_growth_rate")) or 0.0, 0.035)
+        value, basis = _dividend_discount_value(
+            base_dividend=dividend,
+            growth_rate=growth_rate,
+            discount_rate=discount_rate,
+            terminal_growth_rate=terminal_growth_rate,
+        )
+        scenario_values[scenario_name] = value
+        per_share_values[scenario_name] = value / shares if shares and shares > 0 else None
+        scenario_basis[scenario_name] = basis
+
+    return {
+        "method": "dividend_discount",
+        "status": "success",
+        "applicability": MODEL_BASE_WEIGHTS["dividend_discount"],
+        "reason": "年度化现金分红可用，分红折现模型用于检验股东现金回报价值。",
+        "scenario_values": scenario_values,
+        "per_share_values": per_share_values,
+        "key_assumptions": scenarios,
+        "input_gaps": [],
+        "source_refs": {"financial_periods": [_safe_str(valuation_inputs.get("latest_period"))]},
+        "calculation_basis": {
+            "formula": "PV(dividend_t) + PV(terminal_dividend_value)",
+            "components": {
+                "base_dividend": dividend,
+                "period_method": base_period_method,
+                "period_type": base_period_type,
+            },
+            "scenario_basis": scenario_basis,
+            "policy": "dividend_is_equity_cash_flow_so_cash_and_debt_are_not_added_again",
+        },
+    }
+
+
+def _dividend_discount_value(
+    *,
+    base_dividend: float,
+    growth_rate: float,
+    discount_rate: float,
+    terminal_growth_rate: float,
+) -> tuple[float, dict[str, float]]:
+    discount_rate = max(discount_rate, terminal_growth_rate + 0.01)
+    present_value = 0.0
+    dividend = base_dividend
+    for year in range(1, FORECAST_YEARS + 1):
+        dividend *= 1 + growth_rate
+        present_value += dividend / ((1 + discount_rate) ** year)
+    terminal_dividend = dividend * (1 + terminal_growth_rate)
+    terminal_value = terminal_dividend / (discount_rate - terminal_growth_rate)
+    present_value += terminal_value / ((1 + discount_rate) ** FORECAST_YEARS)
+    return max(0.0, present_value), {
+        "base_dividend": base_dividend,
+        "growth_rate": growth_rate,
+        "discount_rate": discount_rate,
+        "terminal_growth_rate": terminal_growth_rate,
+        "year_5_dividend": dividend,
+        "terminal_dividend": terminal_dividend,
+    }
+
+
+def _calculate_asset_value(
+    valuation_inputs: dict[str, object],
+    input_gaps: list[dict[str, object]],
+) -> dict[str, object]:
+    total_assets = _num(valuation_inputs.get("total_assets"))
+    total_liabilities = _num(valuation_inputs.get("total_liabilities"))
+    cash = _num(valuation_inputs.get("cash_and_equivalents")) or 0.0
+    equity = _num(valuation_inputs.get("shareholders_equity"))
+    shares = _num(valuation_inputs.get("shares_outstanding"))
+    if total_assets is None or total_liabilities is None:
+        if equity is None or equity <= 0:
+            required = []
+            if total_assets is None:
+                required.append("total_assets")
+            if total_liabilities is None:
+                required.append("total_liabilities")
+            required.append("shareholders_equity")
+            return _needs_input_method(
+                "asset_value",
+                "缺少总资产/总负债，且无法用股东权益兜底，资产价值模型不生成估值数字。",
+                input_gaps,
+                required_fields=required,
+            )
+        haircuts = {"conservative": 0.80, "base": 1.00, "optimistic": 1.10}
+        scenario_values = {
+            scenario_name: max(0.0, equity * haircut)
+            for scenario_name, haircut in haircuts.items()
+        }
+        scenario_basis = {
+            scenario_name: {
+                "shareholders_equity": equity,
+                "equity_haircut": haircut,
+            }
+            for scenario_name, haircut in haircuts.items()
+        }
+        policy = "shareholders_equity_fallback_when_assets_and_liabilities_are_missing"
+    else:
+        non_cash_assets = max(total_assets - cash, 0.0)
+        haircuts = {"conservative": 0.60, "base": 0.80, "optimistic": 1.00}
+        scenario_values = {}
+        scenario_basis = {}
+        for scenario_name, haircut in haircuts.items():
+            value = max(0.0, cash + (non_cash_assets * haircut) - total_liabilities)
+            scenario_values[scenario_name] = value
+            scenario_basis[scenario_name] = {
+                "total_assets": total_assets,
+                "cash_and_equivalents": cash,
+                "non_cash_assets": non_cash_assets,
+                "non_cash_asset_haircut": haircut,
+                "total_liabilities": total_liabilities,
+            }
+        policy = "cash_at_full_value_and_non_cash_assets_haircut_against_total_liabilities"
+
+    per_share_values = {
+        scenario_name: value / shares if shares and shares > 0 else None
+        for scenario_name, value in scenario_values.items()
+    }
+    return {
+        "method": "asset_value",
+        "status": "success",
+        "applicability": MODEL_BASE_WEIGHTS["asset_value"],
+        "reason": "资产负债表关键字段可用，资产价值模型作为下行保护和清算价值交叉验证。",
+        "scenario_values": scenario_values,
+        "per_share_values": per_share_values,
+        "key_assumptions": {
+            "conservative": {"non_cash_asset_haircut": 0.60},
+            "base": {"non_cash_asset_haircut": 0.80},
+            "optimistic": {"non_cash_asset_haircut": 1.00},
+        },
+        "input_gaps": [],
+        "source_refs": {"financial_periods": [_safe_str(valuation_inputs.get("latest_period"))]},
+        "calculation_basis": {
+            "formula": "cash + non_cash_assets * haircut - total_liabilities",
+            "scenario_basis": scenario_basis,
+            "policy": policy,
+        },
+    }
+
+
 def _cash_flow_method_result(
     *,
     method: str,
@@ -1726,84 +1928,58 @@ def _discount_cash_flow(
     return present_value + (cash or 0.0) - (debt or 0.0)
 
 
+def _resolve_model_weights(assumptions: dict[str, object]) -> dict[str, float]:
+    raw_weights = assumptions.get("model_weights")
+    if raw_weights is None:
+        return dict(MODEL_BASE_WEIGHTS)
+    if not isinstance(raw_weights, dict):
+        raise ValuationInputError("模型配比必须是包含五个模型权重的对象。")
+
+    unknown_methods = sorted(set(raw_weights) - set(MODEL_BASE_WEIGHTS))
+    if unknown_methods:
+        raise ValuationInputError(f"模型配比包含未知模型：{', '.join(unknown_methods)}。")
+
+    weights: dict[str, float] = {}
+    for method, default_weight in MODEL_BASE_WEIGHTS.items():
+        weight = _num(raw_weights.get(method, default_weight))
+        if weight is None or not isfinite(weight) or weight < 0 or weight > 1:
+            raise ValuationInputError(f"模型 {method} 的权重必须在 0% 到 100% 之间。")
+        weights[method] = weight
+
+    total_weight = sum(weights.values())
+    if abs(total_weight - 1.0) > MODEL_WEIGHT_TOTAL_TOLERANCE:
+        raise ValuationInputError("五个模型的配置权重合计必须等于 100%。")
+    return weights
+
+
 def _combine_method_results(
     method_results: list[dict[str, object]],
     valuation_inputs: dict[str, object],
-    input_gaps: list[dict[str, object]],
-    assumptions: dict[str, object],
 ) -> tuple[dict[str, object], list[dict[str, object]], dict[str, object] | None]:
     successful = [item for item in method_results if item.get("status") == "success"]
     weights = []
-    total_weight = 0.0
     available_baseline_total = sum(float(item.get("applicability") or 0.0) for item in successful)
-    constraints = _dict(assumptions.get("weighting_constraints"))
-    analyst_method_multipliers = _dict(constraints.get("analyst_method_multipliers"))
+    if successful and available_baseline_total <= 0:
+        raise ValuationInputError("当前可计算模型的配置权重合计必须大于 0。")
     for item in successful:
-        method = str(item.get("method") or "")
         applicability = float(item.get("applicability") or 0.0)
         available_baseline_weight = (
             applicability / available_baseline_total if available_baseline_total > 0 else 0.0
         )
-        analyst_signal_multiplier = _num(analyst_method_multipliers.get(method)) or 1.0
-        input_completeness = _method_input_completeness(
-            method,
-            valuation_inputs,
-            input_gaps,
-        )
-        data_quality_multiplier = _method_data_quality_weight_multiplier(
-            method,
-            constraints,
-            valuation_inputs,
-            input_gaps,
-        )
-        risk_multiplier = _method_risk_constraint_weight_multiplier(
-            method,
-            constraints,
-            input_gaps,
-        )
-        effective_factors = {
-            "input_completeness": input_completeness
-            ** MODEL_WEIGHT_FACTOR_EXPONENTS["input_completeness"],
-            "data_quality": data_quality_multiplier
-            ** MODEL_WEIGHT_FACTOR_EXPONENTS["data_quality"],
-            "risk_constraint": risk_multiplier ** MODEL_WEIGHT_FACTOR_EXPONENTS["risk_constraint"],
-            "analyst_signal": analyst_signal_multiplier
-            ** MODEL_WEIGHT_FACTOR_EXPONENTS["analyst_signal"],
-        }
-        weight = (
-            available_baseline_weight
-            * effective_factors["input_completeness"]
-            * effective_factors["data_quality"]
-            * effective_factors["risk_constraint"]
-            * effective_factors["analyst_signal"]
-        )
-        total_weight += weight
         weights.append(
             {
                 "method": item.get("method"),
-                "weight": weight,
+                "weight": available_baseline_weight,
                 "components": {
                     "applicability": applicability,
                     "baseline_weight": applicability,
                     "available_baseline_weight": available_baseline_weight,
-                    "input_completeness": input_completeness,
-                    "data_quality": data_quality_multiplier,
-                    "risk_constraint": risk_multiplier,
-                    "analyst_signal": analyst_signal_multiplier,
-                    "impact_exponents": dict(MODEL_WEIGHT_FACTOR_EXPONENTS),
-                    "effective_factors": effective_factors,
+                    "weighting_policy": "configured_available_baseline",
                 },
-                "reason": (
-                    "缺失模型剔除后按基准权重重新分配，"
-                    "再结合输入完整度、数据质量、风险约束和分析师信号综合。"
-                ),
+                "reason": "按用户确认的模型基准权重分配；缺失模型剔除后按比例重分配。",
             }
         )
-    normalized_weights = (
-        [{**item, "weight": item["weight"] / total_weight} for item in weights]
-        if total_weight > 0
-        else []
-    )
+    normalized_weights = weights
     total_values: dict[str, float | None] = {}
     per_share_values: dict[str, float | None] = {}
     shares = _num(valuation_inputs.get("shares_outstanding"))
@@ -1832,114 +2008,6 @@ def _combine_method_results(
         normalized_weights,
         dispersion_warning,
     )
-
-
-def _method_input_completeness(
-    method: str,
-    valuation_inputs: dict[str, object],
-    input_gaps: list[dict[str, object]],
-) -> float:
-    required_fields, supporting_fields = _method_weight_fields(method)
-    if not required_fields:
-        return 0.5
-
-    required_score = _field_presence_score(required_fields, valuation_inputs)
-    supporting_score = _field_presence_score(supporting_fields, valuation_inputs)
-    method_gap_penalty = 0.04 * len(
-        [
-            gap
-            for gap in input_gaps
-            if str(gap.get("field") or "") in required_fields + supporting_fields
-        ],
-    )
-    raw_score = (0.75 * required_score) + (0.25 * supporting_score) - method_gap_penalty
-    return _clamp(raw_score, 0.1, 1.0)
-
-
-def _field_presence_score(fields: list[str], valuation_inputs: dict[str, object]) -> float:
-    if not fields:
-        return 1.0
-    present = sum(1 for field in fields if _num(valuation_inputs.get(field)) is not None)
-    return present / len(fields)
-
-
-def _method_weight_fields(method: str) -> tuple[list[str], list[str]]:
-    required_fields = {
-        "dcf": ["base_free_cash_flow", "shares_outstanding"],
-        "owner_earnings": ["base_net_profit", "capital_expenditure", "shares_outstanding"],
-    }.get(method, [])
-    supporting_fields = {
-        "dcf": ["cash_and_equivalents", "interest_bearing_debt"],
-        "owner_earnings": ["depreciation_and_amortization", "working_capital_change"],
-    }.get(method, [])
-    return required_fields, supporting_fields
-
-
-def _method_gap_fields(method: str) -> set[str]:
-    required_fields, supporting_fields = _method_weight_fields(method)
-    extra_fields = {
-        "dcf": {
-            "normalized_free_cash_flow_history",
-            "ttm_free_cash_flow",
-            "normalized_fcf_to_net_profit",
-        },
-        "owner_earnings": {"owner_earnings_base", "owner_earnings_annualized_base"},
-    }.get(method, set())
-    return set(required_fields + supporting_fields) | extra_fields
-
-
-def _method_data_quality_weight_multiplier(
-    method: str,
-    constraints: dict[str, object],
-    valuation_inputs: dict[str, object],
-    input_gaps: list[dict[str, object]],
-) -> float:
-    multiplier = _data_quality_weight_multiplier(constraints)
-    related_fields = _method_gap_fields(method)
-    related_gap_count = sum(
-        1 for gap in input_gaps if _safe_str(gap.get("field")) in related_fields
-    )
-    multiplier -= 0.05 * related_gap_count
-    if method == "dcf":
-        confidence_penalty = {
-            "high": 0.0,
-            "medium": 0.05,
-            "low": 0.12,
-        }.get(_safe_str(valuation_inputs.get("normalization_confidence")), 0.12)
-        warning_penalty = min(
-            0.08,
-            0.02 * len(_str_list(valuation_inputs.get("normalization_warnings"))),
-        )
-        multiplier -= confidence_penalty + warning_penalty
-    return _clamp(multiplier, 0.50, 1.0)
-
-
-def _method_risk_constraint_weight_multiplier(
-    method: str,
-    constraints: dict[str, object],
-    input_gaps: list[dict[str, object]],
-) -> float:
-    multiplier = _risk_constraint_weight_multiplier(constraints)
-    related_fields = _method_gap_fields(method)
-    severity_penalty = {"high": 0.12, "medium": 0.07, "low": 0.03}
-    multiplier -= sum(
-        severity_penalty.get(_safe_str(gap.get("severity")), 0.03)
-        for gap in input_gaps
-        if _safe_str(gap.get("field")) in related_fields
-    )
-    return _clamp(multiplier, 0.50, 1.0)
-
-
-def _data_quality_weight_multiplier(constraints: dict[str, object]) -> float:
-    penalty_count = int(_num(constraints.get("data_quality_penalty_count")) or 0)
-    flag_count = int(_num(constraints.get("financial_flag_count")) or 0)
-    return _clamp(1.0 - (0.025 * penalty_count) - (0.015 * flag_count), 0.72, 1.0)
-
-
-def _risk_constraint_weight_multiplier(constraints: dict[str, object]) -> float:
-    memo_risk_count = int(_num(constraints.get("memo_risk_count")) or 0)
-    input_gap_count = int(_num(constraints.get("input_gap_count")) or 0)
-    return _clamp(1.0 - (0.02 * memo_risk_count) - (0.01 * input_gap_count), 0.72, 1.0)
 
 
 def _build_dispersion_warning(
@@ -1983,7 +2051,7 @@ def _build_confidence_summary(
         confidence -= 0.12
         reasons.append("可参与综合的成功估值模型少于 2 个。")
     if high_gaps:
-        reasons.append("存在高严重度输入缺口，锁定估值会被阻止。")
+        reasons.append("存在高严重度输入缺口，估值结果仅供复核。")
     elif medium_gaps or low_gaps:
         reasons.append("存在中低严重度输入缺口，允许形成草稿但降低置信度。")
     if dispersion_warning:

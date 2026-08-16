@@ -106,6 +106,11 @@ def test_valuation_rule_mapping_covers_all_40_profile_rules() -> None:
     assert RULE_VALUATION_MAPPINGS[("graham", "valuation_discipline")].calculation_role == (
         "price_reference"
     )
+    assert all(
+        not parameter.startswith("method_weight_")
+        for mapping in RULE_VALUATION_MAPPINGS.values()
+        for parameter in mapping.parameter_impacts
+    )
 
 
 def test_each_profile_derives_four_rule_impacts_and_status_scores() -> None:
@@ -128,6 +133,69 @@ def test_each_profile_derives_four_rule_impacts_and_status_scores() -> None:
         impacts = matrix["analyst_items"][0]["rule_impacts"]
         assert len(impacts) == 4
         assert [item["status_score"] for item in impacts] == [1.0, -0.35, -2.0, 0.0]
+
+
+def test_price_blind_gate_does_not_confuse_esg_rating_or_per_share_value() -> None:
+    cases = (
+        ("buffett", "moat", "ESG评级改善，但护城河仍需按经营证据判断。"),
+        ("munger", "incentives", "激励考核与长期每股价值增长一致。"),
+    )
+    for profile_id, rule_id, summary in cases:
+        profile = get_analyst_profile(profile_id)
+        assert profile is not None
+        matrix = derive_valuation_parameter_matrix(
+            source_run_id=101,
+            profile=profile,
+            result={
+                "profile_fit_score": 0.8,
+                "confidence": 0.7,
+                "rule_checks": [
+                    {"rule_id": rule.id, "status": "pass", "summary": summary}
+                    for rule in profile.rules
+                ],
+            },
+        )
+        impact = next(
+            item
+            for item in matrix["analyst_items"][0]["rule_impacts"]
+            if item["rule_id"] == rule_id
+        )
+        assert impact["calculation_role"] == "compute"
+        assert impact["price_blind_compatible"] is True
+        assert impact["exclusion_reason"] is None
+
+
+def test_price_blind_gate_still_excludes_explicit_price_anchors() -> None:
+    profile = get_analyst_profile("ray_dalio")
+    assert profile is not None
+    matrix = derive_valuation_parameter_matrix(
+        source_run_id=102,
+        profile=profile,
+        result={
+            "profile_fit_score": 0.8,
+            "confidence": 0.7,
+            "rule_checks": [
+                {
+                    "rule_id": rule.id,
+                    "status": "warn",
+                    "summary": (
+                        "组合风险信号引用 pe_ttm，需要转入价格参考。"
+                        if rule.id == "portfolio_risk_signal"
+                        else "仅使用基本面和宏观证据。"
+                    ),
+                }
+                for rule in profile.rules
+            ],
+        },
+    )
+    impact = next(
+        item
+        for item in matrix["analyst_items"][0]["rule_impacts"]
+        if item["rule_id"] == "portfolio_risk_signal"
+    )
+    assert impact["calculation_role"] == "price_reference"
+    assert impact["price_blind_compatible"] is False
+    assert impact["exclusion_reason"] == "price_anchor:pe_ttm"
 
 
 def test_analyst_prompt_allows_valuation_context_from_snapshot() -> None:
@@ -166,6 +234,10 @@ def test_analyst_prompt_allows_valuation_context_from_snapshot() -> None:
         "不要把利润表或财务记录写入 evidence_ids",
         "不要计算内在价值",
         "不要输出买入、卖出、持有、减仓",
+        "financial_evidence_pack.model_display",
+        "raw_decimal=0.77936",
+        "绝不能写成 0.78%",
+        "1亿元等于100,000,000元",
     ):
         assert expected in combined_prompt
 
@@ -209,7 +281,7 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
     assert payload["run_type"] == "analyst_view"
     assert payload["analyst_profile"] == "buffett"
     assert payload["run_version"] == "008_v1"
-    assert payload["prompt_version"] == "analyst_view_v1"
+    assert payload["prompt_version"] == "analyst_view_v2"
     assert payload["is_latest"] is True
     assert payload["confidence"] == payload["result"]["confidence"]
     assert payload["result"]["overview"] == "现金流质量较好，但证据仍需补充。"
@@ -251,6 +323,14 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
         run.input_snapshot["financial_evidence_pack"]["financial_facts"]["latest"]["revenue"]
         == 100.0
     )
+    model_display = run.input_snapshot["financial_evidence_pack"]["model_display"]
+    assert model_display["unit_contract"]["raw_ratio_unit"] == "0-1小数"
+    assert model_display["latest_percentages"]["operating_cash_flow_to_revenue"] == {
+        "source_path": "financial_metrics.cash_quality.operating_cash_flow_to_revenue",
+        "raw_decimal": 0.28,
+        "percent_value": 28.0,
+        "display": "28.00%",
+    }
     assert "cash_flow_quality" in run.input_snapshot["financial_evidence_pack"]
     assert "balance_sheet_adjustment" in run.input_snapshot["financial_evidence_pack"]
     assert "capital_allocation" in run.input_snapshot["financial_evidence_pack"]
@@ -283,6 +363,26 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
         run.input_snapshot["source_boundary"]["run_isolation_policy"]
         == "每次 analyst_view 生成完全独立，不读取历史 run，不把历史结论作为输入。"
     )
+
+
+def test_analyst_output_corrects_raw_cash_flow_ratio_written_as_percent(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    _seed_analysis_snapshot_fixture(session_factory)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        run = run_company_analyst_view(
+            session,
+            company,
+            "buffett",
+            gateway=FakeRatioUnitMistakeGateway(),
+        )
+
+    assert run.result["overview"] == "经营现金流/收入为28.00%，需要继续观察。"
+    assert run.result["financial_observations"] == ["经营现金流占收入为28.00%。"]
 
 
 def test_analyst_snapshot_does_not_read_history_runs(tmp_path: Path) -> None:
@@ -1665,6 +1765,7 @@ def _seed_analysis_snapshot_fixture(session_factory) -> None:
                         "gross_margin": 0.58,
                         "net_profit": 24.0,
                         "operating_cash_flow": 28.0,
+                        "operating_cash_flow_to_revenue": 0.28,
                     },
                     source="test_fixture",
                 ),
@@ -1754,6 +1855,17 @@ class FakeAnalystGateway:
                 "valuation_assumption_suggestions": ["后续估值模块应验证自由现金流可持续性。"],
                 "data_gaps": ["缺少估值和更长周期财务数据。"],
                 "follow_up_questions": ["现金流是否能连续多年覆盖利润？"],
+            }
+        )
+
+
+class FakeRatioUnitMistakeGateway(FakeAnalystGateway):
+    def generate_structured(self, **kwargs):
+        output = super().generate_structured(**kwargs)
+        return output.model_copy(
+            update={
+                "overview": "经营现金流/收入为0.28%，需要继续观察。",
+                "financial_observations": ["经营现金流占收入为0.28%。"],
             }
         )
 

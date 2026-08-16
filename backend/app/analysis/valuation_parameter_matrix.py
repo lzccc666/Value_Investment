@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 from app.analysis.analyst_profiles import AnalystProfile, list_analyst_profiles
@@ -28,31 +29,67 @@ VALUATION_DIMENSIONS = (
     "execution_quality",
 )
 
-PRICE_ANCHOR_TERMS = (
-    "current_price",
-    "historical_price",
-    "market_cap",
-    "valuation_multiple",
-    "pe_ttm",
-    "pb_ratio",
-    "ps_ratio",
-    "position_cost",
-    "rating",
-    "target_price",
-    "market_sentiment",
-    "当前价格",
-    "历史价格",
-    "股价",
-    "市值",
-    "估值倍数",
-    "市盈率",
-    "市净率",
-    "市销率",
-    "持仓成本",
-    "评级",
-    "目标价",
-    "市场情绪",
-    "安全边际",
+PRICE_ANCHOR_FIELDS = frozenset(
+    {
+        "current_price",
+        "historical_price",
+        "price_history",
+        "market_cap",
+        "valuation_multiple",
+        "pe_ttm",
+        "pe_dynamic",
+        "pe_static",
+        "pb_ratio",
+        "ps_ratio",
+        "ev_ebitda",
+        "position_cost",
+        "holding_cost",
+        "rating",
+        "broker_rating",
+        "market_rating",
+        "target_price",
+        "market_sentiment",
+        "当前价格",
+        "历史价格",
+        "股价",
+        "市值",
+        "估值倍数",
+        "市盈率",
+        "市净率",
+        "市销率",
+        "持仓成本",
+        "评级",
+        "目标价",
+        "市场情绪",
+        "安全边际",
+    }
+)
+
+PRICE_ANCHOR_TEXT_PATTERNS = (
+    ("current_price", re.compile(r"(?<![a-z0-9_])current_price(?![a-z0-9_])", re.I)),
+    ("historical_price", re.compile(r"(?<![a-z0-9_])historical_price(?![a-z0-9_])", re.I)),
+    ("market_cap", re.compile(r"(?<![a-z0-9_])market_cap(?![a-z0-9_])", re.I)),
+    ("valuation_multiple", re.compile(r"(?<![a-z0-9_])valuation_multiple(?![a-z0-9_])", re.I)),
+    ("pe_ttm", re.compile(r"(?<![a-z0-9_])pe_ttm(?![a-z0-9_])", re.I)),
+    ("pb_ratio", re.compile(r"(?<![a-z0-9_])pb_ratio(?![a-z0-9_])", re.I)),
+    ("ps_ratio", re.compile(r"(?<![a-z0-9_])ps_ratio(?![a-z0-9_])", re.I)),
+    ("position_cost", re.compile(r"(?<![a-z0-9_])position_cost(?![a-z0-9_])", re.I)),
+    ("target_price", re.compile(r"(?<![a-z0-9_])target_price(?![a-z0-9_])", re.I)),
+    ("market_sentiment", re.compile(r"(?<![a-z0-9_])market_sentiment(?![a-z0-9_])", re.I)),
+    ("rating", re.compile(r"\b(?:broker|analyst|market|investment)[ _-]?rating\b", re.I)),
+    ("当前价格", re.compile(r"当前(?:市场)?价格")),
+    ("历史价格", re.compile(r"历史(?:交易)?价格")),
+    ("股价", re.compile(r"(?<!每)股价|每股价格")),
+    ("市值", re.compile(r"市值")),
+    ("估值倍数", re.compile(r"估值倍数")),
+    ("市盈率", re.compile(r"市盈率")),
+    ("市净率", re.compile(r"市净率")),
+    ("市销率", re.compile(r"市销率")),
+    ("持仓成本", re.compile(r"持仓成本")),
+    ("评级", re.compile(r"(?:券商|机构|市场|投资|分析师)(?:的)?评级")),
+    ("目标价", re.compile(r"目标价")),
+    ("市场情绪", re.compile(r"市场情绪")),
+    ("安全边际", re.compile(r"安全边际")),
 )
 
 
@@ -86,7 +123,6 @@ RULE_VALUATION_MAPPINGS: dict[tuple[str, str], RuleValuationMapping] = {
             "discount_rate": -0.4,
             "terminal_growth_rate": 0.5,
             "scenario_spread": -0.3,
-            "method_weight_dcf": 0.3,
         },
     ),
     ("buffett", "quality"): _rule(
@@ -100,7 +136,6 @@ RULE_VALUATION_MAPPINGS: dict[tuple[str, str], RuleValuationMapping] = {
             "cash_flow_growth_rate": 0.3,
             "discount_rate": -0.4,
             "scenario_spread": -0.4,
-            "method_weight_dcf": 0.6,
         },
     ),
     ("buffett", "management"): _rule(
@@ -108,7 +143,6 @@ RULE_VALUATION_MAPPINGS: dict[tuple[str, str], RuleValuationMapping] = {
         {
             "owner_earnings_growth_rate": 0.4,
             "discount_rate": -0.3,
-            "method_weight_owner_earnings": 0.6,
         },
     ),
     ("buffett", "margin_of_safety"): _rule(
@@ -146,7 +180,6 @@ RULE_VALUATION_MAPPINGS: dict[tuple[str, str], RuleValuationMapping] = {
         {
             "owner_earnings_growth_rate": 0.3,
             "discount_rate": -0.4,
-            "method_weight_owner_earnings": 0.4,
         },
     ),
     ("munger", "culture"): _rule(
@@ -171,7 +204,7 @@ RULE_VALUATION_MAPPINGS: dict[tuple[str, str], RuleValuationMapping] = {
     ),
     ("duan_yongping", "shareholder_return"): _rule(
         {"cash_flow_reliability": 0.7, "management_quality": 0.7, "capital_intensity": 0.5},
-        {"owner_earnings_growth_rate": 0.5, "method_weight_owner_earnings": 0.6},
+        {"owner_earnings_growth_rate": 0.5},
     ),
     ("graham", "asset_protection"): _rule(
         {"balance_sheet_risk": 1.0, "permanent_loss_risk": 0.8, "accounting_quality": 0.3},
@@ -221,7 +254,7 @@ RULE_VALUATION_MAPPINGS: dict[tuple[str, str], RuleValuationMapping] = {
     ),
     ("lin_yuan", "cash_generation"): _rule(
         {"cash_flow_reliability": 1.0, "capital_intensity": 0.5, "accounting_quality": 0.4},
-        {"cash_flow_growth_rate": 0.4, "discount_rate": -0.4, "method_weight_dcf": 0.7},
+        {"cash_flow_growth_rate": 0.4, "discount_rate": -0.4},
     ),
     ("lin_yuan", "compounding"): _rule(
         {"growth_runway": 0.8, "business_quality": 0.6, "execution_quality": 0.5},
@@ -245,7 +278,6 @@ RULE_VALUATION_MAPPINGS: dict[tuple[str, str], RuleValuationMapping] = {
             "cash_flow_growth_rate": 0.3,
             "discount_rate": -0.3,
             "terminal_growth_rate": 0.3,
-            "method_weight_dcf": 0.4,
         },
     ),
     ("li_lu", "permanent_loss"): _rule(
@@ -381,8 +413,42 @@ def validate_rule_mapping_coverage() -> None:
 
 
 def _find_price_anchor(value: object) -> str | None:
-    text = str(value).lower()
-    return next((term for term in PRICE_ANCHOR_TERMS if term.lower() in text), None)
+    structured_match = _find_price_anchor_field(value)
+    if structured_match is not None:
+        return structured_match
+    for text in _iter_text_values(value):
+        for label, pattern in PRICE_ANCHOR_TEXT_PATTERNS:
+            if pattern.search(text):
+                return label
+    return None
+
+
+def _find_price_anchor_field(value: object) -> str | None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            normalized_key = str(key).strip().lower()
+            if normalized_key in PRICE_ANCHOR_FIELDS:
+                return normalized_key
+            nested_match = _find_price_anchor_field(nested)
+            if nested_match is not None:
+                return nested_match
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            nested_match = _find_price_anchor_field(item)
+            if nested_match is not None:
+                return nested_match
+    return None
+
+
+def _iter_text_values(value: object) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for nested in value.values():
+            yield from _iter_text_values(nested)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_text_values(item)
 
 
 def _list(value: object) -> list[object]:

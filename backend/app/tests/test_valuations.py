@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,11 +13,10 @@ from app.db.models import AnalysisRun, Company, FinancialStatement, InvestmentMe
 from app.db.session import create_sqlalchemy_engine, get_db
 from app.main import create_app
 from app.services.valuation_service import (
-    ValuationLockError,
+    ValuationInputError,
     _calculate_owner_earnings,
     build_valuation_snapshot,
     create_draft_valuation_run,
-    lock_valuation_run,
     recalculate_valuation_run,
 )
 
@@ -90,6 +89,13 @@ def test_create_draft_waits_for_user_confirmation_before_calculation(
     assert run.results["method_results"] == []
     assert run.assumptions == {}
     assert run.model_suggested_assumptions["scenarios"]["base"]["discount_rate"] > 0
+    assert run.model_suggested_assumptions["model_weights"] == {
+        "owner_earnings": 0.35,
+        "dcf": 0.35,
+        "residual_income": 0.15,
+        "dividend_discount": 0.10,
+        "asset_value": 0.05,
+    }
 
     with session_factory() as session:
         stored = session.get(ValuationRun, run.id)
@@ -100,24 +106,29 @@ def test_create_draft_waits_for_user_confirmation_before_calculation(
     method_statuses = {
         item["method"]: item["status"] for item in confirmed.results["method_results"]
     }
-    assert method_statuses["dcf"] == "success"
-    assert method_statuses["owner_earnings"] == "success"
+    assert method_statuses == {
+        "dcf": "success",
+        "owner_earnings": "success",
+        "residual_income": "success",
+        "dividend_discount": "success",
+        "asset_value": "success",
+    }
     method_applicability = {
         item["method"]: item["applicability"] for item in confirmed.results["method_results"]
     }
     assert method_applicability == {
         "dcf": 0.35,
         "owner_earnings": 0.35,
-        "residual_income": 0.10,
+        "residual_income": 0.15,
         "dividend_discount": 0.10,
-        "asset_value": 0.10,
+        "asset_value": 0.05,
     }
     assert confirmed.methods["base_weights"] == {
         "owner_earnings": 0.35,
         "dcf": 0.35,
-        "residual_income": 0.10,
+        "residual_income": 0.15,
         "dividend_discount": 0.10,
-        "asset_value": 0.10,
+        "asset_value": 0.05,
     }
     intrinsic_value_range = confirmed.results["intrinsic_value_range"]
     assert intrinsic_value_range["total_equity_value"]["base"] > 0
@@ -125,28 +136,163 @@ def test_create_draft_waits_for_user_confirmation_before_calculation(
     assert "components" in first_weight
     assert first_weight["components"]["applicability"] > 0
     assert first_weight["components"]["baseline_weight"] > 0
-    assert first_weight["components"]["available_baseline_weight"] == pytest.approx(0.5)
-    assert first_weight["components"]["input_completeness"] > 0
-    assert first_weight["components"]["data_quality"] > 0
-    assert first_weight["components"]["risk_constraint"] > 0
-    assert first_weight["components"]["impact_exponents"] == {
-        "input_completeness": 1.5,
-        "data_quality": 1.5,
-        "risk_constraint": 1.5,
-        "analyst_signal": 1.5,
-    }
-    raw_weights = [
-        item["components"]["available_baseline_weight"]
-        * item["components"]["effective_factors"]["input_completeness"]
-        * item["components"]["effective_factors"]["data_quality"]
-        * item["components"]["effective_factors"]["risk_constraint"]
-        * item["components"]["effective_factors"]["analyst_signal"]
+    assert first_weight["components"]["available_baseline_weight"] == pytest.approx(
+        first_weight["components"]["baseline_weight"]
+    )
+    assert first_weight["components"]["weighting_policy"] == "configured_available_baseline"
+    assert {
+        item["method"]: item["weight"] for item in confirmed.results["model_weighting"]
+    } == pytest.approx(
+        {
+            "dcf": 0.35,
+            "owner_earnings": 0.35,
+            "residual_income": 0.15,
+            "dividend_discount": 0.10,
+            "asset_value": 0.05,
+        }
+    )
+    assert all(
+        set(item["components"])
+        == {
+            "applicability",
+            "baseline_weight",
+            "available_baseline_weight",
+            "weighting_policy",
+        }
         for item in confirmed.results["model_weighting"]
-    ]
-    total_raw_weight = sum(raw_weights)
-    for item, raw_weight in zip(confirmed.results["model_weighting"], raw_weights, strict=True):
-        assert item["weight"] == pytest.approx(raw_weight / total_raw_weight)
+    )
     assert confirmed.confidence is not None
+
+
+def test_user_can_adjust_model_weights_before_valuation(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    configured_weights = {
+        "owner_earnings": 0.25,
+        "dcf": 0.55,
+        "residual_income": 0.10,
+        "dividend_discount": 0.05,
+        "asset_value": 0.05,
+    }
+    with session_factory() as session:
+        company = _seed_ready_company(session)
+        draft = create_draft_valuation_run(session, company)
+        confirmed = recalculate_valuation_run(
+            session,
+            draft,
+            user_assumptions={
+                "scenarios": draft.model_suggested_assumptions["scenarios"],
+                "model_weights": configured_weights,
+            },
+        )
+
+    assert confirmed.assumptions["model_weights"] == configured_weights
+    assert confirmed.methods["base_weights"] == configured_weights
+    assert confirmed.methods["default_base_weights"] == {
+        "owner_earnings": 0.35,
+        "dcf": 0.35,
+        "residual_income": 0.15,
+        "dividend_discount": 0.10,
+        "asset_value": 0.05,
+    }
+    assert {
+        item["method"]: item["weight"] for item in confirmed.results["model_weighting"]
+    } == pytest.approx(configured_weights)
+
+
+def test_residual_income_dividend_discount_and_asset_value_are_calculated(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = _seed_ready_company(session)
+        draft = create_draft_valuation_run(session, company)
+        confirmed = _confirm_run(session, draft)
+
+    assert confirmed.methods["selected_methods"] == [
+        "dcf",
+        "owner_earnings",
+        "residual_income",
+        "dividend_discount",
+        "asset_value",
+    ]
+    assert confirmed.methods["reserved_methods"] == []
+    methods = {item["method"]: item for item in confirmed.results["method_results"]}
+    for method in ("residual_income", "dividend_discount", "asset_value"):
+        assert methods[method]["status"] == "success"
+        assert methods[method]["scenario_values"]["base"] > 0
+        assert methods[method]["per_share_values"]["base"] > 0
+        assert methods[method]["calculation_basis"]["formula"]
+
+    residual_basis = methods["residual_income"]["calculation_basis"]
+    assert residual_basis["components"]["shareholders_equity"] == 1_000_000_000
+    assert residual_basis["components"]["base_net_profit"] == 100_000_000
+
+    dividend_basis = methods["dividend_discount"]["calculation_basis"]
+    assert dividend_basis["components"]["base_dividend"] == 30_000_000
+
+    asset_basis = methods["asset_value"]["calculation_basis"]["scenario_basis"]["base"]
+    assert asset_basis["total_assets"] == 1_500_000_000
+    assert asset_basis["total_liabilities"] == 500_000_000
+    assert methods["asset_value"]["key_assumptions"] == {
+        "conservative": {"non_cash_asset_haircut": 0.60},
+        "base": {"non_cash_asset_haircut": 0.80},
+        "optimistic": {"non_cash_asset_haircut": 1.00},
+    }
+    assert methods["asset_value"]["scenario_values"]["conservative"] == pytest.approx(
+        480_000_000
+    )
+    assert methods["asset_value"]["scenario_values"]["base"] == pytest.approx(740_000_000)
+    assert methods["asset_value"]["scenario_values"]["optimistic"] == pytest.approx(
+        1_000_000_000
+    )
+
+
+def test_model_weights_require_100_percent_and_positive_available_weight(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = _seed_ready_company(session)
+        draft = create_draft_valuation_run(session, company)
+        scenarios = draft.model_suggested_assumptions["scenarios"]
+
+        with pytest.raises(ValuationInputError, match="合计必须等于 100%"):
+            recalculate_valuation_run(
+                session,
+                draft,
+                user_assumptions={
+                    "scenarios": scenarios,
+                    "model_weights": {
+                        "owner_earnings": 0.35,
+                        "dcf": 0.45,
+                        "residual_income": 0.15,
+                        "dividend_discount": 0.10,
+                        "asset_value": 0.05,
+                    },
+                },
+            )
+
+        sparse_company = _seed_company(session, ticker="SPARSE.US", name="Sparse Co")
+        _seed_financials(session, sparse_company, include_balance_sheet=False)
+        _seed_memo(session, sparse_company)
+        sparse_draft = create_draft_valuation_run(session, sparse_company)
+        sparse_scenarios = sparse_draft.model_suggested_assumptions["scenarios"]
+
+        with pytest.raises(ValuationInputError, match="可计算模型的配置权重合计"):
+            recalculate_valuation_run(
+                session,
+                sparse_draft,
+                user_assumptions={
+                    "scenarios": sparse_scenarios,
+                    "model_weights": {
+                        "owner_earnings": 0.0,
+                        "dcf": 0.0,
+                        "residual_income": 0.50,
+                        "dividend_discount": 0.0,
+                        "asset_value": 0.50,
+                    },
+                },
+            )
 
 
 def test_dcf_uses_annual_fcf_when_latest_period_is_interim(tmp_path: Path) -> None:
@@ -231,6 +377,7 @@ def test_interim_valuation_inputs_use_ttm_base_for_profit_and_owner_earnings(
                     "free_cash_flow": 20_000_000,
                     "depreciation_and_amortization": 2_000_000,
                     "working_capital_change": 3_000_000,
+                    "dividend": 12_000_000,
                 },
             )
         )
@@ -261,6 +408,7 @@ def test_interim_valuation_inputs_use_ttm_base_for_profit_and_owner_earnings(
                     "free_cash_flow": 100_000_000,
                     "depreciation_and_amortization": 3_000_000,
                     "working_capital_change": 4_000_000,
+                    "dividend": 14_000_000,
                 },
             )
         )
@@ -276,9 +424,13 @@ def test_interim_valuation_inputs_use_ttm_base_for_profit_and_owner_earnings(
     assert run.valuation_inputs["capital_expenditure"] == 50_000_000.0
     assert run.valuation_inputs["depreciation_and_amortization"] == 11_000_000.0
     assert run.valuation_inputs["working_capital_change"] == 6_000_000.0
+    assert run.valuation_inputs["dividend"] == 32_000_000.0
 
     owner_method = next(
         item for item in run.results["method_results"] if item["method"] == "owner_earnings"
+    )
+    dividend_method = next(
+        item for item in run.results["method_results"] if item["method"] == "dividend_discount"
     )
     expected_owner_base = 150_000_000 + 11_000_000 - 50_000_000
     expected_value = _manual_discount_cash_flow(
@@ -300,6 +452,8 @@ def test_interim_valuation_inputs_use_ttm_base_for_profit_and_owner_earnings(
         owner_method["calculation_basis"]["components"]["working_capital_investment_deducted"]
         == 0.0
     )
+    assert dividend_method["calculation_basis"]["components"]["base_dividend"] == 32_000_000.0
+    assert dividend_method["calculation_basis"]["components"]["period_method"] == "ttm_adjusted"
 
 
 def test_owner_earnings_rejects_unannualized_interim_base() -> None:
@@ -402,7 +556,8 @@ def test_010_uses_008_rule_matrix_and_ignores_009_signal_pack(tmp_path: Path) ->
     assert adjustment["dimension_scores"]["permanent_loss_risk"] < 0
     assert adjustment["risk_score"] > 0
     assert adjustment["analyst_parameter_impact_scale"] == 1.5
-    assert adjustment["analyst_method_weight_impact_scale"] == 1.5
+    assert "analyst_method_weight_impact_scale" not in adjustment
+    assert "method_multipliers" not in adjustment
     unscaled_delta_discount = (
         -0.018 * adjustment["quality_score"]
         + 0.030 * adjustment["risk_score"]
@@ -424,11 +579,17 @@ def test_010_uses_008_rule_matrix_and_ignores_009_signal_pack(tmp_path: Path) ->
     )
 
     weighting = {
-        item["method"]: item["components"]["analyst_signal"]
-        for item in confirmed.results["model_weighting"]
+        item["method"]: item["weight"] for item in confirmed.results["model_weighting"]
     }
-    assert weighting["dcf"] != 1.0
-    assert weighting["owner_earnings"] != 1.0
+    assert weighting == pytest.approx(
+        {
+            "dcf": 0.35,
+            "owner_earnings": 0.35,
+            "residual_income": 0.15,
+            "dividend_discount": 0.10,
+            "asset_value": 0.05,
+        }
+    )
 
 
 def test_analyst_weight_uses_confidence_and_profile_fit_only(tmp_path: Path) -> None:
@@ -462,8 +623,10 @@ def test_analyst_weight_uses_confidence_and_profile_fit_only(tmp_path: Path) -> 
     assert weights["buffett"]["price_blind_completeness"] == 0.75
     assert weights["buffett"]["raw_weight"] == pytest.approx(0.7)
     assert weights["li_lu"]["raw_weight"] == pytest.approx(0.3)
-    assert weights["buffett"]["weight"] == pytest.approx(0.7)
-    assert weights["li_lu"]["weight"] == pytest.approx(0.3)
+    assert weights["buffett"]["base_weight"] == pytest.approx(0.7)
+    assert weights["li_lu"]["base_weight"] == pytest.approx(0.3)
+    assert weights["buffett"]["weight"] == pytest.approx(0.7**2 / (0.7**2 + 0.3**2))
+    assert weights["li_lu"]["weight"] == pytest.approx(0.3**2 / (0.7**2 + 0.3**2))
 
 
 def test_price_reference_rules_are_audited_but_not_calculated(tmp_path: Path) -> None:
@@ -497,7 +660,36 @@ def test_price_reference_rules_are_audited_but_not_calculated(tmp_path: Path) ->
     )
 
 
-def test_lock_blocks_high_severity_gaps_and_allows_low_gaps(tmp_path: Path) -> None:
+def test_new_draft_rederives_latest_008_matrix_instead_of_using_stale_snapshot(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = _seed_ready_company(session, ticker="STALE.US", name="Stale Matrix")
+        analyst_run = _seed_analyst_run(
+            session,
+            company,
+            profile_id="buffett",
+            statuses={"moat": "pass"},
+        )
+        stale_result = dict(analyst_run.result)
+        stale_result["valuation_parameter_matrix"] = {
+            "source": "stale_buggy_snapshot",
+            "analyst_items": [],
+        }
+        analyst_run.result = stale_result
+        session.commit()
+
+        run = create_draft_valuation_run(session, company)
+
+    snapshot = run.model_suggested_assumptions["analyst_parameter_matrix_snapshot"]
+    assert snapshot["has_signals"] is True
+    moat = next(item for item in snapshot["rule_impacts"] if item["rule_id"] == "moat")
+    assert moat["calculation_role"] == "compute"
+    assert moat["price_blind_compatible"] is True
+
+
+def test_high_severity_gaps_reduce_confidence_and_remain_reviewable(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
         incomplete_company = _seed_company(session, ticker="MISS.US", name="Missing Cash Flow")
@@ -511,33 +703,28 @@ def test_lock_blocks_high_severity_gaps_and_allows_low_gaps(tmp_path: Path) -> N
         incomplete_run = create_draft_valuation_run(session, incomplete_company)
         incomplete_run = _confirm_run(session, incomplete_run)
 
-        try:
-            lock_valuation_run(session, incomplete_run)
-        except ValuationLockError as exc:
-            blocked_message = str(exc)
-        else:
-            blocked_message = ""
-
         ready_company = _seed_ready_company(session, ticker="READY.US", name="Ready Co")
         ready_run = create_draft_valuation_run(session, ready_company)
         ready_run = _confirm_run(session, ready_run)
-        locked_run = lock_valuation_run(session, ready_run)
 
-    assert "高严重度" in blocked_message
     assert incomplete_run.status == "draft"
-    assert locked_run.status == "locked"
-    assert locked_run.confidence is not None
-    assert locked_run.confidence < 0.9
+    assert incomplete_run.confidence is not None
+    assert ready_run.confidence is not None
+    assert incomplete_run.confidence < ready_run.confidence
+    assert any(
+        "高严重度输入缺口" in reason
+        for reason in incomplete_run.confidence_summary["reasons"]
+    )
 
 
-def test_recalculate_creates_new_draft_without_overwriting_locked_run(
+def test_recalculate_creates_new_draft_without_overwriting_source_run(
     tmp_path: Path,
 ) -> None:
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
         company = _seed_ready_company(session)
         draft = create_draft_valuation_run(session, company)
-        original = lock_valuation_run(session, _confirm_run(session, draft))
+        original = _confirm_run(session, draft)
         original_base_value = original.results["intrinsic_value_range"]["total_equity_value"][
             "base"
         ]
@@ -558,7 +745,7 @@ def test_recalculate_creates_new_draft_without_overwriting_locked_run(
         refreshed_original = session.get(ValuationRun, original.id)
 
     assert refreshed_original is not None
-    assert refreshed_original.status == "locked"
+    assert refreshed_original.status == "draft"
     assert recalculated.id != original.id
     assert recalculated.status == "draft"
     assert recalculated.user_adjusted_assumptions["scenarios"]["base"]["discount_rate"] == 0.14
@@ -569,7 +756,7 @@ def test_recalculate_creates_new_draft_without_overwriting_locked_run(
     )
 
 
-def test_valuation_api_creates_lists_recalculates_and_locks(tmp_path: Path) -> None:
+def test_valuation_api_creates_lists_and_recalculates(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     app = create_app(initialize_database=False)
     _override_db(app, session_factory)
@@ -602,9 +789,8 @@ def test_valuation_api_creates_lists_recalculates_and_locks(tmp_path: Path) -> N
     assert recalculated["id"] != draft["id"]
     assert recalculated["results"]["status"] == "calculated_after_user_confirmation"
 
-    lock_response = client.post(f"/api/valuation-runs/{recalculated['id']}/lock")
-    assert lock_response.status_code == 200
-    assert lock_response.json()["item"]["status"] == "locked"
+    removed_lock_response = client.post(f"/api/valuation-runs/{recalculated['id']}/lock")
+    assert removed_lock_response.status_code == 404
 
     list_response = client.get(f"/api/companies/{company_id}/valuation-runs")
     assert list_response.status_code == 200
@@ -844,3 +1030,4 @@ def _seed_memo(
     session.commit()
     session.refresh(memo)
     return memo
+

@@ -20,6 +20,8 @@ Hard boundaries:
 - 009 must not infer or generate valuation calculation signals. 010 reads structured
   rule statuses directly from the latest successful 008 analyst_view runs.
 - Do not output intrinsic-value numbers, target values, or calculated valuation results.
+- analyst_scorecard is calculated by the service from rule statuses. Do not infer,
+  recalculate, or narratively adjust that score.
 
 Return only valid JSON. Do not wrap the answer in Markdown or code fences.
 """.strip()

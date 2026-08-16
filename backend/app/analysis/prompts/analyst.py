@@ -4,7 +4,7 @@ import json
 
 from app.analysis.analyst_profiles import AnalystProfile
 
-PROMPT_VERSION = "analyst_view_v1"
+PROMPT_VERSION = "analyst_view_v2"
 
 ANALYST_OUTPUT_TEMPLATE = {
     "analyst_profile": "<必须等于 Profile.id>",
@@ -83,6 +83,11 @@ ANALYST_SYSTEM_PROMPT = """你是一个本地价值投资研究系统中的分�
 - 财务比率、自由现金流、净现金、现金/有息负债、分红率、回购率等指标
   必须以 financial_evidence_pack 中后端已计算字段为准；不要从原始 JSON
   临时猜公式或自行重算。
+- financial_evidence_pack.model_display 是后端确定性生成的模型展示口径。
+  写金额时必须使用 latest_amounts_100m_cny 或 amount_series_100m_cny 中的 display；
+  写百分比时必须使用 latest_percentages 中的 display，不得把 raw_decimal 直接加百分号。
+  例如 operating_cash_flow_to_revenue 的 raw_decimal=0.77936，表示 77.94%，
+  绝不能写成 0.78%。1亿元等于100,000,000元。
 - 可以围绕商业质量、管理层、护城河、成长质量、风险、反方证据、
   估值纪律、安全边际和估值假设建议展开。
 - 可以基于利润表结构化字段输出财务质量判断、风险、反方证据和估值假设建议；
@@ -195,6 +200,13 @@ def build_analyst_prompt(
                 "- 不要从原始财务 JSON 现场推导公式；自由现金流、净现金、现金/有息负债、"
                 "经营现金流/净利润、自由现金流/净利润、分红率、回购率等指标都以"
                 "后端 financial_evidence_pack 已计算结果为准。"
+            ),
+            (
+                "- 金额和百分比必须优先使用 financial_evidence_pack.model_display："
+                "金额读取 latest_amounts_100m_cny 或 amount_series_100m_cny 的 display，"
+                "百分比读取 latest_percentages 的 display。raw_decimal 是 0-1 小数，"
+                "只能乘以 100 后写百分比，禁止直接追加百分号；例如 0.77936 必须写 77.94%，"
+                "不能写 0.78%。1亿元=100,000,000元。"
             ),
             (
                 "- 利润表相关观察引用财务期间时，写入 rule_checks[].financial_periods "

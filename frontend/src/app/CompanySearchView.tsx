@@ -1,5 +1,5 @@
 ﻿import { ArrowRight, Building2, Plus, Search } from "lucide-react";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import {
@@ -12,8 +12,17 @@ import {
 
 type CompanySearchViewProps = {
   selectedCompanyId: number | null;
-  onSelectCompany: (companyId: number) => void;
+  onSelectCompany: (company: Company) => void;
   refreshToken: number;
+  location: CompanySearchLocation;
+  onLocationChange: (location: CompanySearchLocation) => void;
+  restoreScrollTop: number;
+  restoreToken: number;
+};
+
+export type CompanySearchLocation = {
+  query: string;
+  offset: number;
 };
 
 type CompaniesState =
@@ -59,15 +68,18 @@ const defaultNewCompanyForm: NewCompanyForm = {
 export function CompanySearchView({
   selectedCompanyId,
   onSelectCompany,
-  refreshToken
+  refreshToken,
+  location,
+  onLocationChange,
+  restoreScrollTop,
+  restoreToken
 }: CompanySearchViewProps) {
-  const [query, setQuery] = useState("");
   const [companiesState, setCompaniesState] = useState<CompaniesState>(defaultCompaniesState);
   const [newCompanyForm, setNewCompanyForm] = useState<NewCompanyForm>(defaultNewCompanyForm);
   const [createState, setCreateState] = useState<CreateState>({ status: "idle", message: null });
   const [localRefreshToken, setLocalRefreshToken] = useState(0);
-  const [offset, setOffset] = useState(0);
-  const normalizedQuery = query.trim();
+  const restoredTokenRef = useRef(0);
+  const normalizedQuery = location.query.trim();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -76,7 +88,7 @@ export function CompanySearchView({
     getCompanies({
       q: normalizedQuery || undefined,
       limit: COMPANY_LIST_PAGE_SIZE,
-      offset,
+      offset: location.offset,
       signal: controller.signal
     })
       .then((data) => {
@@ -97,7 +109,20 @@ export function CompanySearchView({
     return () => {
       controller.abort();
     };
-  }, [normalizedQuery, offset, refreshToken, localRefreshToken]);
+  }, [normalizedQuery, location.offset, refreshToken, localRefreshToken]);
+
+  useEffect(() => {
+    if (companiesState.status !== "ready" || restoreToken <= restoredTokenRef.current) {
+      return;
+    }
+
+    restoredTokenRef.current = restoreToken;
+    const frameId = window.requestAnimationFrame(() => {
+      window.scrollTo(0, restoreScrollTop);
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [companiesState.status, restoreScrollTop, restoreToken]);
 
   const summary = useMemo(() => {
     if (companiesState.status !== "ready") {
@@ -125,16 +150,21 @@ export function CompanySearchView({
   }
 
   function handleSearchChange(value: string) {
-    setQuery(value);
-    setOffset(0);
+    onLocationChange({ query: value, offset: 0 });
   }
 
   function handlePreviousPage() {
-    setOffset((currentOffset) => Math.max(0, currentOffset - COMPANY_LIST_PAGE_SIZE));
+    onLocationChange({
+      query: location.query,
+      offset: Math.max(0, location.offset - COMPANY_LIST_PAGE_SIZE)
+    });
   }
 
   function handleNextPage() {
-    setOffset((currentOffset) => currentOffset + COMPANY_LIST_PAGE_SIZE);
+    onLocationChange({
+      query: location.query,
+      offset: location.offset + COMPANY_LIST_PAGE_SIZE
+    });
   }
 
   async function handleCreateCompany(event: FormEvent<HTMLFormElement>) {
@@ -146,7 +176,7 @@ export function CompanySearchView({
       setCreateState({ status: "idle", message: null });
       setNewCompanyForm(defaultNewCompanyForm);
       setLocalRefreshToken((value) => value + 1);
-      onSelectCompany(company.id);
+      onSelectCompany(company);
     } catch (error) {
       setCreateState({
         status: "error",
@@ -171,7 +201,7 @@ export function CompanySearchView({
           <span className="sr-only">搜索公司</span>
           <input
             type="search"
-            value={query}
+            value={location.query}
             onChange={(event) => handleSearchChange(event.target.value)}
             placeholder="输入代码、名称、交易所、行业或标签"
           />
@@ -395,7 +425,7 @@ function FormField({
 type CompanyRowProps = {
   company: Company;
   selected: boolean;
-  onSelectCompany: (companyId: number) => void;
+  onSelectCompany: (company: Company) => void;
 };
 
 function CompanyRow({ company, selected, onSelectCompany }: CompanyRowProps) {
@@ -425,7 +455,7 @@ function CompanyRow({ company, selected, onSelectCompany }: CompanyRowProps) {
       <button
         className="company-detail-button"
         type="button"
-        onClick={() => onSelectCompany(company.id)}
+        onClick={() => onSelectCompany(company)}
         title="进入公司档案"
       >
         <span>档案</span>

@@ -16,12 +16,10 @@ from app.schemas.valuation import (
 from app.services.companies import get_company
 from app.services.valuation_service import (
     ValuationInputError,
-    ValuationLockError,
     create_draft_valuation_run,
     get_latest_company_valuation_run,
     get_valuation_run,
     list_company_valuation_runs,
-    lock_valuation_run,
     recalculate_valuation_run,
 )
 
@@ -101,22 +99,6 @@ def recalculate_valuation_run_item(
             user_note=payload.user_note,
         )
     except ValuationInputError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return ValuationRunMutationResponse(company_id=item.company_id, item=item)
-
-
-@router.post(
-    "/valuation-runs/{run_id}/lock",
-    response_model=ValuationRunMutationResponse,
-)
-def lock_valuation_run_item(
-    run_id: int,
-    db: Annotated[Session, Depends(get_db)],
-) -> ValuationRunMutationResponse:
-    run = _get_valuation_run_or_404(db, run_id)
-    try:
-        item = lock_valuation_run(db, run)
-    except ValuationLockError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return ValuationRunMutationResponse(company_id=item.company_id, item=item)
 

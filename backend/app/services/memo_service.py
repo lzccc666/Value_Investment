@@ -30,6 +30,14 @@ RUN_VERSION = "009_v1"
 MEMO_PROFILE = "investment_committee"
 MIN_SOURCE_ANALYST_RUNS = 2
 DELETED_MEMO_STATUSES = {"deleted", "archived"}
+MEMO_ANALYST_STATUS_SCORES = {
+    "pass": 1.0,
+    "warn": -0.3,
+    "fail": -2.0,
+    "unknown": -0.1,
+}
+MEMO_SAFETY_MARGIN_MINIMUM = 0.0
+MEMO_SAFETY_MARGIN_MAXIMUM = 0.50
 PROHIBITED_ACTION_TERMS = (
     "买入",
     "卖出",
@@ -271,6 +279,113 @@ def build_committee_ledger(
         "critical_risk_candidates": critical_risk_candidates or risk_flags[:6],
         "data_gap_candidates": _dedupe_summary_dicts(data_gaps),
         "valuation_assumption_queue": _dedupe_valuation_assumptions(valuation_assumptions),
+        "analyst_scorecard": build_analyst_scorecard(source_analyst_runs),
+    }
+
+
+def build_analyst_scorecard(
+    source_analyst_runs: list[dict[str, object]],
+) -> dict[str, object]:
+    profiles = list_analyst_profiles()
+    runs_by_profile = {
+        str(run.get("analyst_profile") or ""): run for run in source_analyst_runs
+    }
+    total_rule_count = sum(len(profile.rules) for profile in profiles)
+    rule_weight = 1.0 / total_rule_count if total_rule_count > 0 else 0.0
+
+    analyst_items: list[dict[str, object]] = []
+    total_score = 0.0
+    known_rule_count = 0
+    for profile in profiles:
+        run = runs_by_profile.get(profile.id)
+        result = run.get("result") if isinstance(run, dict) else {}
+        if not isinstance(result, dict):
+            result = {}
+        checks = {
+            str(item.get("rule_id") or ""): item
+            for item in result.get("rule_checks", [])
+            if isinstance(item, dict)
+        }
+        rule_scores = []
+        for rule in profile.rules:
+            check = checks.get(rule.id, {})
+            status = str(check.get("status") or "unknown").strip().lower()
+            if status not in MEMO_ANALYST_STATUS_SCORES:
+                status = "unknown"
+            if status != "unknown":
+                known_rule_count += 1
+            rule_scores.append(
+                {
+                    "rule_id": rule.id,
+                    "rule_label": rule.label,
+                    "status": status,
+                    "score": MEMO_ANALYST_STATUS_SCORES[status],
+                }
+            )
+
+        rule_score_total = sum(float(item["score"]) for item in rule_scores)
+        analyst_weight = len(profile.rules) * rule_weight
+        weighted_score = rule_score_total * rule_weight
+        total_score += weighted_score
+        analyst_items.append(
+            {
+                "profile_id": profile.id,
+                "profile_name": profile.display_name,
+                "availability": "success" if run is not None else "missing",
+                "source_run_id": _as_int(run.get("run_id")) if isinstance(run, dict) else None,
+                "profile_fit_score": (
+                    _clamp(_as_float(run.get("profile_fit_score")) or 0.60, 0.20, 1.00)
+                    if isinstance(run, dict)
+                    else None
+                ),
+                "data_confidence": (
+                    _clamp(_as_float(run.get("confidence")) or 0.60, 0.20, 1.00)
+                    if isinstance(run, dict)
+                    else None
+                ),
+                "analyst_weight": analyst_weight,
+                "rule_score_total": rule_score_total,
+                "weighted_score": weighted_score,
+                "rule_scores": rule_scores,
+            }
+        )
+
+    suggested_safety_margin = _clamp(
+        ((MEMO_ANALYST_STATUS_SCORES["pass"] - total_score) / 3.0)
+        * MEMO_SAFETY_MARGIN_MAXIMUM,
+        MEMO_SAFETY_MARGIN_MINIMUM,
+        MEMO_SAFETY_MARGIN_MAXIMUM,
+    )
+    return {
+        "source": "latest_successful_008_rule_checks",
+        "independent_from_valuation": True,
+        "status_score_policy": dict(MEMO_ANALYST_STATUS_SCORES),
+        "weight_policy": {
+            "mode": "equal_weight_per_rule",
+            "rule_weight": rule_weight,
+            "total_rules": total_rule_count,
+            "formula": "sum(rule_status_score * 1/40)",
+            "uses_data_confidence": False,
+            "uses_profile_fit_score": False,
+        },
+        "coverage": {
+            "successful_profiles": sum(
+                1 for profile in profiles if profile.id in runs_by_profile
+            ),
+            "total_profiles": len(profiles),
+            "known_rules": known_rule_count,
+            "total_rules": total_rule_count,
+        },
+        "analyst_items": analyst_items,
+        "total_score": total_score,
+        "score_range": {"minimum": -2.0, "maximum": 1.0},
+        "suggested_safety_margin": suggested_safety_margin,
+        "safety_margin_policy": {
+            "minimum": MEMO_SAFETY_MARGIN_MINIMUM,
+            "maximum": MEMO_SAFETY_MARGIN_MAXIMUM,
+            "formula": "clamp(((1 - total_score) / 3) * 0.50, 0.0, 0.50)",
+            "score_source": "equal_weight_40_rule_average",
+        },
     }
 
 
@@ -308,6 +423,10 @@ def run_company_investment_memo(
         )
         output_payload = output.model_dump(mode="json")
         _apply_source_map_override(output_payload, data_snapshot)
+        ledger = data_snapshot.get("committee_ledger")
+        output_payload["analyst_scorecard"] = (
+            ledger.get("analyst_scorecard", {}) if isinstance(ledger, dict) else {}
+        )
         output_payload["valuation_signal_pack"] = {
             "price_blind_compatible": True,
             "source": "deprecated_009_display_compatibility_only",
@@ -940,6 +1059,23 @@ def _as_float(value: object) -> float | None:
     return None
 
 
+def _as_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, float(value)))
+
+
 def _dedupe_dicts(
     values: list[dict[str, object]],
     keys: tuple[str, ...],
@@ -1101,6 +1237,32 @@ def _build_memo_markdown(output: dict[str, object]) -> str:
         "",
         str(output.get("executive_summary") or ""),
     ]
+    scorecard = output.get("analyst_scorecard")
+    if isinstance(scorecard, dict):
+        total_score = _as_number(scorecard.get("total_score"))
+        suggested_safety_margin = _as_number(scorecard.get("suggested_safety_margin"))
+        analyst_items = scorecard.get("analyst_items")
+        if total_score is not None and isinstance(analyst_items, list):
+            lines.extend(["", "## 分析师评分", "", f"综合得分：{total_score:+.2f}"])
+            if suggested_safety_margin is not None:
+                lines.append(f"动态安全边际：{suggested_safety_margin:.2%}")
+            for item in analyst_items:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("profile_name") or item.get("profile_id") or "分析师")
+                rule_score = _as_number(item.get("rule_score_total")) or 0.0
+                analyst_weight = _as_number(item.get("analyst_weight")) or 0.0
+                weighted_score = _as_number(item.get("weighted_score")) or 0.0
+                availability_note = (
+                    "（缺失，按未知计分）"
+                    if item.get("availability") != "success"
+                    else ""
+                )
+                lines.append(
+                    f"- {name}{availability_note}：四指标 {rule_score:+.2f}，"
+                    f"权重 {analyst_weight:.2%}，"
+                    f"等权贡献 {weighted_score:+.2f}"
+                )
     for title, key in (
         ("核心判断", "core_thesis"),
         ("关键风险", "key_risks"),

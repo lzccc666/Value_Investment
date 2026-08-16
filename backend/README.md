@@ -1,86 +1,77 @@
-﻿# Value Investment API
+# Value Investment API
 
-FastAPI backend for the local value investment research workbench.
+FastAPI 后端为本地价值投资研究工作台提供数据采集、证据整理、模型分析、确定性估值和价格决策能力。
 
-Current endpoint:
+## 启动
 
-```text
-GET /api/health
-GET /api/companies
-POST /api/companies
-GET /api/companies/{company_id}
-POST /api/companies/{company_id}/profile/refresh
-GET /api/companies/{company_id}/financials
-POST /api/companies/{company_id}/financials/sync
-DELETE /api/companies/{company_id}/financials/{statement_id}
-GET /api/companies/{company_id}/announcements
-POST /api/companies/{company_id}/announcements/sync
-POST /api/companies/{company_id}/announcements/summarize-all
-POST /api/companies/{company_id}/announcements/summarize-all-deep
-POST /api/companies/{company_id}/announcements/{announcement_id}/summarize
-DELETE /api/companies/{company_id}/announcements/{announcement_id}
-GET /api/evidence/model-config
-POST /api/evidence/model-smoke-test
-POST /api/companies/{company_id}/evidence/search
-GET /api/companies/{company_id}/evidence
-GET /api/evidence/{evidence_id}
-POST /api/evidence/{evidence_id}/review
-DELETE /api/evidence/{evidence_id}
-GET /api/analyst-profiles
-GET /api/companies/{company_id}/analysis/runs/latest
-GET /api/companies/{company_id}/analysis/runs
-POST /api/companies/{company_id}/analysis/runs
-POST /api/companies/{company_id}/analysis/runs/batch
-DELETE /api/companies/{company_id}/analysis/runs/{run_id}
+```powershell
+Set-Location backend
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Financial sync:
+健康检查：`GET http://127.0.0.1:8000/api/health`
 
-- `GET /api/companies/{company_id}/financials` reads stored financial statements.
-- `POST /api/companies/{company_id}/financials/sync?limit=60` searches about 15 years of external financial data and upserts it into the database.
-- `DELETE /api/companies/{company_id}/financials/{statement_id}` removes one stored financial statement from the local database.
-- The current MVP data source is Eastmoney F10 main financial indicators. AkShare is not required for this first sync path.
+## 结构
 
-Announcement sync:
+```text
+app/api/routes/       HTTP 路由
+app/analysis/         模型网关、Profile 与 Prompt
+app/data_sources/     东方财富与搜索提供方
+app/db/               SQLAlchemy 模型、初始化和轻量迁移
+app/schemas/          Pydantic 请求与响应模型
+app/services/         领域服务和确定性计算
+app/tests/            API、服务和数据源测试
+```
 
-- `GET /api/companies/{company_id}/announcements` reads stored announcements.
-- `POST /api/companies/{company_id}/announcements/sync?years=1` searches up to 50 public announcements from the last year, upserts them into the database, and prunes older or overflow stored announcements for that company.
-- `POST /api/companies/{company_id}/announcements/summarize-all` generates fast metadata-only summaries for the current announcement list and skips already deep-summarized items.
-- `POST /api/companies/{company_id}/announcements/summarize-all-deep` processes pending announcements one by one with the backend model gateway and skips already deep-summarized items.
-- `POST /api/companies/{company_id}/announcements/{announcement_id}/summarize` generates one structured announcement summary through the backend model gateway and stores only the latest summary on the announcement row.
-- `DELETE /api/companies/{company_id}/announcements/{announcement_id}` removes one stored announcement scoped to that company.
-- The current MVP data source is Eastmoney announcements and first supports A-share tickers such as `600519.SH`.
-- Announcement sync does not call any model API or filter announcements by price/sentiment keywords. It skips already stored announcements and does not overwrite existing summaries. Summary generation is a separate stateless backend action and does not reuse model messages or historical runs unless explicitly added by a future service.
-- Announcement status is derived from `summary_model_name`: empty means `未摘要`, `metadata_keyword` means `已快速摘要`, and any other non-empty model name means `已深度摘要`.
-- Announcement evidence for the analyst layer is intentionally narrow: `id`, `title`, `published_at`, `category`, `summary`.
+## 数据库
 
-External evidence:
+默认数据库为项目根目录的 `data/value_investment.db`。启动时执行：
 
-- `GET /api/evidence/model-config` returns model gateway configuration status without exposing the API key.
-- `POST /api/evidence/model-smoke-test` checks whether the configured OpenAI-compatible model can return structured JSON.
-- `POST /api/companies/{company_id}/evidence/search` asks the model to plan and summarize external evidence, then stores reviewed candidates in the local database.
-- `GET /api/companies/{company_id}/evidence` reads stored external evidence for one company.
-- `GET /api/evidence/{evidence_id}` reads one evidence record.
-- `POST /api/evidence/{evidence_id}/review` marks one evidence record as manually reviewed.
-- `DELETE /api/evidence/{evidence_id}` removes one stored evidence record.
+1. `Base.metadata.create_all()` 创建缺失表。
+2. 轻量 SQLite 迁移补齐新增列、索引和兼容数据。
+3. 幂等写入真实公司种子。
 
-Analyst views:
+核心实体：`Company`、`FinancialStatement`、`Announcement`、`Evidence`、`AnalysisRun`、`InvestmentMemo`、`ValuationRun`、`PriceDecisionRun`。
 
-- `GET /api/analyst-profiles` lists registered analyst profiles.
-- `GET /api/companies/{company_id}/analysis/runs/latest` reads latest analysis runs, defaulting to latest successful analyst views.
-- `GET /api/companies/{company_id}/analysis/runs` reads analysis run history with optional filters.
-- `POST /api/companies/{company_id}/analysis/runs` generates one analyst view from the current stored company snapshot.
-- `POST /api/companies/{company_id}/analysis/runs/batch` generates multiple analyst views independently.
-- `DELETE /api/companies/{company_id}/analysis/runs/{run_id}` deletes one stored analysis run.
+## API 分组
 
-Company profile refresh:
+- `/api/health`
+- `/api/companies`
+- `/api/evidence` 与公司证据接口
+- `/api/analyst-profiles` 与公司分析接口
+- `/api/companies/{id}/investment-memos`
+- `/api/companies/{id}/valuation-runs`
+- `/api/companies/{id}/price-decision-runs`
 
-- `GET /api/companies/{company_id}` reads the stored company profile and attempts to fill a missing A-share listed date without blocking the response.
-- `POST /api/companies/{company_id}/profile/refresh` refreshes listed date plus profile display fields: market cap, current price, TTM/dynamic/static PE, PB, PS, TTM dividend yield, source, source URL, and market-data update time.
-- The current market snapshot source is Eastmoney quote snapshot with a `push2delay` fallback. TTM dividend yield is calculated from Eastmoney F10 bonus-financing data as implemented cash dividend per share over current price. Unsupported tickers return `400`; source/network failures return `502`.
+完整端点见 `../docs/api.md`。
 
-Database:
+## 模型网关
 
-- SQLite file: `data/value_investment.db`
-- ORM: SQLAlchemy 2.x
-- Startup: tables are created automatically and seeded with real A-share, HK-share, and US-share company master data.
+配置项位于 `app/core/config.py`，可通过 `backend/.env` 设置：
+
+- `MODEL_BASE_URL`
+- `MODEL_API_KEY`
+- `MODEL_NAME`
+- `MODEL_WIRE_API`
+- `MODEL_REASONING_EFFORT`
+- `MODEL_DISABLE_RESPONSE_STORAGE`
+- `MODEL_TIMEOUT_SECONDS`
+
+支持 OpenAI-compatible `chat_completions` 和 Responses 风格响应解析。证据搜索提供配置状态与 smoke test，但不会暴露 API key。
+
+## 关键约束
+
+- 分析、Memo 和估值输入保留来源引用及快照。
+- 010 强制 price-blind，市场价格不得进入估值计算。
+- 011 必须绑定同公司、已计算完成的 `ValuationRun` 及其固定 `InvestmentMemo`。
+- 财务证据包、估值和价格决策均由确定性服务生成，模型输出不能直接覆盖公式结果。
+- `PriceDecisionRun` 使用软删除；其他历史对象按各自接口管理。
+
+## 验证
+
+```powershell
+.\.venv\Scripts\python.exe -m ruff check app
+.\.venv\Scripts\python.exe -m pytest
+```

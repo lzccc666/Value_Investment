@@ -209,6 +209,42 @@ class MemoConfidenceSummary(BaseModel):
         return _normalize_str_list(value)
 
 
+class MemoAnalystRuleScore(BaseModel):
+    rule_id: str
+    rule_label: str
+    status: Literal["pass", "warn", "fail", "unknown"]
+    score: float
+
+
+class MemoAnalystScoreItem(BaseModel):
+    profile_id: str
+    profile_name: str
+    availability: Literal["success", "missing"]
+    source_run_id: int | None = None
+    profile_fit_score: float | None = None
+    data_confidence: float | None = None
+    raw_weight: float | None = None
+    base_weight: float | None = None
+    differentiated_raw_weight: float | None = None
+    analyst_weight: float = 0.0
+    rule_score_total: float = 0.0
+    weighted_score: float = 0.0
+    rule_scores: list[MemoAnalystRuleScore] = Field(default_factory=list)
+
+
+class MemoAnalystScorecard(BaseModel):
+    source: str = "latest_successful_008_rule_checks"
+    independent_from_valuation: bool = True
+    status_score_policy: dict[str, float] = Field(default_factory=dict)
+    weight_policy: dict[str, object] = Field(default_factory=dict)
+    coverage: dict[str, int] = Field(default_factory=dict)
+    analyst_items: list[MemoAnalystScoreItem] = Field(default_factory=list)
+    total_score: float = 0.0
+    score_range: dict[str, float] = Field(default_factory=dict)
+    suggested_safety_margin: float | None = Field(default=None, ge=0.0, le=0.5)
+    safety_margin_policy: dict[str, object] = Field(default_factory=dict)
+
+
 class MemoValuationMethodPreference(BaseModel):
     method: MemoValuationMethod
     direction: Literal["up", "down", "neutral"] = "neutral"
@@ -476,6 +512,7 @@ class InvestmentMemoOutput(BaseModel):
     data_gaps: list[str] = Field(default_factory=list)
     follow_up_questions: list[str] = Field(default_factory=list)
     valuation_assumption_queue: list[MemoValuationAssumption] = Field(default_factory=list)
+    analyst_scorecard: MemoAnalystScorecard = Field(default_factory=MemoAnalystScorecard)
     valuation_signal_pack: MemoValuationSignalPack = Field(default_factory=MemoValuationSignalPack)
     watch_signals: list[str] = Field(default_factory=list)
     price_decision_status: Literal["not_started"] = "not_started"

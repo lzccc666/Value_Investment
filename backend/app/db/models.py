@@ -84,6 +84,9 @@ class Company(Base):
     valuation_runs: Mapped[list[ValuationRun]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
+    price_decision_runs: Mapped[list[PriceDecisionRun]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
 
 
 class FinancialStatement(Base):
@@ -303,3 +306,57 @@ class ValuationRun(Base):
 
     company: Mapped[Company] = relationship(back_populates="valuation_runs")
     memo: Mapped[InvestmentMemo | None] = relationship()
+
+
+class PriceDecisionRun(Base):
+    __tablename__ = "price_decision_runs"
+    __table_args__ = (
+        Index("ix_price_decision_runs_company_created", "company_id", "created_at"),
+        Index("ix_price_decision_runs_company_status", "company_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True, nullable=False)
+    valuation_run_id: Mapped[int] = mapped_column(
+        ForeignKey("valuation_runs.id"), index=True, nullable=False
+    )
+    memo_id: Mapped[int] = mapped_column(
+        ForeignKey("investment_memos.id"), index=True, nullable=False
+    )
+    version_no: Mapped[int] = mapped_column(default=1, nullable=False)
+    run_version: Mapped[str] = mapped_column(String(40), default="011_v1", nullable=False)
+    formula_version: Mapped[str] = mapped_column(String(40), default="011_v1", nullable=False)
+    status: Mapped[str] = mapped_column(String(40), default="active", nullable=False)
+    input_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    input_snapshot_hash: Mapped[str] = mapped_column(String(120), nullable=False)
+    intrinsic_values_per_share: Mapped[dict[str, float]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    current_price: Mapped[float] = mapped_column(Float, nullable=False)
+    market_data_updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    analyst_score_total: Mapped[float] = mapped_column(Float, nullable=False)
+    analyst_scorecard_snapshot: Mapped[dict[str, object]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    suggested_safety_margin: Mapped[float] = mapped_column(Float, nullable=False)
+    safety_margin_override: Mapped[float | None] = mapped_column(Float, nullable=True)
+    effective_safety_margin: Mapped[float] = mapped_column(Float, nullable=False)
+    scenario_buy_prices: Mapped[dict[str, float]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    suggested_buy_price: Mapped[float] = mapped_column(Float, nullable=False)
+    current_margin: Mapped[float] = mapped_column(Float, nullable=False)
+    price_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    company: Mapped[Company] = relationship(back_populates="price_decision_runs")
+    valuation_run: Mapped[ValuationRun] = relationship()
+    memo: Mapped[InvestmentMemo] = relationship()

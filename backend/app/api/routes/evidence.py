@@ -12,6 +12,8 @@ from app.db.models import Company
 from app.db.session import get_db
 from app.schemas.evidence import (
     EvidenceDeleteResponse,
+    EvidenceImportTextRequest,
+    EvidenceImportTextResponse,
     EvidenceListResponse,
     EvidenceRead,
     EvidenceReviewResponse,
@@ -22,10 +24,12 @@ from app.schemas.evidence import (
 )
 from app.services.companies import get_company
 from app.services.evidence_service import (
+    EvidenceImportTextError,
     EvidenceSearchError,
     delete_evidence,
     get_evidence,
     get_model_config_status,
+    import_text_evidence,
     list_company_evidence,
     mark_evidence_reviewed,
     run_model_smoke_test,
@@ -80,6 +84,37 @@ def search_external_evidence(
         created=len(items),
         items=items,
         diagnostics=run.result.get("search_stats") if isinstance(run.result, dict) else None,
+    )
+
+
+@router.post(
+    "/companies/{company_id}/evidence/import-text",
+    response_model=EvidenceImportTextResponse,
+)
+def import_external_evidence_text(
+    company_id: int,
+    payload: EvidenceImportTextRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> EvidenceImportTextResponse:
+    company = _get_company_or_404(db, company_id)
+    try:
+        items, run = import_text_evidence(db, company, payload)
+    except ModelNotConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ModelOutputValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ModelGatewayError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except EvidenceImportTextError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    return EvidenceImportTextResponse(
+        company_id=company_id,
+        run_id=run.id,
+        status=run.status if run.status in {"success", "partial", "failed"} else "failed",
+        created=len(items),
+        items=items,
+        diagnostics=run.result.get("diagnostics") if isinstance(run.result, dict) else None,
     )
 
 

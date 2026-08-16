@@ -144,6 +144,44 @@ class EvidenceSearchResponse(BaseModel):
     diagnostics: dict[str, object] | None = None
 
 
+class EvidenceImportTextRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+    content: str = Field(min_length=20, max_length=20_000)
+    source: str | None = Field(default=None, max_length=160)
+    source_url: str | None = None
+    published_at: datetime | None = None
+    source_type: EvidenceSourceType = "web"
+    notes: str | None = Field(default=None, max_length=1000)
+    requires_review: bool = True
+
+    @field_validator("content")
+    @classmethod
+    def normalize_content(cls, value: str) -> str:
+        normalized = " ".join(value.strip().split())
+        if not normalized:
+            raise ValueError("正文内容不能为空")
+        return normalized
+
+    @field_validator("title", "source", "source_url", "notes")
+    @classmethod
+    def normalize_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.strip().split())
+        if not normalized:
+            return None
+        return normalized
+
+
+class EvidenceImportTextResponse(BaseModel):
+    company_id: int
+    run_id: int
+    status: Literal["success", "partial", "failed"]
+    created: int
+    items: list[EvidenceRead]
+    diagnostics: dict[str, object] | None = None
+
+
 class EvidenceReviewResponse(BaseModel):
     evidence: EvidenceRead
 

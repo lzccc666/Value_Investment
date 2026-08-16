@@ -137,6 +137,53 @@ INCOME_STATEMENT_GAP_FIELDS = {
     "non_operating_items",
     "income_tax_expense",
 }
+ANALYST_AMOUNT_SERIES_FIELDS = (
+    "revenue",
+    "net_profit",
+    "deducted_net_profit",
+    "operating_cash_flow",
+    "capital_expenditure",
+    "free_cash_flow",
+    "dividend",
+)
+ANALYST_PERCENTAGE_METRIC_PATHS = (
+    ("profitability", "roe"),
+    ("profitability", "gross_margin"),
+    ("profitability", "net_margin"),
+    ("profit_structure", "operating_margin"),
+    ("profit_structure", "deducted_net_profit_to_net_profit"),
+    ("profit_structure", "investment_income_to_net_profit"),
+    ("profit_structure", "fair_value_change_to_net_profit"),
+    ("profit_structure", "impairment_loss_to_net_profit"),
+    ("profit_structure", "non_operating_profit_to_net_profit"),
+    ("profit_structure", "effective_tax_rate"),
+    ("expense_control", "selling_expense_ratio"),
+    ("expense_control", "admin_expense_ratio"),
+    ("expense_control", "r_and_d_expense_ratio"),
+    ("expense_control", "finance_expense_ratio"),
+    ("expense_control", "period_expense_ratio"),
+    ("cash_quality", "operating_cash_flow_to_revenue"),
+    ("cash_quality", "free_cash_flow_margin"),
+    ("growth_quality", "revenue_yoy"),
+    ("growth_quality", "net_profit_yoy"),
+    ("balance_sheet_safety", "asset_liability_ratio"),
+    ("balance_sheet_safety", "interest_bearing_debt_to_equity"),
+    ("shareholder_return", "dividend_payout_ratio"),
+    ("shareholder_return", "buyback_ratio"),
+    ("shareholder_return", "share_dilution_rate"),
+    ("capital_allocation", "capital_expenditure_to_revenue"),
+)
+OPERATING_CASH_FLOW_TO_REVENUE_LABELS = (
+    "operating_cash_flow_to_revenue",
+    "经营现金流/收入",
+    "经营现金流／收入",
+    "经营现金流/营收",
+    "经营现金流／营收",
+    "经营现金流占收入",
+    "经营现金流占营收",
+    "经营现金流收入比",
+    "经营现金流收入比例",
+)
 
 CONSUMER_BRAND_TERMS = (
     "白酒",
@@ -419,6 +466,7 @@ def run_company_analyst_view(
             temperature=0.2,
         )
         output = _apply_fact_ledger_overrides(output, data_snapshot)
+        output = _apply_financial_unit_corrections(output, data_snapshot)
         _validate_output_profile(output, profile, data_snapshot=data_snapshot)
         _complete_run(session, run, output)
         return run
@@ -472,6 +520,83 @@ def run_company_analyst_views_batch(
     return results
 
 
+def _build_financial_model_display(
+    financial_evidence_pack: dict[str, object],
+) -> dict[str, object]:
+    facts = financial_evidence_pack.get("financial_facts")
+    metrics = financial_evidence_pack.get("financial_metrics")
+    latest_facts = facts.get("latest") if isinstance(facts, dict) else None
+    fact_series = facts.get("series") if isinstance(facts, dict) else None
+
+    latest_amounts: dict[str, object] = {}
+    if isinstance(latest_facts, dict):
+        for field, value in latest_facts.items():
+            if field == "shares_outstanding" or not _is_number(value):
+                continue
+            amount_100m_cny = float(value) / 100_000_000
+            latest_amounts[str(field)] = {
+                "raw_cny": float(value),
+                "value_100m_cny": round(amount_100m_cny, 4),
+                "display": f"{amount_100m_cny:.2f}亿元",
+            }
+
+    amount_series: dict[str, object] = {}
+    if isinstance(fact_series, dict):
+        for field in ANALYST_AMOUNT_SERIES_FIELDS:
+            items = fact_series.get(field)
+            if not isinstance(items, list):
+                continue
+            display_items: list[dict[str, object]] = []
+            for item in items:
+                if not isinstance(item, dict) or not _is_number(item.get("value")):
+                    continue
+                raw_value = float(item["value"])
+                amount_100m_cny = raw_value / 100_000_000
+                display_items.append(
+                    {
+                        "period": item.get("period"),
+                        "value_100m_cny": round(amount_100m_cny, 4),
+                        "display": f"{amount_100m_cny:.2f}亿元",
+                    }
+                )
+            if display_items:
+                amount_series[field] = display_items
+
+    latest_percentages: dict[str, object] = {}
+    if isinstance(metrics, dict):
+        for section, field in ANALYST_PERCENTAGE_METRIC_PATHS:
+            section_values = metrics.get(section)
+            value = section_values.get(field) if isinstance(section_values, dict) else None
+            if not _is_number(value):
+                continue
+            percent_value = float(value) * 100
+            latest_percentages[field] = {
+                "source_path": f"financial_metrics.{section}.{field}",
+                "raw_decimal": float(value),
+                "percent_value": round(percent_value, 4),
+                "display": f"{percent_value:.2f}%",
+            }
+
+    return {
+        "latest_period": financial_evidence_pack.get("latest_period"),
+        "unit_contract": {
+            "raw_monetary_unit": "CNY元",
+            "display_monetary_unit": "亿元",
+            "cny_per_100m": 100_000_000,
+            "raw_ratio_unit": "0-1小数",
+            "display_ratio_unit": "百分比",
+            "ratio_conversion": "raw_decimal * 100",
+            "usage": (
+                "模型写金额和百分比时必须使用本对象中的 display；"
+                "原始金额和原始小数只供程序计算，不得直接拼接亿元或百分号。"
+            ),
+        },
+        "latest_amounts_100m_cny": latest_amounts,
+        "amount_series_100m_cny": amount_series,
+        "latest_percentages": latest_percentages,
+    }
+
+
 def build_company_analysis_snapshot(
     session: Session,
     company: Company,
@@ -505,6 +630,9 @@ def build_company_analysis_snapshot(
 
     financial_snapshots = [_financial_snapshot(item) for item in financials]
     financial_evidence_pack = build_financial_evidence_pack(financials)
+    financial_evidence_pack["model_display"] = _build_financial_model_display(
+        financial_evidence_pack
+    )
     announcement_snapshots = _select_announcement_snapshots(announcements)
     all_external_evidence_snapshots = [_evidence_snapshot(item) for item in evidence_items]
     selected_external_evidence_snapshots = _select_external_evidence_snapshots(
@@ -887,6 +1015,75 @@ def _apply_fact_ledger_overrides(
     if not patch:
         return output
     return output.model_copy(update=patch)
+
+
+def _apply_financial_unit_corrections(
+    output: AnalystAnalysisOutput,
+    data_snapshot: dict[str, object],
+) -> AnalystAnalysisOutput:
+    financial_pack = data_snapshot.get("financial_evidence_pack")
+    if not isinstance(financial_pack, dict):
+        return output
+    model_display = financial_pack.get("model_display")
+    if not isinstance(model_display, dict):
+        return output
+    percentages = model_display.get("latest_percentages")
+    if not isinstance(percentages, dict):
+        return output
+    cash_to_revenue = percentages.get("operating_cash_flow_to_revenue")
+    if not isinstance(cash_to_revenue, dict):
+        return output
+    raw_decimal = cash_to_revenue.get("raw_decimal")
+    display = cash_to_revenue.get("display")
+    if not _is_number(raw_decimal) or not isinstance(display, str):
+        return output
+
+    payload = output.model_dump(mode="json")
+    corrected = _correct_financial_unit_texts(
+        payload,
+        raw_decimal=float(raw_decimal),
+        display=display,
+    )
+    return AnalystAnalysisOutput.model_validate(corrected)
+
+
+def _correct_financial_unit_texts(
+    value: object,
+    *,
+    raw_decimal: float,
+    display: str,
+) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _correct_financial_unit_texts(
+                item,
+                raw_decimal=raw_decimal,
+                display=display,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _correct_financial_unit_texts(
+                item,
+                raw_decimal=raw_decimal,
+                display=display,
+            )
+            for item in value
+        ]
+    if not isinstance(value, str) or not any(
+        label in value for label in OPERATING_CASH_FLOW_TO_REVENUE_LABELS
+    ):
+        return value
+
+    corrected = value
+    candidates = {str(raw_decimal)}
+    for precision in range(1, 7):
+        candidates.add(f"{raw_decimal:.{precision}f}".rstrip("0").rstrip("."))
+    for candidate in sorted(candidates, key=len, reverse=True):
+        for suffix in ("%", "％", " %", " ％"):
+            corrected = corrected.replace(f"{candidate}{suffix}", display)
+    return corrected
 
 
 def _select_announcement_snapshots(items: list[Announcement]) -> list[dict[str, object]]:

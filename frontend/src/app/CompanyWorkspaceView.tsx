@@ -8,10 +8,10 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
-  LockKeyhole,
   PlayCircle,
   RefreshCw,
   Save,
+  Scale,
   Search,
   ShieldCheck,
   SlidersHorizontal,
@@ -24,6 +24,7 @@ import {
   useRef,
   useState,
   type Dispatch,
+  type FormEvent,
   type SetStateAction
 } from "react";
 
@@ -42,15 +43,20 @@ import {
   deleteEvidence,
   deleteCompanyAnalysisRun,
   deleteInvestmentMemo,
+  deletePriceDecisionRun,
   archiveInvestmentMemo,
+  createPriceDecisionRun,
   createValuationDraft,
   generateInvestmentMemo,
   refreshCompanyProfile,
   getInvestmentMemos,
   getLatestInvestmentMemo,
   getLatestValuationRun,
+  getValuationRuns,
+  getLatestPriceDecisionRun,
+  getPriceDecisionRuns,
+  importTextEvidence,
   runEvidenceModelSmokeTest,
-  lockValuationRun,
   recalculateValuationRun,
   runCompanyAnalysis,
   runCompanyAnalysisBatch,
@@ -70,6 +76,7 @@ import {
   type AnnouncementListResponse,
   type Company,
   type EvidenceSearchResponse,
+  type EvidenceSourceType,
   type EvidenceListResponse,
   type FinancialEvidencePack,
   type FinancialStatement,
@@ -78,8 +85,12 @@ import {
   type InvestmentMemoLatestResponse,
   type InvestmentMemoListResponse,
   type ModelConfigStatus,
+  type PriceDecisionListResponse,
+  type PriceDecisionRun,
+  type PriceDecisionLatestResponse,
   type ValuationRun,
-  type ValuationRunLatestResponse
+  type ValuationRunLatestResponse,
+  type ValuationRunListResponse
 } from "../services/api";
 
 type CompanyWorkspaceViewProps = {
@@ -98,6 +109,7 @@ export type CompanyWorkspaceSection =
   | "evidence"
   | "analyst-views"
   | "valuation-lab"
+  | "price-decision"
   | "memo";
 
 type CompanyWorkspaceData = {
@@ -113,6 +125,9 @@ type CompanyWorkspaceData = {
   latestMemo: InvestmentMemoLatestResponse;
   memoHistory: InvestmentMemoListResponse;
   latestValuationRun: ValuationRunLatestResponse;
+  valuationHistory: ValuationRunListResponse;
+  latestPriceDecision: PriceDecisionLatestResponse;
+  priceDecisionHistory: PriceDecisionListResponse;
 };
 
 type CompanyDetailState =
@@ -169,7 +184,18 @@ type MemoArchiveState = {
 };
 
 type ValuationActionState = {
-  status: "idle" | "saving" | "locking" | "success" | "error";
+  status: "idle" | "saving" | "success" | "error";
+  message: string | null;
+};
+
+type PriceDecisionActionState = {
+  status: "idle" | "saving" | "success" | "error";
+  message: string | null;
+};
+
+type PriceDecisionDeleteState = {
+  status: "idle" | "deleting" | "success" | "error";
+  runId: number | null;
   message: string | null;
 };
 
@@ -391,7 +417,8 @@ const workspaceSections: Array<{
   { id: "evidence", label: "Evidence", description: "外部证据" },
   { id: "analyst-views", label: "Analyst Views", description: "多视角分析" },
   { id: "memo", label: "Memo", description: "备忘录准备" },
-  { id: "valuation-lab", label: "Valuation Lab", description: "无锚定估值" }
+  { id: "valuation-lab", label: "Valuation Lab", description: "无锚定估值" },
+  { id: "price-decision", label: "Price Decision", description: "价格对照与投资决策" }
 ];
 
 export function CompanyWorkspaceView({
@@ -434,6 +461,11 @@ export function CompanyWorkspaceView({
     status: "idle",
     message: null
   });
+  const [evidenceImportTextState, setEvidenceImportTextState] =
+    useState<EvidenceImportTextState>({
+      status: "idle",
+      message: null
+    });
   const [modelSmokeTestState, setModelSmokeTestState] = useState<ModelSmokeTestState>({
     status: "idle",
     message: null
@@ -478,6 +510,10 @@ export function CompanyWorkspaceView({
     status: "idle",
     message: null
   });
+  const [priceDecisionActionState, setPriceDecisionActionState] =
+    useState<PriceDecisionActionState>({ status: "idle", message: null });
+  const [priceDecisionDeleteState, setPriceDecisionDeleteState] =
+    useState<PriceDecisionDeleteState>({ status: "idle", runId: null, message: null });
   const [profileRefreshState, setProfileRefreshState] = useState<ProfileRefreshState>({
     status: "idle",
     message: null
@@ -498,6 +534,7 @@ export function CompanyWorkspaceView({
     setAnnouncementDeleteState({ status: "idle", announcementId: null, message: null });
     setAnnouncementSummaryState({ status: "idle", message: null });
     setEvidenceSearchState({ status: "idle", message: null });
+    setEvidenceImportTextState({ status: "idle", message: null });
     setModelSmokeTestState({ status: "idle", message: null });
     setEvidenceDeleteState({ status: "idle", evidenceId: null, message: null });
     setAnalystRunState({ status: "idle", profileId: null, message: null });
@@ -512,6 +549,8 @@ export function CompanyWorkspaceView({
     setMemoDeleteState({ status: "idle", memoId: null, message: null });
     setMemoArchiveState({ status: "idle", memoId: null, message: null });
     setValuationActionState({ status: "idle", message: null });
+    setPriceDecisionActionState({ status: "idle", message: null });
+    setPriceDecisionDeleteState({ status: "idle", runId: null, message: null });
     setProfileRefreshState({ status: "idle", message: null });
     analystRunAbortControllerRef.current?.abort();
     analystRunAbortControllerRef.current = null;
@@ -607,7 +646,19 @@ export function CompanyWorkspaceView({
       withOptionalWorkspaceData(getLatestValuationRun(companyId, controller.signal), {
         company_id: companyId,
         item: null
-      })
+      }),
+      withOptionalWorkspaceData(
+        getValuationRuns(companyId, { limit: 20, offset: 0, signal: controller.signal }),
+        { items: [], total: 0, limit: 20, offset: 0 }
+      ),
+      withOptionalWorkspaceData(getLatestPriceDecisionRun(companyId, controller.signal), {
+        company_id: companyId,
+        item: null
+      }),
+      withOptionalWorkspaceData(
+        getPriceDecisionRuns(companyId, { limit: 20, offset: 0, signal: controller.signal }),
+        { items: [], total: 0, limit: 20, offset: 0 }
+      )
     ])
       .then(
         ([
@@ -622,7 +673,10 @@ export function CompanyWorkspaceView({
           failedAnalysisRuns,
           latestMemo,
           memoHistory,
-          latestValuationRun
+          latestValuationRun,
+          valuationHistory,
+          latestPriceDecision,
+          priceDecisionHistory
         ]) => {
         if (controller.signal.aborted) {
           return;
@@ -642,7 +696,10 @@ export function CompanyWorkspaceView({
             failedAnalysisRuns: toAnalysisRunListResponse(failedAnalysisRuns),
             latestMemo,
             memoHistory,
-            latestValuationRun
+            latestValuationRun,
+            valuationHistory,
+            latestPriceDecision,
+            priceDecisionHistory
           },
           error: null
         });
@@ -711,7 +768,10 @@ export function CompanyWorkspaceView({
     failedAnalysisRuns,
     latestMemo,
     memoHistory,
-    latestValuationRun
+    latestValuationRun,
+    valuationHistory,
+    latestPriceDecision,
+    priceDecisionHistory
   } = detailState.data;
   const readiness = buildResearchReadiness({
     financials,
@@ -874,6 +934,59 @@ export function CompanyWorkspaceView({
       setEvidenceSearchState({
         status: "error",
         message: error instanceof Error ? error.message : "外部信息搜索失败"
+      });
+    }
+  }
+
+  async function handleImportTextEvidence(form: EvidenceImportTextForm) {
+    const content = form.content.trim();
+    if (!content) {
+      setEvidenceImportTextState({
+        status: "error",
+        message: "请输入要导入的正文内容"
+      });
+      return;
+    }
+
+    setEvidenceImportTextState({ status: "importing", message: "正在结构化导入文本" });
+
+    try {
+      const importResult = await importTextEvidence(company.id, {
+        title: optionalText(form.title),
+        content,
+        source: optionalText(form.source),
+        source_url: optionalText(form.source_url),
+        published_at: form.published_at ? `${form.published_at}T00:00:00+08:00` : undefined,
+        source_type: form.source_type,
+        notes: optionalText(form.notes)
+      });
+      const refreshedEvidence = await getCompanyEvidence(company.id, {
+        limit: 10,
+        offset: 0
+      });
+
+      setDetailState((currentState) => {
+        if (currentState.status !== "ready") {
+          return currentState;
+        }
+
+        return {
+          status: "ready",
+          data: {
+            ...currentState.data,
+            evidence: refreshedEvidence
+          },
+          error: null
+        };
+      });
+      setEvidenceImportTextState({
+        status: "success",
+        message: formatEvidenceImportTextMessage(importResult)
+      });
+    } catch (error: unknown) {
+      setEvidenceImportTextState({
+        status: "error",
+        message: error instanceof Error ? error.message : "导入文本失败"
       });
     }
   }
@@ -1627,39 +1740,80 @@ export function CompanyWorkspaceView({
     }
   }
 
-  async function handleLockValuation(runId: number) {
-    setValuationActionState({
-      status: "locking",
-      message: "正在锁定无锚定估值"
+  async function handleCreatePriceDecision(
+    valuationRunId: number,
+    safetyMarginOverride: number | null
+  ) {
+    setPriceDecisionActionState({
+      status: "saving",
+      message: latestPriceDecision.item ? "正在重新计算价格决策" : "正在生成价格决策"
     });
 
     try {
-      const result = await lockValuationRun(runId);
+      const result = await createPriceDecisionRun(company.id, {
+        valuation_run_id: valuationRunId,
+        safety_margin_override: safetyMarginOverride
+      });
+      const [refreshedLatest, refreshedHistory] = await loadPriceDecisions(company.id);
       setDetailState((currentState) => {
         if (currentState.status !== "ready") {
           return currentState;
         }
-
         return {
           status: "ready",
           data: {
             ...currentState.data,
-            latestValuationRun: {
-              company_id: company.id,
-              item: result.item
-            }
+            latestPriceDecision: refreshedLatest,
+            priceDecisionHistory: refreshedHistory
           },
           error: null
         };
       });
-      setValuationActionState({
+      setPriceDecisionActionState({
         status: "success",
-        message: `已锁定无锚定估值 #${result.item.id}`
+        message: `已生成价格决策 v${result.item.version_no}`
       });
     } catch (error: unknown) {
-      setValuationActionState({
+      setPriceDecisionActionState({
         status: "error",
-        message: getUnknownErrorMessage(error, "无锚定估值锁定失败")
+        message: getUnknownErrorMessage(error, "价格决策生成失败")
+      });
+    }
+  }
+
+  async function handleDeletePriceDecision(runId: number) {
+    setPriceDecisionDeleteState({
+      status: "deleting",
+      runId,
+      message: "正在删除价格决策版本"
+    });
+    try {
+      await deletePriceDecisionRun(runId);
+      const [refreshedLatest, refreshedHistory] = await loadPriceDecisions(company.id);
+      setDetailState((currentState) => {
+        if (currentState.status !== "ready") {
+          return currentState;
+        }
+        return {
+          status: "ready",
+          data: {
+            ...currentState.data,
+            latestPriceDecision: refreshedLatest,
+            priceDecisionHistory: refreshedHistory
+          },
+          error: null
+        };
+      });
+      setPriceDecisionDeleteState({
+        status: "success",
+        runId: null,
+        message: "已删除价格决策版本"
+      });
+    } catch (error: unknown) {
+      setPriceDecisionDeleteState({
+        status: "error",
+        runId,
+        message: getUnknownErrorMessage(error, "价格决策删除失败")
       });
     }
   }
@@ -1731,32 +1885,26 @@ export function CompanyWorkspaceView({
             <dt>档案更新时间</dt>
             <dd>{formatDateTime(company.updated_at)}</dd>
           </div>
-          {activeSection !== "valuation-lab" ? (
-            <div>
-              <dt>行情更新时间</dt>
-              <dd>
-                {company.market_data_updated_at
-                  ? formatDateTime(company.market_data_updated_at)
-                  : "待更新"}
-              </dd>
-            </div>
-          ) : null}
+          <div>
+            <dt>行情更新时间</dt>
+            <dd>
+              {company.market_data_updated_at
+                ? formatDateTime(company.market_data_updated_at)
+                : "待更新"}
+            </dd>
+          </div>
         </dl>
-        {activeSection !== "valuation-lab" ? (
-          <>
-            <h4>基本信息</h4>
-            <dl className="market-facts">
-              <MetricFact label="市值" value={formatMoney(company.market_cap)} />
-              <MetricFact label="价格" value={formatPrice(company.current_price)} />
-              <MetricFact label="TTM市盈率" value={formatRatio(company.pe_ttm)} />
-              <MetricFact label="动态市盈率" value={formatRatio(company.pe_dynamic)} />
-              <MetricFact label="静态市盈率" value={formatRatio(company.pe_static)} />
-              <MetricFact label="市净率" value={formatRatio(company.pb_ratio)} />
-              <MetricFact label="市销率" value={formatRatio(company.ps_ratio)} />
-              <MetricFact label="TTM股息率" value={formatPercent(company.dividend_yield_ttm)} />
-            </dl>
-          </>
-        ) : null}
+        <h4>基本信息</h4>
+        <dl className="market-facts">
+          <MetricFact label="市值" value={formatMoney(company.market_cap)} />
+          <MetricFact label="价格" value={formatPrice(company.current_price)} />
+          <MetricFact label="TTM市盈率" value={formatRatio(company.pe_ttm)} />
+          <MetricFact label="动态市盈率" value={formatRatio(company.pe_dynamic)} />
+          <MetricFact label="静态市盈率" value={formatRatio(company.pe_static)} />
+          <MetricFact label="市净率" value={formatRatio(company.pb_ratio)} />
+          <MetricFact label="市销率" value={formatRatio(company.ps_ratio)} />
+          <MetricFact label="TTM股息率" value={formatPercent(company.dividend_yield_ttm)} />
+        </dl>
       </section>
 
       <WorkspaceSectionTabs activeSection={activeSection} onSectionChange={onSectionChange} />
@@ -1795,9 +1943,11 @@ export function CompanyWorkspaceView({
           evidence={evidence}
           modelConfig={modelConfig}
           searchState={evidenceSearchState}
+          importTextState={evidenceImportTextState}
           modelSmokeTestState={modelSmokeTestState}
           deleteState={evidenceDeleteState}
           onSearchEvidence={handleSearchEvidence}
+          onImportTextEvidence={handleImportTextEvidence}
           onSmokeTestModel={handleSmokeTestModel}
           onDeleteEvidence={handleDeleteEvidence}
         />
@@ -1821,13 +1971,29 @@ export function CompanyWorkspaceView({
 
       {activeSection === "valuation-lab" ? (
         <ValuationLabPanel
+          analystProfiles={analystProfiles}
           latestMemo={latestMemo.item}
           latestValuationRun={latestValuationRun.item}
           financialEvidencePack={financialEvidencePack}
           actionState={valuationActionState}
           onCreateDraft={handleCreateValuationDraft}
           onRecalculate={handleRecalculateValuation}
-          onLock={handleLockValuation}
+        />
+      ) : null}
+
+      {activeSection === "price-decision" ? (
+        <PriceDecisionPanel
+          company={company}
+          latestValuationRun={latestValuationRun.item}
+          valuationHistory={valuationHistory}
+          latestRun={latestPriceDecision.item}
+          history={priceDecisionHistory}
+          actionState={priceDecisionActionState}
+          deleteState={priceDecisionDeleteState}
+          onGenerate={handleCreatePriceDecision}
+          onDelete={handleDeletePriceDecision}
+          onOpenValuation={() => onSectionChange("valuation-lab")}
+          onRefreshCompany={handleRefreshCompanyProfile}
         />
       ) : null}
 
@@ -1868,6 +2034,22 @@ type EvidenceSearchState =
   | { status: "searching"; message: string }
   | { status: "success"; message: string }
   | { status: "error"; message: string };
+
+type EvidenceImportTextState =
+  | { status: "idle"; message: null }
+  | { status: "importing"; message: string }
+  | { status: "success"; message: string }
+  | { status: "error"; message: string };
+
+type EvidenceImportTextForm = {
+  title: string;
+  content: string;
+  source: string;
+  source_url: string;
+  published_at: string;
+  source_type: EvidenceSourceType;
+  notes: string;
+};
 
 type AnnouncementSyncState =
   | { status: "idle"; message: null }
@@ -2065,13 +2247,13 @@ type MemoPreparationPanelProps = {
 };
 
 type ValuationLabPanelProps = {
+  analystProfiles: AnalystProfileListResponse;
   latestMemo: InvestmentMemo | null;
   latestValuationRun: ValuationRun | null;
   financialEvidencePack: FinancialEvidencePack;
   actionState: ValuationActionState;
   onCreateDraft: (assumptions?: Record<string, unknown>) => void;
   onRecalculate: (runId: number, assumptions: Record<string, unknown>) => void;
-  onLock: (runId: number) => void;
 };
 
 type ValuationScenarioName = "conservative" | "base" | "optimistic";
@@ -2095,30 +2277,54 @@ const valuationAssumptionFields = [
   { key: "terminal_growth_rate", label: "永续增长率" }
 ] as const;
 
+const valuationModelWeightFields = [
+  { key: "owner_earnings", label: "所有者盈余" },
+  { key: "dcf", label: "DCF" },
+  { key: "residual_income", label: "剩余收益" },
+  { key: "dividend_discount", label: "分红折现" },
+  { key: "asset_value", label: "资产价值" }
+] as const;
+
+const defaultValuationModelWeights = {
+  owner_earnings: 35,
+  dcf: 35,
+  residual_income: 15,
+  dividend_discount: 10,
+  asset_value: 5
+} as const;
+
 type ValuationScenarioDraft = Record<
   ValuationScenarioName,
   Record<(typeof valuationAssumptionFields)[number]["key"], number | null>
 >;
 
+type ValuationModelWeightsDraft = Record<
+  (typeof valuationModelWeightFields)[number]["key"],
+  number | null
+>;
+
 function ValuationLabPanel({
+  analystProfiles,
   latestMemo,
   latestValuationRun,
   financialEvidencePack,
   actionState,
   onCreateDraft,
-  onRecalculate,
-  onLock
+  onRecalculate
 }: ValuationLabPanelProps) {
   const [scenarioDraft, setScenarioDraft] = useState<ValuationScenarioDraft>(() =>
     buildEditableValuationScenarios(latestValuationRun)
   );
+  const [modelWeightsDraft, setModelWeightsDraft] = useState<ValuationModelWeightsDraft>(() =>
+    buildEditableValuationModelWeights(latestValuationRun)
+  );
 
   useEffect(() => {
     setScenarioDraft(buildEditableValuationScenarios(latestValuationRun));
+    setModelWeightsDraft(buildEditableValuationModelWeights(latestValuationRun));
   }, [latestValuationRun]);
 
   const isSaving = actionState.status === "saving";
-  const isLocking = actionState.status === "locking";
   const valuationInputs = latestValuationRun?.valuation_inputs ?? {};
   const results = latestValuationRun?.results ?? {};
   const inputGaps = latestValuationRun
@@ -2139,10 +2345,23 @@ function ValuationLabPanel({
   const analystWeights = readRecordArray(matrixSnapshot.analyst_weights);
   const ruleImpacts = readRecordArray(matrixSnapshot.rule_impacts);
   const priceReferenceRules = readRecordArray(matrixSnapshot.price_reference_rules);
+  const analystProfileOrder = new Map(
+    analystProfiles.items.map((profile, index) => [profile.id, index])
+  );
+  const analystOrder = (item: Record<string, unknown>) =>
+    analystProfileOrder.get(String(item.profile_id ?? "")) ?? Number.MAX_SAFE_INTEGER;
+  const orderedAnalystWeights = [...analystWeights].sort(
+    (left, right) => analystOrder(left) - analystOrder(right)
+  );
+  const orderedPriceReferenceRules = [...priceReferenceRules].sort(
+    (left, right) => analystOrder(left) - analystOrder(right)
+  );
   const parameterContributions = readPlainRecord(matrixSnapshot.parameter_contributions);
   const confidenceReasons = normalizeStringList(latestValuationRun?.confidence_summary.reasons);
   const isCalculated =
     resultStatus === "calculated_after_user_confirmation" || methodResults.length > 0;
+  const modelWeightTotal = sumValuationModelWeights(modelWeightsDraft);
+  const modelWeightValidation = validateValuationModelWeights(modelWeightsDraft);
 
   function updateScenarioDraft(
     scenarioName: ValuationScenarioName,
@@ -2158,6 +2377,16 @@ function ValuationLabPanel({
     }));
   }
 
+  function updateModelWeightDraft(
+    fieldName: (typeof valuationModelWeightFields)[number]["key"],
+    value: string
+  ) {
+    setModelWeightsDraft((currentDraft) => ({
+      ...currentDraft,
+      [fieldName]: parseAssumptionInput(value)
+    }));
+  }
+
   return (
     <section className="data-panel valuation-lab-panel" aria-labelledby="valuation-lab-heading">
       <div className="data-panel__heading">
@@ -2170,7 +2399,7 @@ function ValuationLabPanel({
           <button
             className="panel-action"
             type="button"
-            disabled={!latestMemo || isSaving || isLocking}
+            disabled={!latestMemo || isSaving}
             onClick={() => onCreateDraft()}
           >
             <PlayCircle aria-hidden="true" size={15} />
@@ -2179,12 +2408,9 @@ function ValuationLabPanel({
         </div>
       </div>
 
-      <div className="memo-boundary-note">
-        010 直接读取最新成功的 008 规则矩阵；Memo 仅作摘要上下文。参数确认前不计算估值。
-      </div>
-
       {actionState.message ? (
         <div
+          aria-live="polite"
           className={
             actionState.status === "error" ? "sync-message sync-message--error" : "sync-message"
           }
@@ -2225,7 +2451,10 @@ function ValuationLabPanel({
               label="估值草稿"
               value={latestValuationRun ? `#${latestValuationRun.id}` : "待生成"}
             />
-            <MetricFact label="状态" value={latestValuationRun?.status ?? "未生成"} />
+            <MetricFact
+              label="状态"
+              value={formatValuationRunStatus(latestValuationRun?.status)}
+            />
             <MetricFact
               label="置信度"
               value={
@@ -2304,31 +2533,57 @@ function ValuationLabPanel({
                 </div>
               ))}
             </div>
+            <div className="valuation-model-weight-section">
+              <div className="valuation-model-weight-heading">
+                <strong>模型配比</strong>
+                <span className={modelWeightValidation ? "valuation-weight-total--error" : ""}>
+                  合计 {formatDraftPercent(modelWeightTotal)}
+                </span>
+              </div>
+              <div className="valuation-model-weight-grid">
+                {valuationModelWeightFields.map((field) => (
+                  <label key={field.key}>
+                    <span>{field.label}</span>
+                    <span className="valuation-model-weight-input">
+                      <input
+                        aria-label={`${field.label}权重`}
+                        aria-invalid={modelWeightValidation ? "true" : "false"}
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={formatAssumptionInputValue(modelWeightsDraft[field.key])}
+                        onChange={(event) =>
+                          updateModelWeightDraft(field.key, event.currentTarget.value)
+                        }
+                      />
+                      <span>%</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {modelWeightValidation ? (
+                <div className="valuation-weight-error" role="alert">
+                  {modelWeightValidation}
+                </div>
+              ) : null}
+            </div>
             <div className="valuation-action-row">
               <button
                 className="panel-action"
                 type="button"
-                disabled={isSaving || isLocking}
+                aria-busy={isSaving}
+                disabled={isSaving || Boolean(modelWeightValidation)}
                 onClick={() =>
-                  onRecalculate(latestValuationRun.id, buildValuationAssumptionPayload(scenarioDraft))
+                  onRecalculate(
+                    latestValuationRun.id,
+                    buildValuationAssumptionPayload(scenarioDraft, modelWeightsDraft)
+                  )
                 }
+                title="确认当前参数并计算估值"
               >
                 <Save aria-hidden="true" size={15} />
                 <span>{isSaving ? "计算中" : "确认参数并计算"}</span>
-              </button>
-              <button
-                className="panel-action"
-                type="button"
-                disabled={
-                  latestValuationRun.status === "locked" ||
-                  !isCalculated ||
-                  isSaving ||
-                  isLocking
-                }
-                onClick={() => onLock(latestValuationRun.id)}
-              >
-                <LockKeyhole aria-hidden="true" size={15} />
-                <span>{isLocking ? "锁定中" : "锁定估值"}</span>
               </button>
             </div>
           </article>
@@ -2338,9 +2593,9 @@ function ValuationLabPanel({
               <BrainCircuit aria-hidden="true" size={17} />
               <strong>008 规则到参数审计</strong>
             </div>
-            {analystWeights.length > 0 ? (
+            {orderedAnalystWeights.length > 0 ? (
               <div className="valuation-method-list">
-                {analystWeights.map((analyst) => {
+                {orderedAnalystWeights.map((analyst) => {
                   const analystRules = ruleImpacts.filter(
                     (rule) => rule.source_run_id === analyst.source_run_id
                   );
@@ -2365,11 +2620,11 @@ function ValuationLabPanel({
             ) : (
               <div className="inline-empty">当前没有可用的最新成功分析师规则矩阵。</div>
             )}
-            {priceReferenceRules.length > 0 ? (
+            {orderedPriceReferenceRules.length > 0 ? (
               <>
                 <strong>价格/安全边际参考信号</strong>
                 <ul className="compact-fact-list">
-                  {priceReferenceRules.map((rule) => (
+                  {orderedPriceReferenceRules.map((rule) => (
                     <li key={`price-${String(rule.source_run_id)}-${String(rule.rule_id)}`}>
                       {String(rule.profile_name)} · {String(rule.rule_label)}：{formatRuleStatus(rule.status)}，展示但不参与参数计算
                     </li>
@@ -2451,6 +2706,323 @@ function ValuationLabPanel({
   );
 }
 
+type PriceDecisionPanelProps = {
+  company: Company;
+  latestValuationRun: ValuationRun | null;
+  valuationHistory: ValuationRunListResponse;
+  latestRun: PriceDecisionRun | null;
+  history: PriceDecisionListResponse;
+  actionState: PriceDecisionActionState;
+  deleteState: PriceDecisionDeleteState;
+  onGenerate: (valuationRunId: number, safetyMarginOverride: number | null) => void;
+  onDelete: (runId: number) => void;
+  onOpenValuation: () => void;
+  onRefreshCompany: () => void;
+};
+
+function PriceDecisionPanel({
+  company,
+  latestValuationRun,
+  valuationHistory,
+  latestRun,
+  history,
+  actionState,
+  deleteState,
+  onGenerate,
+  onDelete,
+  onOpenValuation,
+  onRefreshCompany
+}: PriceDecisionPanelProps) {
+  const [useOverride, setUseOverride] = useState(
+    latestRun?.safety_margin_override !== null && latestRun?.safety_margin_override !== undefined
+  );
+  const [overridePercent, setOverridePercent] = useState(() =>
+    latestRun?.safety_margin_override === null || latestRun?.safety_margin_override === undefined
+      ? ""
+      : String(latestRun.safety_margin_override * 100)
+  );
+  const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
+
+  useEffect(() => {
+    const override = latestRun?.safety_margin_override;
+    setUseOverride(override !== null && override !== undefined);
+    setOverridePercent(override === null || override === undefined ? "" : String(override * 100));
+  }, [latestRun]);
+
+  const calculatedValuation = [latestValuationRun, ...valuationHistory.items].find(
+    (run, index, runs) =>
+      run !== null &&
+      runs.findIndex((candidate) => candidate?.id === run.id) === index &&
+      run.results.status === "calculated_after_user_confirmation"
+  ) ?? null;
+  const selectedHistoryRun = history.items.find((run) => run.id === selectedHistoryId) ?? null;
+  const parsedOverride = overridePercent.trim() === "" ? Number.NaN : Number(overridePercent);
+  const overrideError =
+    useOverride && (!Number.isFinite(parsedOverride) || parsedOverride < 0 || parsedOverride > 50)
+      ? "覆盖安全边际必须位于 0%-50%。"
+      : null;
+  const missingValuation = calculatedValuation === null;
+  const missingPrice = company.current_price === null || company.current_price <= 0;
+  const missingPriceTime = company.market_data_updated_at === null;
+  const isSaving = actionState.status === "saving";
+
+  return (
+    <section className="data-panel price-decision-panel" aria-labelledby="price-decision-heading">
+      <div className="data-panel__heading">
+        <div>
+          <Scale aria-hidden="true" size={20} />
+          <h3 id="price-decision-heading">价格对照与投资决策</h3>
+        </div>
+        <div className="data-panel__actions">
+          <span>011_v1</span>
+          <button
+            className="panel-action"
+            type="button"
+            disabled={missingValuation || missingPrice || missingPriceTime || isSaving || Boolean(overrideError)}
+            onClick={() => {
+              if (calculatedValuation) {
+                onGenerate(
+                  calculatedValuation.id,
+                  useOverride ? parsedOverride / 100 : null
+                );
+              }
+            }}
+          >
+            <RefreshCw aria-hidden="true" size={15} />
+            <span>{isSaving ? "计算中" : latestRun ? "重新计算" : "生成价格决策"}</span>
+          </button>
+        </div>
+      </div>
+
+      {actionState.message ? (
+        <div
+          aria-live="polite"
+          className={
+            actionState.status === "error" ? "sync-message sync-message--error" : "sync-message"
+          }
+        >
+          {actionState.message}
+        </div>
+      ) : null}
+      {deleteState.message ? (
+        <div
+          aria-live="polite"
+          className={
+            deleteState.status === "error" ? "sync-message sync-message--error" : "sync-message"
+          }
+        >
+          {deleteState.message}
+        </div>
+      ) : null}
+
+      {missingValuation ? (
+        <div className="price-decision-guidance" role="status">
+          <strong>缺少已完成计算的 010 估值</strong>
+          <p>先在无锚定估值中确认参数并计算，估值记录保持 draft 不影响价格决策。</p>
+          <button className="panel-action" type="button" onClick={onOpenValuation}>
+            <Calculator aria-hidden="true" size={15} />
+            <span>前往无锚定估值</span>
+          </button>
+        </div>
+      ) : null}
+      {missingPrice || missingPriceTime ? (
+        <div className="price-decision-guidance" role="status">
+          <strong>{missingPrice ? "缺少当前价格" : "缺少价格更新时间"}</strong>
+          <p>先更新公司基本信息和行情数据，再生成价格决策。</p>
+          <button className="panel-action" type="button" onClick={onRefreshCompany}>
+            <RefreshCw aria-hidden="true" size={15} />
+            <span>更新公司行情</span>
+          </button>
+        </div>
+      ) : null}
+
+      <div className="price-decision-context">
+        <article className="valuation-card">
+          <div className="valuation-card__heading">
+            <Calculator aria-hidden="true" size={17} />
+            <strong>本次绑定</strong>
+          </div>
+          <dl className="valuation-input-grid">
+            <MetricFact
+              label="估值版本"
+              value={calculatedValuation ? `#${calculatedValuation.id}` : "待完成"}
+            />
+            <MetricFact
+              label="估值结果"
+              value={
+                calculatedValuation?.results.status === "calculated_after_user_confirmation"
+                  ? "已确认并计算"
+                  : "待完成"
+              }
+            />
+            <MetricFact label="当前价格" value={formatPrice(company.current_price)} />
+            <MetricFact
+              label="价格时间"
+              value={company.market_data_updated_at ? formatDateTime(company.market_data_updated_at) : "待更新"}
+            />
+          </dl>
+        </article>
+
+        <article className="valuation-card">
+          <div className="valuation-card__heading">
+            <SlidersHorizontal aria-hidden="true" size={17} />
+            <strong>动态安全边际</strong>
+          </div>
+          <dl className="valuation-input-grid">
+            <MetricFact
+              label="系统建议值"
+              value={latestRun ? formatPercent(latestRun.suggested_safety_margin) : "生成后显示"}
+            />
+            <MetricFact
+              label="用户覆盖值"
+              value={
+                latestRun?.safety_margin_override === null || latestRun?.safety_margin_override === undefined
+                  ? "未覆盖"
+                  : formatPercent(latestRun.safety_margin_override)
+              }
+            />
+            <MetricFact
+              label="最终安全边际"
+              value={latestRun ? formatPercent(latestRun.effective_safety_margin) : "待计算"}
+            />
+            <MetricFact
+              label="分析师综合分"
+              value={latestRun ? formatSignedNumber(latestRun.analyst_score_total) : "待读取"}
+            />
+          </dl>
+          <label className="price-decision-override-toggle">
+            <input
+              type="checkbox"
+              checked={useOverride}
+              onChange={(event) => setUseOverride(event.currentTarget.checked)}
+            />
+            <span>手动覆盖安全边际</span>
+          </label>
+          {useOverride ? (
+            <label className="price-decision-override-input">
+              <span>覆盖安全边际（%）</span>
+              <span>
+                <input
+                  aria-label="覆盖安全边际（%）"
+                  aria-invalid={Boolean(overrideError)}
+                  type="number"
+                  min="0"
+                  max="50"
+                  step="0.1"
+                  value={overridePercent}
+                  onChange={(event) => setOverridePercent(event.currentTarget.value)}
+                />
+                <span>%</span>
+              </span>
+            </label>
+          ) : null}
+          {overrideError ? <p className="valuation-weight-error" role="alert">{overrideError}</p> : null}
+        </article>
+      </div>
+
+      {latestRun ? <PriceDecisionResult run={latestRun} /> : (
+        <div className="inline-empty">
+          尚未生成价格决策。系统只给出建议买入上限和价格状态，不推断持仓或仓位。
+        </div>
+      )}
+
+      <article className="price-decision-history" aria-label="价格决策历史记录">
+        <div className="memo-latest__heading">
+          <strong>历史版本</strong>
+          <span>{history.total} 条</span>
+        </div>
+        {history.items.length > 0 ? (
+          <ul>
+            {history.items.map((run) => (
+              <li key={run.id}>
+                <div>
+                  <strong>v{run.version_no} · {run.price_status}</strong>
+                  <span>估值 #{run.valuation_run_id} · {formatDateTime(run.created_at)}</span>
+                </div>
+                <button
+                  className="panel-action panel-action--icon"
+                  type="button"
+                  title={`查看价格决策 v${run.version_no}`}
+                  aria-label={`查看价格决策 v${run.version_no}`}
+                  onClick={() => setSelectedHistoryId((current) => current === run.id ? null : run.id)}
+                >
+                  {selectedHistoryId === run.id ? <ChevronDown aria-hidden="true" size={15} /> : <ChevronRight aria-hidden="true" size={15} />}
+                  <span>{selectedHistoryId === run.id ? "收起" : "查看"}</span>
+                </button>
+                <button
+                  className="panel-action panel-action--danger panel-action--icon"
+                  type="button"
+                  title={`删除价格决策 v${run.version_no}`}
+                  aria-label={`删除价格决策 v${run.version_no}`}
+                  disabled={deleteState.status === "deleting"}
+                  onClick={() => onDelete(run.id)}
+                >
+                  <Trash2 aria-hidden="true" size={15} />
+                  <span>{deleteState.status === "deleting" && deleteState.runId === run.id ? "删除中" : "删除"}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="inline-empty inline-empty--compact">暂无历史版本。</div>
+        )}
+        {selectedHistoryRun ? <PriceDecisionResult run={selectedHistoryRun} compact /> : null}
+      </article>
+    </section>
+  );
+}
+
+function PriceDecisionResult({ run, compact = false }: { run: PriceDecisionRun; compact?: boolean }) {
+  const memoSnapshot = readPlainRecord(run.input_snapshot.memo);
+  return (
+    <article className={compact ? "price-decision-result price-decision-result--compact" : "price-decision-result"}>
+      <div className="price-decision-result__heading">
+        <div>
+          <strong>{run.price_status}</strong>
+          <span>估值 #{run.valuation_run_id} · Memo v{String(memoSnapshot.version_no ?? run.memo_id)}</span>
+        </div>
+        <span className={`price-decision-status price-decision-status--${priceDecisionStatusTone(run.price_status)}`}>
+          {run.price_status}
+        </span>
+      </div>
+      <dl className="price-decision-key-metrics">
+        <MetricFact label="当前价格" value={formatPrice(run.current_price)} />
+        <MetricFact label="建议买入上限" value={formatPrice(run.suggested_buy_price)} />
+        <MetricFact label="当前安全边际" value={formatSignedPercent(run.current_margin)} />
+        <MetricFact label="最终安全边际" value={formatPercent(run.effective_safety_margin)} />
+      </dl>
+      <div className="price-decision-scenarios">
+        {valuationScenarioNames.map((scenario) => (
+          <div key={scenario}>
+            <strong>{valuationScenarioLabels[scenario]}</strong>
+            <span>内在价值 {formatPrice(run.intrinsic_values_per_share[scenario])}</span>
+            <span>买入价 {formatPrice(run.scenario_buy_prices[scenario])}</span>
+          </div>
+        ))}
+      </div>
+      <dl className="valuation-input-grid">
+        <MetricFact label="价格时间" value={formatDateTime(run.market_data_updated_at)} />
+        <MetricFact label="生成时间" value={formatDateTime(run.created_at)} />
+      </dl>
+    </article>
+  );
+}
+
+function priceDecisionStatusTone(status: string): "target" | "below" | "range" | "above" {
+  if (status === "达到目标安全边际") return "target";
+  if (status === "低于内在价值但安全边际不足") return "below";
+  if (status === "处于估值区间上半部") return "range";
+  return "above";
+}
+
+function formatSignedPercent(value: number): string {
+  return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
+}
+
+function formatSignedNumber(value: number): string {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
 function MemoPreparationPanel({
   memoPreparation,
   latestMemo,
@@ -2489,10 +3061,6 @@ function MemoPreparationPanel({
             <span>{isGenerating ? "生成中" : "生成备忘录"}</span>
           </button>
         </div>
-      </div>
-
-      <div className="memo-boundary-note">
-        尚未进入 010 无锚定估值和 011 价格决策；当前内容不是买卖或仓位建议。
       </div>
 
       {generateState.message ? (
@@ -2540,20 +3108,7 @@ function MemoPreparationPanel({
           <article>
             <h4>{latestMemo.title}</h4>
             <p>{readMemoExecutiveSummary(latestMemo)}</p>
-            <dl className="memo-facts">
-              <div>
-                <dt>研究结论</dt>
-                <dd>{latestMemo.conclusion}</dd>
-              </div>
-              <div>
-                <dt>来源视角</dt>
-                <dd>{latestMemo.source_analyst_run_ids.length} 个</dd>
-              </div>
-              <div>
-                <dt>状态</dt>
-                <dd>{latestMemo.status}</dd>
-              </div>
-            </dl>
+            <MemoAnalystScorecard memo={latestMemo} />
             {renderMemoListSection("核心判断", latestMemo.sections.core_thesis)}
             {renderMemoListSection("关键风险", latestMemo.sections.key_risks)}
             {renderMemoListSection("估值输入队列", readValuationQueue(latestMemo))}
@@ -2631,6 +3186,7 @@ function MemoPreparationPanel({
               v{selectedHistoryMemo.version_no} {selectedHistoryMemo.title}
             </h4>
             <p>{readMemoExecutiveSummary(selectedHistoryMemo)}</p>
+            <MemoAnalystScorecard memo={selectedHistoryMemo} />
             {renderMemoListSection("核心判断", selectedHistoryMemo.sections.core_thesis)}
             {renderMemoListSection("关键风险", selectedHistoryMemo.sections.key_risks)}
             {renderMemoListSection("数据缺口", selectedHistoryMemo.sections.data_gaps)}
@@ -2700,6 +3256,90 @@ function MemoPrepBlock({
   );
 }
 
+function MemoAnalystScorecard({ memo }: { memo: InvestmentMemo }) {
+  const scorecard = readPlainRecord(memo.sections.analyst_scorecard);
+  const analystItems = readRecordArray(scorecard.analyst_items);
+  const totalScore = readNumber(scorecard.total_score);
+  const suggestedSafetyMargin = readNumber(scorecard.suggested_safety_margin);
+  const coverage = readPlainRecord(scorecard.coverage);
+  if (analystItems.length === 0 || totalScore === null) {
+    return null;
+  }
+
+  return (
+    <div className="memo-analyst-scorecard">
+      <div className="memo-analyst-scorecard__heading">
+        <strong>分析师评分</strong>
+        <span className={totalScore < 0 ? "is-negative" : totalScore > 0 ? "is-positive" : ""}>
+          {formatSignedScore(totalScore)}
+        </span>
+      </div>
+      <p>
+        {String(coverage.successful_profiles ?? 0)}/{String(coverage.total_profiles ?? 10)} 个视角，
+        {String(coverage.known_rules ?? 0)}/{String(coverage.total_rules ?? 40)} 个已判断指标，40 项等权
+        {suggestedSafetyMargin === null
+          ? null
+          : `，动态安全边际 ${formatPercent(suggestedSafetyMargin)}`}
+      </p>
+      <div className="memo-analyst-scorecard__table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>分析师</th>
+              <th>四指标</th>
+              <th>指标占比</th>
+              <th>等权贡献</th>
+            </tr>
+          </thead>
+          <tbody>
+            {analystItems.map((item) => {
+              const available = item.availability === "success";
+              const profileId = String(item.profile_id ?? "unknown");
+              return (
+                <tr key={profileId}>
+                  <td>{String(item.profile_name ?? profileId)}</td>
+                  <td>
+                    {formatSignedScore(readNumber(item.rule_score_total) ?? 0)}
+                    {available ? null : "（缺失）"}
+                  </td>
+                  <td>{formatPercent(readNumber(item.analyst_weight))}</td>
+                  <td>{formatSignedScore(readNumber(item.weighted_score) ?? 0)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <details className="memo-analyst-scorecard__details">
+        <summary>40 项指标明细</summary>
+        <ul>
+          {analystItems.map((item) => {
+            const profileId = String(item.profile_id ?? "unknown");
+            const ruleScores = readRecordArray(item.rule_scores);
+            return (
+              <li key={profileId}>
+                <strong>{String(item.profile_name ?? profileId)}</strong>
+                <span>
+                  {ruleScores.length > 0
+                    ? ruleScores
+                        .map(
+                          (rule) =>
+                            `${String(rule.rule_label ?? rule.rule_id ?? "指标")} ${formatSignedScore(
+                              readNumber(rule.score) ?? 0
+                            )}`
+                        )
+                        .join(" · ")
+                    : "暂无指标"}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </details>
+    </div>
+  );
+}
+
 function renderMemoListSection(title: string, value: unknown) {
   const items = normalizeStringList(value);
   if (items.length === 0) {
@@ -2739,6 +3379,11 @@ function readValuationQueue(memo: InvestmentMemo): string[] {
       return reason || null;
     })
     .filter((item): item is string => Boolean(item));
+}
+
+function formatSignedScore(value: number): string {
+  const normalized = Math.abs(value) < 0.005 ? 0 : value;
+  return `${normalized > 0 ? "+" : ""}${normalized.toFixed(2)}`;
 }
 
 function MetricFact({ label, value }: MetricFactProps) {
@@ -2999,42 +3644,124 @@ function FinancialEvidenceSummary({ financialEvidencePack }: FinancialEvidenceSu
   const cashFlowQuality = financialEvidencePack.cash_flow_quality ?? {};
   const balanceSheetAdjustment = financialEvidencePack.balance_sheet_adjustment ?? {};
   const capitalAllocation = financialEvidencePack.capital_allocation ?? {};
-  const valuationReadiness = financialEvidencePack.valuation_readiness ?? {};
-  const readyMethods = Array.isArray(valuationReadiness.ready_methods)
-    ? valuationReadiness.ready_methods.length
-    : 0;
+  const financialFlags = readRecordArray(financialEvidencePack.financial_flags);
+  const financialDataGaps = readRecordArray(financialEvidencePack.financial_data_gaps);
 
   return (
-    <dl className="financial-evidence-summary" aria-label="财务证据概览">
-      <MetricFact label="最新期间" value={financialEvidencePack.latest_period ?? "待更新"} />
-      <MetricFact label="收入" value={formatFinancialSummaryMoney(latestFacts.revenue)} />
-      <MetricFact label="净利润" value={formatFinancialSummaryMoney(latestFacts.net_profit)} />
-      <MetricFact
-        label="自由现金流"
-        value={formatFinancialSummaryMoney(cashFlowQuality.free_cash_flow)}
+    <>
+      <dl className="financial-evidence-summary" aria-label="财务证据概览">
+        <MetricFact label="最新期间" value={financialEvidencePack.latest_period ?? "待更新"} />
+        <MetricFact label="收入" value={formatFinancialSummaryMoney(latestFacts.revenue)} />
+        <MetricFact label="净利润" value={formatFinancialSummaryMoney(latestFacts.net_profit)} />
+        <MetricFact
+          label="自由现金流"
+          value={formatFinancialSummaryMoney(cashFlowQuality.free_cash_flow)}
+        />
+        <MetricFact
+          label="货币资金"
+          value={formatFinancialSummaryMoney(balanceSheetAdjustment.cash_and_equivalents)}
+        />
+        <MetricFact
+          label="有息负债"
+          value={formatFinancialSummaryMoney(balanceSheetAdjustment.interest_bearing_debt)}
+        />
+        <MetricFact
+          label="净现金"
+          value={formatFinancialSummaryMoney(balanceSheetAdjustment.net_cash)}
+        />
+        <MetricFact label="分红" value={formatFinancialSummaryMoney(capitalAllocation.dividend)} />
+        <MetricFact label="ROE" value={formatFinancialSummaryPercent(profitability.roe)} />
+        <MetricFact label="毛利率" value={formatFinancialSummaryPercent(profitability.gross_margin)} />
+        <MetricFact label="净利率" value={formatFinancialSummaryPercent(profitability.net_margin)} />
+        <MetricFact label="收入同比" value={formatFinancialSummaryPercent(growthQuality.revenue_yoy)} />
+        <MetricFact label="净利润同比" value={formatFinancialSummaryPercent(growthQuality.net_profit_yoy)} />
+        <MetricFact label="财务旗标" value={`${financialFlags.length} 项`} />
+        <MetricFact label="数据缺口" value={`${financialDataGaps.length} 项`} />
+      </dl>
+      <FinancialEvidenceDetailList
+        flags={financialFlags}
+        gaps={financialDataGaps}
       />
-      <MetricFact
-        label="货币资金"
-        value={formatFinancialSummaryMoney(balanceSheetAdjustment.cash_and_equivalents)}
-      />
-      <MetricFact
-        label="有息负债"
-        value={formatFinancialSummaryMoney(balanceSheetAdjustment.interest_bearing_debt)}
-      />
-      <MetricFact
-        label="净现金"
-        value={formatFinancialSummaryMoney(balanceSheetAdjustment.net_cash)}
-      />
-      <MetricFact label="分红" value={formatFinancialSummaryMoney(capitalAllocation.dividend)} />
-      <MetricFact label="ROE" value={formatFinancialSummaryPercent(profitability.roe)} />
-      <MetricFact label="毛利率" value={formatFinancialSummaryPercent(profitability.gross_margin)} />
-      <MetricFact label="净利率" value={formatFinancialSummaryPercent(profitability.net_margin)} />
-      <MetricFact label="收入同比" value={formatFinancialSummaryPercent(growthQuality.revenue_yoy)} />
-      <MetricFact label="净利润同比" value={formatFinancialSummaryPercent(growthQuality.net_profit_yoy)} />
-      <MetricFact label="估值准备" value={`${readyMethods} 类`} />
-      <MetricFact label="财务旗标" value={`${financialEvidencePack.financial_flags.length} 项`} />
-      <MetricFact label="数据缺口" value={`${financialEvidencePack.financial_data_gaps.length} 项`} />
-    </dl>
+    </>
+  );
+}
+
+function FinancialEvidenceDetailList({
+  flags,
+  gaps
+}: {
+  flags: Array<Record<string, unknown>>;
+  gaps: Array<Record<string, unknown>>;
+}) {
+  if (flags.length === 0 && gaps.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="financial-evidence-details" aria-label="财务旗标和数据缺口明细">
+      {flags.length > 0 ? (
+        <section className="financial-evidence-detail-section">
+          <h4>财务旗标明细</h4>
+          <ul className="financial-evidence-detail-list">
+            {flags.map((flag, index) => {
+              const severity = String(flag.severity ?? "info");
+              const message = cleanDisplayText(
+                String(flag.message ?? flag.code ?? "需要复核的财务提示。")
+              );
+              const period = cleanDisplayText(String(flag.period ?? ""));
+              return (
+                <li key={`${String(flag.code ?? "flag")}-${period}-${index}`}>
+                  <span
+                    className={`financial-evidence-badge financial-evidence-badge--${severity}`}
+                  >
+                    {formatFinancialFlagSeverity(severity)}
+                  </span>
+                  <strong>{period || "未标明期间"}</strong>
+                  <span>{message}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
+      {gaps.length > 0 ? (
+        <section className="financial-evidence-detail-section">
+          <h4>数据缺口明细</h4>
+          <ul className="financial-evidence-detail-list">
+            {gaps.map((gap, index) => {
+              const field = String(gap.field ?? "unknown");
+              const severity = String(gap.severity ?? "medium");
+              const reason = cleanDisplayText(String(gap.reason ?? "需要补充财务输入。"));
+              const neededBy = formatNeededByList(gap.needed_by);
+              const proxyFields = normalizeStringList(gap.proxy_fields).map(
+                (proxyField) => fieldLabels[proxyField] ?? proxyField
+              );
+              const replacementAvailable = Boolean(gap.replacement_available);
+              const proxyText =
+                replacementAvailable && proxyFields.length > 0
+                  ? `已有替代口径：${proxyFields.join("、")}`
+                  : null;
+              return (
+                <li key={`${field}-${severity}-${index}`}>
+                  <span
+                    className={`financial-evidence-badge financial-evidence-badge--${severity}`}
+                  >
+                    {formatGapSeverity(severity)}
+                  </span>
+                  <strong>{fieldLabels[field] ?? field}</strong>
+                  <span>
+                    {reason}
+                    {neededBy ? ` 影响：${neededBy}。` : ""}
+                    {proxyText ? ` ${proxyText}。` : ""}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+    </div>
   );
 }
 
@@ -3236,9 +3963,11 @@ type EvidencePanelProps = {
   evidence: EvidenceListResponse;
   modelConfig: ModelConfigStatus;
   searchState: EvidenceSearchState;
+  importTextState: EvidenceImportTextState;
   modelSmokeTestState: ModelSmokeTestState;
   deleteState: EvidenceDeleteState;
   onSearchEvidence: () => void;
+  onImportTextEvidence: (form: EvidenceImportTextForm) => void;
   onSmokeTestModel: () => void;
   onDeleteEvidence: (evidenceId: number) => void;
 };
@@ -3278,15 +4007,50 @@ function EvidencePanel({
   evidence,
   modelConfig,
   searchState,
+  importTextState,
   modelSmokeTestState,
   onSearchEvidence,
+  onImportTextEvidence,
   onSmokeTestModel,
   deleteState,
   onDeleteEvidence
 }: EvidencePanelProps) {
   const isSearching = searchState.status === "searching";
+  const isImportingText = importTextState.status === "importing";
   const isTestingModel = modelSmokeTestState.status === "testing";
   const isDeleting = deleteState.status === "deleting";
+  const [importTextForm, setImportTextForm] = useState<EvidenceImportTextForm>({
+    title: "",
+    content: "",
+    source: "",
+    source_url: "",
+    published_at: "",
+    source_type: "web",
+    notes: ""
+  });
+
+  function updateImportTextForm<K extends keyof EvidenceImportTextForm>(
+    key: K,
+    value: EvidenceImportTextForm[K]
+  ) {
+    setImportTextForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function submitImportTextForm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    onImportTextEvidence(importTextForm);
+    if (importTextForm.content.trim()) {
+      setImportTextForm({
+        title: "",
+        content: "",
+        source: "",
+        source_url: "",
+        published_at: "",
+        source_type: "web",
+        notes: ""
+      });
+    }
+  }
 
   return (
     <section className="data-panel evidence-panel" aria-labelledby="evidence-heading">
@@ -3301,7 +4065,7 @@ function EvidencePanel({
             className="panel-action"
             type="button"
             title="模型连通性自检"
-            disabled={isSearching || isTestingModel}
+            disabled={isSearching || isImportingText || isTestingModel}
             onClick={onSmokeTestModel}
           >
             <BrainCircuit aria-hidden="true" size={15} />
@@ -3311,7 +4075,7 @@ function EvidencePanel({
             className="panel-action"
             type="button"
             title="搜索外部信息"
-            disabled={isSearching || isTestingModel}
+            disabled={isSearching || isImportingText || isTestingModel}
             onClick={onSearchEvidence}
           >
             <Search aria-hidden="true" size={15} />
@@ -3342,6 +4106,100 @@ function EvidencePanel({
           <dd>{modelConfig.api_key_configured ? "已配置" : "未配置"}</dd>
         </div>
       </dl>
+
+      <form className="manual-evidence-form" onSubmit={submitImportTextForm}>
+        <div className="manual-evidence-form__grid">
+          <label>
+            <span>标题</span>
+            <input
+              type="text"
+              value={importTextForm.title}
+              onChange={(event) => updateImportTextForm("title", event.target.value)}
+            />
+          </label>
+          <label>
+            <span>来源名称</span>
+            <input
+              type="text"
+              value={importTextForm.source}
+              onChange={(event) => updateImportTextForm("source", event.target.value)}
+            />
+          </label>
+          <label>
+            <span>来源链接</span>
+            <input
+              type="url"
+              value={importTextForm.source_url}
+              onChange={(event) => updateImportTextForm("source_url", event.target.value)}
+            />
+          </label>
+          <label>
+            <span>发布日期</span>
+            <input
+              type="date"
+              value={importTextForm.published_at}
+              onChange={(event) => updateImportTextForm("published_at", event.target.value)}
+            />
+          </label>
+          <label>
+            <span>来源类型</span>
+            <select
+              value={importTextForm.source_type}
+              onChange={(event) =>
+                updateImportTextForm("source_type", event.target.value as EvidenceSourceType)
+              }
+            >
+              <option value="web">网络</option>
+              <option value="policy">政策</option>
+              <option value="industry_news">行业新闻</option>
+              <option value="company_news">公司新闻</option>
+              <option value="public_data">公开数据</option>
+              <option value="regulatory">监管</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>正文内容</span>
+          <textarea
+            required
+            minLength={20}
+            rows={5}
+            value={importTextForm.content}
+            onChange={(event) => updateImportTextForm("content", event.target.value)}
+          />
+        </label>
+        <label>
+          <span>备注</span>
+          <input
+            type="text"
+            value={importTextForm.notes}
+            onChange={(event) => updateImportTextForm("notes", event.target.value)}
+          />
+        </label>
+        <div className="manual-evidence-form__actions">
+          <button
+            className="panel-action"
+            type="submit"
+            title="导入文本"
+            disabled={isSearching || isImportingText || isTestingModel}
+          >
+            <FileText aria-hidden="true" size={15} />
+            <span>{isImportingText ? "导入中" : "导入文本"}</span>
+          </button>
+        </div>
+      </form>
+
+      {importTextState.message ? (
+        <div
+          className={
+            importTextState.status === "error"
+              ? "sync-message sync-message--error"
+              : "sync-message"
+          }
+        >
+          {importTextState.message}
+        </div>
+      ) : null}
 
       {modelSmokeTestState.message ? (
         <div
@@ -3487,6 +4345,7 @@ function AnalystPanel({
   const isRunningAll = runState.status === "running_all";
   const isRunningAny = runState.status === "running" || runState.status === "running_all";
   const isDeletingRun = deleteState.status === "deleting";
+  const sharedAccountingEvents = collectSharedAccountingEvents(runs.items);
 
   return (
     <section className="data-panel analyst-panel" aria-labelledby="analyst-view-heading">
@@ -3694,19 +4553,6 @@ function AnalystPanel({
                     </div>
                   ) : null}
 
-                  {result.accounting_events && result.accounting_events.length > 0 ? (
-                    <div className="analyst-accounting-alert">
-                      <strong>会计口径提示</strong>
-                      <ul>
-                        {result.accounting_events.slice(0, 3).map((event, index) => (
-                          <li key={`${event.event_type ?? "accounting"}-${event.source_id ?? index}`}>
-                            {formatAccountingEvent(event)}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
                   {ruleChecks.length > 0 ? (
                     <ul className="analyst-rule-check-list">
                       {ruleChecks.map((check) => {
@@ -3805,8 +4651,49 @@ function AnalystPanel({
           );
         })}
       </div>
+
+      {sharedAccountingEvents.length > 0 ? (
+        <div className="analyst-accounting-alert analyst-accounting-alert--panel">
+          <strong>会计口径提示</strong>
+          <ul>
+            {sharedAccountingEvents.slice(0, 6).map((event, index) => (
+              <li key={`${event.event_type ?? "accounting"}-${event.source_id ?? index}`}>
+                {formatAccountingEvent(event)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
+}
+
+function collectSharedAccountingEvents(
+  runs: AnalysisRun[]
+): NonNullable<AnalysisRun["result"]["accounting_events"]> {
+  const events: NonNullable<AnalysisRun["result"]["accounting_events"]> = [];
+  const seen = new Set<string>();
+
+  for (const run of runs) {
+    const runEvents = Array.isArray(run.result.accounting_events)
+      ? run.result.accounting_events
+      : [];
+    for (const event of runEvents) {
+      const key = [
+        event.event_type ?? "accounting",
+        event.source_type ?? "source",
+        event.source_id ?? "",
+        event.label ?? ""
+      ].join("|");
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      events.push(event);
+    }
+  }
+
+  return events;
 }
 
 function getRuleLabel(profile: AnalystProfileListResponse["items"][number], ruleId: string): string {
@@ -3888,14 +4775,27 @@ function formatAccountingEvent(
   event: NonNullable<AnalysisRun["result"]["accounting_events"]>[number]
 ): string {
   const label = event.label || event.event_type || "会计口径事项";
-  const summary = cleanDisplayText(
+  const summary = stripLeadingAccountingEventLabel(
+    cleanDisplayText(
     event.summary || event.comparability_impact || "需要复核同比可比口径。"
+    ),
+    String(label)
   );
   const source =
     typeof event.source_id === "number" || typeof event.source_id === "string"
       ? ` 来源 ${event.source_type ?? "source"} #${event.source_id}`
       : "";
   return cleanDisplayText(`${label}：${summary}${source}`);
+}
+
+function stripLeadingAccountingEventLabel(summary: string, label: string): string {
+  const prefixes = [`${label}：`, `${label}:`, `${label} `];
+  for (const prefix of prefixes) {
+    if (summary.startsWith(prefix)) {
+      return summary.slice(prefix.length).trim();
+    }
+  }
+  return summary;
 }
 
 function normalizeStringList(value: unknown): string[] {
@@ -4025,6 +4925,51 @@ function buildEditableValuationScenarios(run: ValuationRun | null): ValuationSce
   };
 }
 
+function buildEditableValuationModelWeights(run: ValuationRun | null): ValuationModelWeightsDraft {
+  const confirmedWeights = readPlainRecord(run?.assumptions.model_weights);
+  const suggestedWeights = readPlainRecord(run?.model_suggested_assumptions.model_weights);
+  const recordedWeights = readPlainRecord(run?.methods.base_weights);
+  const weights = Object.keys(confirmedWeights).length > 0
+    ? confirmedWeights
+    : Object.keys(suggestedWeights).length > 0
+      ? suggestedWeights
+      : Object.keys(recordedWeights).length > 0
+        ? recordedWeights
+        : defaultValuationModelWeights;
+  const draft = {} as ValuationModelWeightsDraft;
+  for (const field of valuationModelWeightFields) {
+    const value = readNumber(weights[field.key]);
+    draft[field.key] = value === null
+      ? defaultValuationModelWeights[field.key]
+      : roundPercentForInput(value * 100);
+  }
+  return draft;
+}
+
+function sumValuationModelWeights(draft: ValuationModelWeightsDraft): number {
+  return valuationModelWeightFields.reduce(
+    (total, field) => total + (draft[field.key] ?? 0),
+    0
+  );
+}
+
+function validateValuationModelWeights(draft: ValuationModelWeightsDraft): string | null {
+  const values = valuationModelWeightFields.map((field) => draft[field.key]);
+  if (values.some((value) => value === null || !Number.isFinite(value))) {
+    return "请填写全部模型配比。";
+  }
+  if (values.some((value) => value !== null && (value < 0 || value > 100))) {
+    return "每个模型配比必须在 0% 到 100% 之间。";
+  }
+  if (Math.abs(sumValuationModelWeights(draft) - 100) > 0.001) {
+    return "五个模型的配比合计必须等于 100%。";
+  }
+  if ((draft.dcf ?? 0) + (draft.owner_earnings ?? 0) <= 0) {
+    return "当前可计算的 DCF 与所有者盈余配比合计必须大于 0%。";
+  }
+  return null;
+}
+
 function formatRuleStatus(value: unknown): string {
   const labels: Record<string, string> = {
     pass: "通过",
@@ -4081,7 +5026,8 @@ function parseAssumptionInput(value: string): number | null {
 }
 
 function buildValuationAssumptionPayload(
-  scenarioDraft: ValuationScenarioDraft
+  scenarioDraft: ValuationScenarioDraft,
+  modelWeightsDraft: ValuationModelWeightsDraft
 ): Record<string, unknown> {
   const scenarios: Record<string, Record<string, number>> = {};
   for (const scenarioName of valuationScenarioNames) {
@@ -4094,7 +5040,14 @@ function buildValuationAssumptionPayload(
     }
     scenarios[scenarioName] = scenario;
   }
-  return { scenarios };
+  const modelWeights: Record<string, number> = {};
+  for (const field of valuationModelWeightFields) {
+    const value = modelWeightsDraft[field.key];
+    if (value !== null && Number.isFinite(value)) {
+      modelWeights[field.key] = value / 100;
+    }
+  }
+  return { scenarios, model_weights: modelWeights };
 }
 
 function formatAssumptionInputValue(value: number | null): string {
@@ -4103,6 +5056,12 @@ function formatAssumptionInputValue(value: number | null): string {
 
 function roundPercentForInput(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function formatDraftPercent(value: number): string {
+  return `${roundPercentForInput(value).toLocaleString("zh-CN", {
+    maximumFractionDigits: 2
+  })}%`;
 }
 
 function formatValuationRangeItem(totalValue: number | null, perShareValue: number | null): string {
@@ -4148,6 +5107,16 @@ function formatMethodStatus(status: string): string {
   return labels[status] ?? status;
 }
 
+function formatValuationRunStatus(status: string | undefined): string {
+  const labels: Record<string, string> = {
+    draft: "草稿",
+    locked: "历史版本",
+    archived: "已归档",
+    failed: "失败"
+  };
+  return status ? (labels[status] ?? status) : "未生成";
+}
+
 function formatGapSeverity(severity: string): string {
   const labels: Record<string, string> = {
     high: "高",
@@ -4155,6 +5124,29 @@ function formatGapSeverity(severity: string): string {
     low: "低"
   };
   return labels[severity] ?? severity;
+}
+
+function formatFinancialFlagSeverity(severity: string): string {
+  const labels: Record<string, string> = {
+    risk: "风险",
+    warn: "观察",
+    warning: "观察",
+    info: "提示",
+    low: "低",
+    medium: "中",
+    high: "高"
+  };
+  return labels[severity] ?? severity;
+}
+
+function formatNeededByList(value: unknown): string {
+  const labels: Record<string, string> = {
+    analyst_view: "分析师",
+    valuation_lab: "估值实验室"
+  };
+  return normalizeStringList(value)
+    .map((item) => labels[item] ?? item)
+    .join("、");
 }
 
 function toAnalysisRunListResponse(response: { items: AnalysisRunListResponse["items"] }) {
@@ -4304,6 +5296,13 @@ async function loadInvestmentMemos(companyId: number) {
   ]);
 }
 
+async function loadPriceDecisions(companyId: number) {
+  return Promise.all([
+    getLatestPriceDecisionRun(companyId),
+    getPriceDecisionRuns(companyId, { limit: 20, offset: 0 })
+  ]);
+}
+
 async function withOptionalWorkspaceData<T>(promise: Promise<T>, fallback: T): Promise<T> {
   try {
     return await promise;
@@ -4422,6 +5421,18 @@ function formatEvidenceSearchMessage(searchResult: EvidenceSearchResponse): stri
   ].filter((item): item is string => item !== null);
 
   return stats.length > 0 ? `${baseMessage}；${stats.join("，")}` : baseMessage;
+}
+
+function formatEvidenceImportTextMessage(importResult: EvidenceSearchResponse): string {
+  const ids = importResult.items.map((item) => `#${item.id}`);
+  const evidenceLabel =
+    ids.length > 0 ? `：${ids.join("，")}` : "";
+  return `已导入 ${importResult.created} 条外部证据${evidenceLabel}，运行记录 #${importResult.run_id}`;
+}
+
+function optionalText(value: string): string | undefined {
+  const text = value.trim();
+  return text.length > 0 ? text : undefined;
 }
 
 function readDiagnosticsNumber(
