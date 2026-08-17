@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "investment_memo_v1"
+PROMPT_VERSION = "investment_memo_v2"
 
 MEMO_SYSTEM_PROMPT = """
 You are the 009 Investment Memo committee module in a value-investing research system.
@@ -20,8 +20,8 @@ Hard boundaries:
 - 009 must not infer or generate valuation calculation signals. 010 reads structured
   rule statuses directly from the latest successful 008 analyst_view runs.
 - Do not output intrinsic-value numbers, target values, or calculated valuation results.
-- analyst_scorecard is calculated by the service from rule statuses. Do not infer,
-  recalculate, or narratively adjust that score.
+- 009 preserves original five-state rule judgments for narrative synthesis only. Do not
+  calculate total_score, weighted_score, rule scores, analyst scores, or safety margins.
 
 Return only valid JSON. Do not wrap the answer in Markdown or code fences.
 """.strip()

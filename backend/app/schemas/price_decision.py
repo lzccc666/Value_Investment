@@ -16,8 +16,8 @@ class PriceDecisionCreateRequest(BaseModel):
     @field_validator("safety_margin_override")
     @classmethod
     def validate_safety_margin_override(cls, value: float | None) -> float | None:
-        if value is not None and not 0.0 <= value <= 0.5:
-            raise ValueError("用户覆盖安全边际必须位于 0%-50%。")
+        if value is not None and not 0.0 <= value <= 1.0:
+            raise ValueError("用户覆盖安全边际必须位于 0%-100%。")
         return value
 
 
@@ -40,8 +40,6 @@ class PriceDecisionRunRead(BaseModel):
     intrinsic_values_per_share: dict[str, float] = Field(default_factory=dict)
     current_price: float
     market_data_updated_at: datetime
-    analyst_score_total: float
-    analyst_scorecard_snapshot: dict[str, object] = Field(default_factory=dict)
     suggested_safety_margin: float
     safety_margin_override: float | None = None
     effective_safety_margin: float

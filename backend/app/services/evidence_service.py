@@ -476,9 +476,7 @@ def search_company_evidence(
         if page_fetcher is not None
         else AnnouncementAwareWebPageSnapshotFetcher(
             announcement_content_fetcher=content_fetcher,
-            max_excerpt_chars=int(
-                parameter_value("data_sampling.evidence_excerpt_chars", 1800)
-            ),
+            max_excerpt_chars=int(parameter_value("data_sampling.evidence_excerpt_chars", 1800)),
         )
         if search_provider is None
         else None
@@ -855,9 +853,7 @@ def _build_manual_text_import_prompt(
     manual_snapshot: dict[str, object],
     payload: EvidenceImportTextRequest,
 ) -> str:
-    credibility_cap = float(
-        parameter_value("analyst_engine.manual_import_credibility_cap", 0.6)
-    )
+    credibility_cap = float(parameter_value("analyst_engine.manual_import_credibility_cap", 0.6))
     prompt = build_evidence_prompt(
         company=company,
         search_results=[manual_snapshot],

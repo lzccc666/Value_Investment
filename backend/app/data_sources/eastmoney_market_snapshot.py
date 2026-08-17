@@ -388,8 +388,6 @@ def _has_pending_cash_dividend(rows: object) -> bool:
     return _latest_pending_cash_dividend(rows) is not None
 
 
-
-
 def _cash_per_10_shares_or_none(value: object) -> float | None:
     if value is None:
         return None

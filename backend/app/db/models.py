@@ -370,7 +370,7 @@ class PriceDecisionRun(Base):
     market_data_updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    analyst_score_total: Mapped[float] = mapped_column(Float, nullable=False)
+    analyst_score_total: Mapped[float | None] = mapped_column(Float, nullable=True)
     analyst_scorecard_snapshot: Mapped[dict[str, object]] = mapped_column(
         JSON, default=dict, nullable=False
     )

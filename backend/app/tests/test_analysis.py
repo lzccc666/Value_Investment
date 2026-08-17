@@ -13,6 +13,7 @@ from app.analysis.providers.openai_compatible import _compact_error_response
 from app.analysis.valuation_parameter_matrix import (
     RULE_VALUATION_MAPPINGS,
     STATUS_SCORES,
+    PriceAnchorOutputError,
     derive_valuation_parameter_matrix,
 )
 from app.db.init_db import init_db
@@ -62,60 +63,61 @@ def test_analyst_profiles_list_includes_all_profiles_from_architecture_note(
 
     assert response.status_code == 200
     payload = response.json()
-    profile_ids = {item["id"] for item in payload["items"]}
-    assert profile_ids == {
+    profile_ids = [item["id"] for item in payload["items"]]
+    assert profile_ids == [
         "buffett",
+        "peter_lynch",
         "munger",
         "duan_yongping",
+        "graham",
         "fisher",
         "lin_yuan",
         "li_lu",
-        "peter_lynch",
-        "graham",
-        "ray_dalio",
-        "george_soros",
-    }
+    ]
     buffett = next(item for item in payload["items"] if item["id"] == "buffett")
     assert {rule["id"] for rule in buffett["rules"]} == {
-        "moat",
-        "quality",
-        "management",
-        "margin_of_safety",
+        "durable_moat",
+        "owner_earnings_quality",
+        "capital_allocation",
+        "management_candor",
     }
-    ray_dalio = next(item for item in payload["items"] if item["id"] == "ray_dalio")
-    assert ray_dalio["display_name"] == "瑞达利欧"
-    george_soros = next(item for item in payload["items"] if item["id"] == "george_soros")
-    assert george_soros["display_name"] == "乔治索罗斯"
-    assert {rule["id"] for rule in george_soros["rules"]} == {
-        "reflexivity",
-        "narrative_gap",
-        "macro_fragility",
-        "counter_evidence",
-    }
+    assert all(
+        buffett[field]
+        for field in (
+            "core_logic",
+            "decision_sequence",
+            "preferred_evidence",
+            "failure_modes",
+            "prompt_focus",
+        )
+    )
+    assert all(
+        set(rule["status_rubric"]) == {"pass", "neutral", "unknown", "warn", "fail"}
+        for rule in buffett["rules"]
+    )
 
 
-def test_valuation_rule_mapping_covers_all_40_profile_rules() -> None:
+def test_valuation_rule_mapping_covers_all_32_profile_rules() -> None:
     expected = {
         (profile.id, rule.id) for profile in list_analyst_profiles() for rule in profile.rules
     }
-    assert len(expected) == 40
+    assert len(expected) == 32
     assert set(RULE_VALUATION_MAPPINGS) == expected
-    assert RULE_VALUATION_MAPPINGS[("buffett", "margin_of_safety")].calculation_role == (
-        "price_reference"
-    )
-    assert RULE_VALUATION_MAPPINGS[("graham", "valuation_discipline")].calculation_role == (
-        "price_reference"
-    )
     assert all(
-        not parameter.startswith("method_weight_")
-        for mapping in RULE_VALUATION_MAPPINGS.values()
-        for parameter in mapping.parameter_impacts
+        mapping.calculation_role == "compute" for mapping in RULE_VALUATION_MAPPINGS.values()
     )
+    assert sum(len(mapping.dimensions) for mapping in RULE_VALUATION_MAPPINGS.values()) == 117
 
 
 def test_each_profile_derives_four_rule_impacts_and_status_scores() -> None:
-    assert STATUS_SCORES == {"pass": 1.0, "warn": -0.35, "fail": -2.0, "unknown": 0.0}
-    statuses = ("pass", "warn", "fail", "unknown")
+    assert STATUS_SCORES == {
+        "pass": 1.0,
+        "neutral": 0.0,
+        "unknown": -0.1,
+        "warn": -0.5,
+        "fail": -2.0,
+    }
+    statuses = ("pass", "neutral", "unknown", "fail")
     for profile in list_analyst_profiles():
         result = {
             "profile_fit_score": 0.8,
@@ -132,13 +134,13 @@ def test_each_profile_derives_four_rule_impacts_and_status_scores() -> None:
         )
         impacts = matrix["analyst_items"][0]["rule_impacts"]
         assert len(impacts) == 4
-        assert [item["status_score"] for item in impacts] == [1.0, -0.35, -2.0, 0.0]
+        assert [item["status_score"] for item in impacts] == [1.0, 0.0, -0.1, -2.0]
 
 
 def test_price_blind_gate_does_not_confuse_esg_rating_or_per_share_value() -> None:
     cases = (
-        ("buffett", "moat", "ESG评级改善，但护城河仍需按经营证据判断。"),
-        ("munger", "incentives", "激励考核与长期每股价值增长一致。"),
+        ("buffett", "durable_moat", "ESG评级改善，但护城河仍需按经营证据判断。"),
+        ("munger", "incentive_alignment", "激励考核与长期每股价值增长一致。"),
     )
     for profile_id, rule_id, summary in cases:
         profile = get_analyst_profile(profile_id)
@@ -166,40 +168,31 @@ def test_price_blind_gate_does_not_confuse_esg_rating_or_per_share_value() -> No
 
 
 def test_price_blind_gate_still_excludes_explicit_price_anchors() -> None:
-    profile = get_analyst_profile("ray_dalio")
+    profile = get_analyst_profile("buffett")
     assert profile is not None
-    matrix = derive_valuation_parameter_matrix(
-        source_run_id=102,
-        profile=profile,
-        result={
-            "profile_fit_score": 0.8,
-            "confidence": 0.7,
-            "rule_checks": [
-                {
-                    "rule_id": rule.id,
-                    "status": "warn",
-                    "summary": (
-                        "组合风险信号引用 pe_ttm，需要转入价格参考。"
-                        if rule.id == "portfolio_risk_signal"
-                        else "仅使用基本面和宏观证据。"
-                    ),
-                }
-                for rule in profile.rules
-            ],
-        },
-    )
-    impact = next(
-        item
-        for item in matrix["analyst_items"][0]["rule_impacts"]
-        if item["rule_id"] == "portfolio_risk_signal"
-    )
-    assert impact["calculation_role"] == "price_reference"
-    assert impact["price_blind_compatible"] is False
-    assert impact["exclusion_reason"] == "price_anchor:pe_ttm"
+    with pytest.raises(PriceAnchorOutputError):
+        derive_valuation_parameter_matrix(
+            source_run_id=102,
+            profile=profile,
+            result={
+                "profile_fit_score": 0.8,
+                "confidence": 0.7,
+                "rule_checks": [
+                    {
+                        "rule_id": rule.id,
+                        "status": "warn",
+                        "summary": "引用 pe_ttm。"
+                        if rule.id == "durable_moat"
+                        else "仅使用基本面证据。",
+                    }
+                    for rule in profile.rules
+                ],
+            },
+        )
 
 
-def test_analyst_prompt_allows_valuation_context_from_snapshot() -> None:
-    profile = get_analyst_profile("george_soros")
+def test_analyst_prompt_enforces_price_blind_deep_profile_contract() -> None:
+    profile = get_analyst_profile("li_lu")
     assert profile is not None
     prompt = build_analyst_prompt(
         profile=profile,
@@ -218,11 +211,14 @@ def test_analyst_prompt_allows_valuation_context_from_snapshot() -> None:
         "历史价格",
         "目标价",
         "市值",
-        "pe_ttm",
         "持仓成本",
-        "估值纪律",
         "安全边际",
-        "可以按 Profile 的分析框架正常使用",
+        "008 必须彻底 price-blind",
+        "core_logic",
+        "decision_sequence",
+        "preferred_evidence",
+        "failure_modes",
+        "pass、neutral、unknown、warn、fail",
         "financial_metrics.profit_structure",
         "financial_metrics.expense_control",
         "quality_matrix.accounting_quality",
@@ -240,6 +236,9 @@ def test_analyst_prompt_allows_valuation_context_from_snapshot() -> None:
         "1亿元等于100,000,000元",
     ):
         assert expected in combined_prompt
+
+    assert "最终 JSON 不得复述禁止概念或其英文技术字段名" in combined_prompt
+    assert "不得把它们写成未评估项、无法判断项或数据缺口" in combined_prompt
 
 
 def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
@@ -281,7 +280,7 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
     assert payload["run_type"] == "analyst_view"
     assert payload["analyst_profile"] == "buffett"
     assert payload["run_version"] == "008_v1"
-    assert payload["prompt_version"] == "analyst_view_v2"
+    assert payload["prompt_version"] == "analyst_view_v4"
     assert payload["is_latest"] is True
     assert payload["confidence"] == payload["result"]["confidence"]
     assert payload["result"]["overview"] == "现金流质量较好，但证据仍需补充。"
@@ -296,7 +295,7 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
     assert "components" in payload["result"]["score_explanations"]["profile_relevance"]
     assert "components" in payload["result"]["score_explanations"]["data_confidence"]
     assert payload["result"]["analysis_basis"]["external_evidence_ids"] == [1]
-    assert payload["result"]["rule_checks"][0]["rule_id"] == "moat"
+    assert payload["result"]["rule_checks"][0]["rule_id"] == "durable_moat"
     assert payload["user_note"] == "重点看现金流"
 
     assert list_response.status_code == 200
@@ -454,24 +453,24 @@ def test_analyst_fact_ledger_detects_accounting_events_and_profile_relevance(
         session.commit()
 
         lin_yuan = get_analyst_profile("lin_yuan")
-        ray_dalio = get_analyst_profile("ray_dalio")
+        graham = get_analyst_profile("graham")
         assert lin_yuan is not None
-        assert ray_dalio is not None
+        assert graham is not None
 
         lin_snapshot = build_company_analysis_snapshot(session, company, profile=lin_yuan)
-        dalio_snapshot = build_company_analysis_snapshot(session, company, profile=ray_dalio)
+        graham_snapshot = build_company_analysis_snapshot(session, company, profile=graham)
 
     lin_ledger = lin_snapshot["fact_ledger"]
-    dalio_ledger = dalio_snapshot["fact_ledger"]
+    graham_ledger = graham_snapshot["fact_ledger"]
     assert isinstance(lin_ledger, dict)
-    assert isinstance(dalio_ledger, dict)
+    assert isinstance(graham_ledger, dict)
 
-    assert lin_ledger["profile_relevance"]["score"] > dalio_ledger["profile_relevance"]["score"]
+    assert lin_ledger["profile_relevance"]["score"] > graham_ledger["profile_relevance"]["score"]
     assert lin_ledger["profile_relevance"]["method"] == "rule_based_company_profile_fit_v2"
     assert "components" in lin_ledger["profile_relevance"]
     assert lin_ledger["profile_relevance"]["components"]["industry_framework_fit"] >= 0.8
     assert (
-        dalio_ledger["profile_relevance"]["components"]["industry_framework_fit"]
+        graham_ledger["profile_relevance"]["components"]["industry_framework_fit"]
         < (lin_ledger["profile_relevance"]["components"]["industry_framework_fit"])
     )
 
@@ -1211,6 +1210,70 @@ def test_latest_analysis_runs_return_one_latest_success_per_profile(tmp_path: Pa
     assert buffett_run.result["overview"] == "新结论"
 
 
+def test_latest_successful_analysis_runs_remain_visible_during_newer_attempts(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        successful_run = AnalysisRun(
+            company_id=company.id,
+            run_type="analyst_view",
+            analyst_profile="buffett",
+            result={"overview": "最近一次成功结论"},
+            confidence=0.7,
+            is_latest=False,
+            status="success",
+            created_at=datetime(2026, 8, 14, 8, 0, tzinfo=UTC),
+        )
+        newer_failed_run = AnalysisRun(
+            company_id=company.id,
+            run_type="analyst_view",
+            analyst_profile="buffett",
+            result={"error": "本次生成失败"},
+            confidence=None,
+            is_latest=False,
+            status="failed",
+            created_at=datetime(2026, 8, 14, 9, 0, tzinfo=UTC),
+        )
+        latest_running_run = AnalysisRun(
+            company_id=company.id,
+            run_type="analyst_view",
+            analyst_profile="buffett",
+            result={},
+            confidence=None,
+            is_latest=True,
+            status="running",
+            created_at=datetime(2026, 8, 14, 10, 0, tzinfo=UTC),
+        )
+        session.add_all([successful_run, newer_failed_run, latest_running_run])
+        session.commit()
+        company_id = company.id
+
+    with session_factory() as session:
+        latest_successful_runs = list_latest_company_analysis_runs(
+            session,
+            company_id=company_id,
+            run_type="analyst_view",
+            status="success",
+        )
+        latest_runs = list_latest_company_analysis_runs(
+            session,
+            company_id=company_id,
+            run_type="analyst_view",
+            status=None,
+        )
+
+    assert len(latest_successful_runs) == 1
+    assert latest_successful_runs[0].id == successful_run.id
+    assert latest_successful_runs[0].result["overview"] == "最近一次成功结论"
+    assert len(latest_runs) == 1
+    assert latest_runs[0].id == latest_running_run.id
+    assert latest_runs[0].status == "running"
+
+
 def test_latest_failed_analysis_runs_ignore_profiles_with_newer_success(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
 
@@ -1409,8 +1472,12 @@ def test_update_analysis_run_rule_status_overwrites_result(tmp_path: Path) -> No
             result={
                 "overview": "Existing analyst output",
                 "rule_checks": [
-                    {"rule_id": "moat", "status": "warn", "summary": "Needs review"},
-                    {"rule_id": "quality", "status": "pass", "summary": "Cash backed"},
+                    {"rule_id": "durable_moat", "status": "warn", "summary": "Needs review"},
+                    {
+                        "rule_id": "owner_earnings_quality",
+                        "status": "pass",
+                        "summary": "Cash backed",
+                    },
                 ],
             },
             is_latest=True,
@@ -1423,7 +1490,7 @@ def test_update_analysis_run_rule_status_overwrites_result(tmp_path: Path) -> No
 
     with TestClient(app) as client:
         response = client.patch(
-            f"/api/companies/{company_id}/analysis/runs/{run_id}/rule-checks/moat",
+            f"/api/companies/{company_id}/analysis/runs/{run_id}/rule-checks/durable_moat",
             json={"status": "fail"},
         )
 
@@ -1435,7 +1502,7 @@ def test_update_analysis_run_rule_status_overwrites_result(tmp_path: Path) -> No
     matrix_rules = payload["result"]["valuation_parameter_matrix"]["analyst_items"][0][
         "rule_impacts"
     ]
-    moat_impact = next(item for item in matrix_rules if item["rule_id"] == "moat")
+    moat_impact = next(item for item in matrix_rules if item["rule_id"] == "durable_moat")
     assert moat_impact["status"] == "fail"
     assert moat_impact["status_score"] == -2.0
 
@@ -1472,7 +1539,7 @@ def test_update_analysis_run_rule_status_returns_404_for_missing_rule(tmp_path: 
 
     with TestClient(app) as client:
         response = client.patch(
-            f"/api/companies/{company_id}/analysis/runs/{run_id}/rule-checks/moat",
+            f"/api/companies/{company_id}/analysis/runs/{run_id}/rule-checks/durable_moat",
             json={"status": "pass"},
         )
 
@@ -1566,7 +1633,7 @@ def test_analyst_output_references_are_validated(tmp_path: Path) -> None:
     assert run.result["error_type"] == "ModelOutputValidationError"
 
 
-def test_analyst_output_accepts_price_sensitive_analysis(tmp_path: Path) -> None:
+def test_analyst_output_rejects_price_sensitive_analysis(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     _seed_analysis_snapshot_fixture(session_factory)
 
@@ -1574,12 +1641,13 @@ def test_analyst_output_accepts_price_sensitive_analysis(tmp_path: Path) -> None
         company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
         assert company is not None
 
-        created = run_company_analyst_view(
-            session,
-            company,
-            "buffett",
-            gateway=FakePriceAwareAnalysisGateway(),
-        )
+        with pytest.raises(PriceAnchorOutputError):
+            run_company_analyst_view(
+                session,
+                company,
+                "buffett",
+                gateway=FakePriceAwareAnalysisGateway(),
+            )
 
         run = session.scalar(
             select(AnalysisRun)
@@ -1592,11 +1660,8 @@ def test_analyst_output_accepts_price_sensitive_analysis(tmp_path: Path) -> None
         )
 
     assert run is not None
-    assert run.id == created.id
-    assert run.status == "success"
-    assert "市值" in run.result["overview"]
-    assert "持仓成本" in run.result["overview"]
-    assert run.result["rule_checks"][3]["status"] == "warn"
+    assert run.status == "failed"
+    assert run.result["error_type"] == "PriceAnchorOutputError"
 
 
 def test_analyst_snapshot_only_exposes_minimal_external_evidence_fields(
@@ -1647,24 +1712,24 @@ def test_analyst_output_normalizes_deepseek_schema_drift() -> None:
             "analyst_profile": "buffett",
             "rule_checks": [
                 {
-                    "rule_id": "moat",
+                    "rule_id": "durable_moat",
                     "status": "stable",
                     "reasoning": "品牌和毛利率支持护城河判断。",
                     "supporting_evidence_ids": [],
                 },
                 {
-                    "rule_id": "quality",
+                    "rule_id": "owner_earnings_quality",
                     "status": "acceptable",
                     "reasoning": "现金流质量尚可。",
                 },
                 {
-                    "rule_id": "management",
+                    "rule_id": "capital_allocation",
                     "status": "uncertain",
                     "reasoning": "管理层变动需要跟踪。",
                     "supporting_evidence_ids": [1],
                 },
                 {
-                    "rule_id": "margin_of_safety",
+                    "rule_id": "management_candor",
                     "status": "inconclusive",
                     "reasoning": "缺少估值数据。",
                 },
@@ -1707,12 +1772,12 @@ def test_analyst_output_fallback_overview_normalizes_punctuation() -> None:
             "analyst_profile": "buffett",
             "rule_checks": [
                 {
-                    "rule_id": "moat",
+                    "rule_id": "durable_moat",
                     "status": "warn",
                     "reasoning": "品牌证据仍需复核。",
                 },
                 {
-                    "rule_id": "quality",
+                    "rule_id": "owner_earnings_quality",
                     "status": "warn",
                     "reasoning": "现金流证据不足。",
                 },
@@ -1812,7 +1877,7 @@ class FakeAnalystGateway:
                 "key_observations": ["种子财务显示利润和现金流匹配。"],
                 "rule_checks": [
                     {
-                        "rule_id": "moat",
+                        "rule_id": "durable_moat",
                         "status": "warn",
                         "summary": "有消费品标签和行业证据，但护城河证据还不足。",
                         "evidence_ids": [1],
@@ -1820,7 +1885,7 @@ class FakeAnalystGateway:
                         "announcement_ids": [1],
                     },
                     {
-                        "rule_id": "quality",
+                        "rule_id": "owner_earnings_quality",
                         "status": "pass",
                         "summary": "净利润和经营现金流匹配度较好。",
                         "evidence_ids": [],
@@ -1828,7 +1893,7 @@ class FakeAnalystGateway:
                         "announcement_ids": [],
                     },
                     {
-                        "rule_id": "management",
+                        "rule_id": "capital_allocation",
                         "status": "unknown",
                         "summary": "管理层证据不足。",
                         "evidence_ids": [],
@@ -1836,7 +1901,7 @@ class FakeAnalystGateway:
                         "announcement_ids": [],
                     },
                     {
-                        "rule_id": "margin_of_safety",
+                        "rule_id": "management_candor",
                         "status": "unknown",
                         "summary": "当前快照没有估值数据。",
                         "evidence_ids": [],
@@ -1923,7 +1988,7 @@ class FakeInvalidReferenceGateway:
                 "key_observations": [],
                 "rule_checks": [
                     {
-                        "rule_id": "moat",
+                        "rule_id": "durable_moat",
                         "status": "warn",
                         "summary": "测试无效 evidence 引用。",
                         "evidence_ids": [999999],
@@ -1931,7 +1996,7 @@ class FakeInvalidReferenceGateway:
                         "announcement_ids": [],
                     },
                     {
-                        "rule_id": "quality",
+                        "rule_id": "owner_earnings_quality",
                         "status": "unknown",
                         "summary": "待验证。",
                         "evidence_ids": [],
@@ -1939,7 +2004,7 @@ class FakeInvalidReferenceGateway:
                         "announcement_ids": [],
                     },
                     {
-                        "rule_id": "management",
+                        "rule_id": "capital_allocation",
                         "status": "unknown",
                         "summary": "待验证。",
                         "evidence_ids": [],
@@ -1947,7 +2012,7 @@ class FakeInvalidReferenceGateway:
                         "announcement_ids": [],
                     },
                     {
-                        "rule_id": "margin_of_safety",
+                        "rule_id": "management_candor",
                         "status": "unknown",
                         "summary": "待验证。",
                         "evidence_ids": [],
@@ -1982,7 +2047,7 @@ class FakePriceAwareAnalysisGateway:
                 "key_observations": ["目标价线索不能单独替代内在价值判断。"],
                 "rule_checks": [
                     {
-                        "rule_id": "moat",
+                        "rule_id": "durable_moat",
                         "status": "warn",
                         "summary": "护城河证据待复核。",
                         "evidence_ids": [],
@@ -1990,7 +2055,7 @@ class FakePriceAwareAnalysisGateway:
                         "announcement_ids": [],
                     },
                     {
-                        "rule_id": "quality",
+                        "rule_id": "owner_earnings_quality",
                         "status": "unknown",
                         "summary": "待验证。",
                         "evidence_ids": [],
@@ -1998,7 +2063,7 @@ class FakePriceAwareAnalysisGateway:
                         "announcement_ids": [],
                     },
                     {
-                        "rule_id": "management",
+                        "rule_id": "capital_allocation",
                         "status": "unknown",
                         "summary": "待验证。",
                         "evidence_ids": [],
@@ -2006,7 +2071,7 @@ class FakePriceAwareAnalysisGateway:
                         "announcement_ids": [],
                     },
                     {
-                        "rule_id": "margin_of_safety",
+                        "rule_id": "management_candor",
                         "status": "warn",
                         "summary": "市值和持仓成本相关线索提示安全边际需要谨慎复核。",
                         "evidence_ids": [],

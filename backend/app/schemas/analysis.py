@@ -12,6 +12,7 @@ class AnalystRuleRead(BaseModel):
     id: str
     label: str
     description: str
+    status_rubric: dict[str, str]
 
 
 class AnalystProfileRead(BaseModel):
@@ -20,6 +21,10 @@ class AnalystProfileRead(BaseModel):
     display_name: str
     description: str
     philosophy: str
+    core_logic: list[str]
+    decision_sequence: list[str]
+    preferred_evidence: list[str]
+    failure_modes: list[str]
     rules: list[AnalystRuleRead]
     prompt_focus: list[str]
 
@@ -30,7 +35,7 @@ class AnalystProfileListResponse(BaseModel):
 
 class AnalystRuleCheckOutput(BaseModel):
     rule_id: str = Field(min_length=1)
-    status: Literal["pass", "warn", "fail", "unknown"]
+    status: Literal["pass", "neutral", "unknown", "warn", "fail"]
     summary: str = Field(min_length=1)
     evidence_ids: list[int] = Field(default_factory=list)
     financial_periods: list[str] = Field(default_factory=list)
@@ -219,11 +224,14 @@ def _normalize_rule_status(value: object) -> str:
         "acceptable": "pass",
         "good": "pass",
         "strong": "pass",
+        "neutral": "neutral",
+        "balanced": "neutral",
+        "ordinary": "neutral",
+        "average": "neutral",
+        "mixed": "neutral",
         "warn": "warn",
         "warning": "warn",
-        "mixed": "warn",
         "partial": "warn",
-        "neutral": "warn",
         "moderate": "warn",
         "watch": "warn",
         "down_cycle": "warn",
@@ -432,7 +440,13 @@ def _derive_profile_fit_score(rule_checks: list[object]) -> float:
     ]
     if not statuses:
         return 0.5
-    score_by_status = {"pass": 0.8, "warn": 0.55, "fail": 0.25, "unknown": 0.45}
+    score_by_status = {
+        "pass": 0.8,
+        "neutral": 0.6,
+        "unknown": 0.45,
+        "warn": 0.35,
+        "fail": 0.25,
+    }
     return round(sum(score_by_status[status] for status in statuses) / len(statuses), 2)
 
 
@@ -500,7 +514,7 @@ class AnalystBatchRunRequest(BaseModel):
 
 
 class AnalysisRuleStatusUpdateRequest(BaseModel):
-    status: Literal["pass", "warn", "fail", "unknown"]
+    status: Literal["pass", "neutral", "unknown", "warn", "fail"]
 
 
 class AnalysisRunRead(BaseModel):

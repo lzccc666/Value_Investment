@@ -282,6 +282,7 @@ export type AnalystRule = {
   id: string;
   label: string;
   description: string;
+  status_rubric: Record<AnalystRuleStatus, string>;
 };
 
 export type AnalystProfile = {
@@ -290,6 +291,10 @@ export type AnalystProfile = {
   display_name: string;
   description: string;
   philosophy: string;
+  core_logic: string[];
+  decision_sequence: string[];
+  preferred_evidence: string[];
+  failure_modes: string[];
   rules: AnalystRule[];
   prompt_focus: string[];
 };
@@ -298,7 +303,7 @@ export type AnalystProfileListResponse = {
   items: AnalystProfile[];
 };
 
-export type AnalystRuleStatus = "pass" | "warn" | "fail" | "unknown";
+export type AnalystRuleStatus = "pass" | "neutral" | "unknown" | "warn" | "fail";
 
 export type AnalystRuleCheck = {
   rule_id: string;
@@ -536,8 +541,6 @@ export type PriceDecisionRun = {
   intrinsic_values_per_share: Record<string, number>;
   current_price: number;
   market_data_updated_at: string;
-  analyst_score_total: number;
-  analyst_scorecard_snapshot: Record<string, unknown>;
   suggested_safety_margin: number;
   safety_margin_override: number | null;
   effective_safety_margin: number;

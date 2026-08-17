@@ -2341,19 +2341,43 @@ function ValuationLabPanel({
   );
   const analystWeights = readRecordArray(matrixSnapshot.analyst_weights);
   const ruleImpacts = readRecordArray(matrixSnapshot.rule_impacts);
-  const priceReferenceRules = readRecordArray(matrixSnapshot.price_reference_rules);
+  const safetyMarginContributions = readRecordArray(results.dynamic_safety_margin_contributions);
+  const dynamicSafetyMargin = readNumber(results.dynamic_safety_margin);
   const analystProfileOrder = new Map(
     analystProfiles.items.map((profile, index) => [profile.id, index])
   );
+  const currentRuleIds = new Map(
+    analystProfiles.items.map((profile) => [
+      profile.id,
+      new Set(profile.rules.map((rule) => rule.id))
+    ])
+  );
+  const currentRuleImpacts = ruleImpacts.filter((rule) =>
+    currentRuleIds
+      .get(String(rule.profile_id ?? ""))
+      ?.has(String(rule.rule_id ?? ""))
+  );
+  const currentSafetyMarginContributions = safetyMarginContributions.filter((item) =>
+    currentRuleIds
+      .get(String(item.profile_id ?? ""))
+      ?.has(String(item.rule_id ?? ""))
+  );
   const analystOrder = (item: Record<string, unknown>) =>
     analystProfileOrder.get(String(item.profile_id ?? "")) ?? Number.MAX_SAFE_INTEGER;
-  const orderedAnalystWeights = [...analystWeights].sort(
-    (left, right) => analystOrder(left) - analystOrder(right)
-  );
-  const orderedPriceReferenceRules = [...priceReferenceRules].sort(
-    (left, right) => analystOrder(left) - analystOrder(right)
-  );
-  const parameterContributions = readPlainRecord(matrixSnapshot.parameter_contributions);
+  const orderedAnalystWeights = analystWeights
+    .filter(
+      (analyst) =>
+        analystProfileOrder.has(String(analyst.profile_id ?? "")) &&
+        currentRuleImpacts.some(
+          (rule) =>
+            rule.profile_id === analyst.profile_id && rule.source_run_id === analyst.source_run_id
+        )
+    )
+    .sort((left, right) => analystOrder(left) - analystOrder(right));
+  const hasLegacyAnalystMatrix =
+    analystWeights.length !== orderedAnalystWeights.length ||
+    ruleImpacts.length !== currentRuleImpacts.length;
+  const dimensionContributions = readPlainRecord(matrixSnapshot.dimension_contributions);
   const confidenceReasons = normalizeStringList(latestValuationRun?.confidence_summary.reasons);
   const isCalculated =
     resultStatus === "calculated_after_user_confirmation" || methodResults.length > 0;
@@ -2591,12 +2615,28 @@ function ValuationLabPanel({
               <BrainCircuit aria-hidden="true" size={17} />
               <strong>008 规则到参数审计</strong>
             </div>
-            {orderedAnalystWeights.length > 0 ? (
-              <div className="valuation-method-list">
-                {orderedAnalystWeights.map((analyst) => {
-                  const analystRules = ruleImpacts.filter(
-                    (rule) => rule.source_run_id === analyst.source_run_id
-                  );
+            <dl className="valuation-input-grid">
+              <MetricFact
+                label="动态安全边际"
+                value={dynamicSafetyMargin === null ? "待计算" : formatPercent(dynamicSafetyMargin)}
+              />
+                <MetricFact
+                  label="规则贡献"
+                  value={`${currentSafetyMarginContributions.length} / 32`}
+                />
+                <MetricFact label="分析师覆盖" value={`${orderedAnalystWeights.length} / 8`} />
+              </dl>
+              {hasLegacyAnalystMatrix ? (
+                <div className="sync-message">
+                  此历史估值包含已退出的分析师或旧规则合同；原始快照继续保留，活动审计区只展示当前 8 人 32 规则合同中的兼容条目。
+                </div>
+              ) : null}
+              {orderedAnalystWeights.length > 0 ? (
+                <div className="valuation-method-list">
+                  {orderedAnalystWeights.map((analyst) => {
+                    const analystRules = currentRuleImpacts.filter(
+                      (rule) => rule.source_run_id === analyst.source_run_id
+                    );
                   return (
                     <div key={String(analyst.source_run_id)}>
                       <strong>
@@ -2606,8 +2646,8 @@ function ValuationLabPanel({
                         {analystRules.map((rule) => (
                           <li key={`${String(rule.source_run_id)}-${String(rule.rule_id)}`}>
                             {String(rule.rule_label ?? rule.rule_id)}：{formatRuleStatus(rule.status)}；
-                            维度 {formatMappingKeys(rule.dimensions)}；参数 {formatRuleParameterContributions(rule, parameterContributions)}
-                            {rule.calculation_role === "price_reference" ? "；仅作价格参考" : ""}
+                            维度贡献 {formatRuleDimensionContributions(rule, dimensionContributions)}；
+                              安全边际贡献 {formatPercent(readSafetyMarginContribution(rule, currentSafetyMarginContributions))}
                           </li>
                         ))}
                       </ul>
@@ -2618,18 +2658,6 @@ function ValuationLabPanel({
             ) : (
               <div className="inline-empty">当前没有可用的最新成功分析师规则矩阵。</div>
             )}
-            {orderedPriceReferenceRules.length > 0 ? (
-              <>
-                <strong>价格/安全边际参考信号</strong>
-                <ul className="compact-fact-list">
-                  {orderedPriceReferenceRules.map((rule) => (
-                    <li key={`price-${String(rule.source_run_id)}-${String(rule.rule_id)}`}>
-                      {String(rule.profile_name)} · {String(rule.rule_label)}：{formatRuleStatus(rule.status)}，展示但不参与参数计算
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
           </article>
 
           {isCalculated ? (
@@ -2756,8 +2784,8 @@ function PriceDecisionPanel({
   const selectedHistoryRun = history.items.find((run) => run.id === selectedHistoryId) ?? null;
   const parsedOverride = overridePercent.trim() === "" ? Number.NaN : Number(overridePercent);
   const overrideError =
-    useOverride && (!Number.isFinite(parsedOverride) || parsedOverride < 0 || parsedOverride > 50)
-      ? "覆盖安全边际必须位于 0%-50%。"
+    useOverride && (!Number.isFinite(parsedOverride) || parsedOverride < 0 || parsedOverride > 100)
+      ? "覆盖安全边际必须位于 0%-100%。"
       : null;
   const missingValuation = calculatedValuation === null;
   const missingPrice = company.current_price === null || company.current_price <= 0;
@@ -2887,10 +2915,6 @@ function PriceDecisionPanel({
               label="最终安全边际"
               value={latestRun ? formatPercent(latestRun.effective_safety_margin) : "待计算"}
             />
-            <MetricFact
-              label="分析师综合分"
-              value={latestRun ? formatSignedNumber(latestRun.analyst_score_total) : "待读取"}
-            />
           </dl>
           <label className="price-decision-override-toggle">
             <input
@@ -2909,7 +2933,7 @@ function PriceDecisionPanel({
                   aria-invalid={Boolean(overrideError)}
                   type="number"
                   min="0"
-                  max="50"
+                  max="100"
                   step="0.1"
                   value={overridePercent}
                   onChange={(event) => setOverridePercent(event.currentTarget.value)}
@@ -3114,7 +3138,6 @@ function MemoPreparationPanel({
           <article>
             <h4>{latestMemo.title}</h4>
             <p>{readMemoExecutiveSummary(latestMemo)}</p>
-            <MemoAnalystScorecard memo={latestMemo} />
             {renderMemoListSection("核心判断", latestMemo.sections.core_thesis)}
             {renderMemoListSection("关键风险", latestMemo.sections.key_risks)}
             {renderMemoListSection("估值输入队列", readValuationQueue(latestMemo))}
@@ -3192,7 +3215,6 @@ function MemoPreparationPanel({
               v{selectedHistoryMemo.version_no} {selectedHistoryMemo.title}
             </h4>
             <p>{readMemoExecutiveSummary(selectedHistoryMemo)}</p>
-            <MemoAnalystScorecard memo={selectedHistoryMemo} />
             {renderMemoListSection("核心判断", selectedHistoryMemo.sections.core_thesis)}
             {renderMemoListSection("关键风险", selectedHistoryMemo.sections.key_risks)}
             {renderMemoListSection("数据缺口", selectedHistoryMemo.sections.data_gaps)}
@@ -3262,90 +3284,6 @@ function MemoPrepBlock({
   );
 }
 
-function MemoAnalystScorecard({ memo }: { memo: InvestmentMemo }) {
-  const scorecard = readPlainRecord(memo.sections.analyst_scorecard);
-  const analystItems = readRecordArray(scorecard.analyst_items);
-  const totalScore = readNumber(scorecard.total_score);
-  const suggestedSafetyMargin = readNumber(scorecard.suggested_safety_margin);
-  const coverage = readPlainRecord(scorecard.coverage);
-  if (analystItems.length === 0 || totalScore === null) {
-    return null;
-  }
-
-  return (
-    <div className="memo-analyst-scorecard">
-      <div className="memo-analyst-scorecard__heading">
-        <strong>分析师评分</strong>
-        <span className={totalScore < 0 ? "is-negative" : totalScore > 0 ? "is-positive" : ""}>
-          {formatSignedScore(totalScore)}
-        </span>
-      </div>
-      <p>
-        {String(coverage.successful_profiles ?? 0)}/{String(coverage.total_profiles ?? 10)} 个视角，
-        {String(coverage.known_rules ?? 0)}/{String(coverage.total_rules ?? 40)} 个已判断指标，40 项等权
-        {suggestedSafetyMargin === null
-          ? null
-          : `，动态安全边际 ${formatPercent(suggestedSafetyMargin)}`}
-      </p>
-      <div className="memo-analyst-scorecard__table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>分析师</th>
-              <th>四指标</th>
-              <th>指标占比</th>
-              <th>等权贡献</th>
-            </tr>
-          </thead>
-          <tbody>
-            {analystItems.map((item) => {
-              const available = item.availability === "success";
-              const profileId = String(item.profile_id ?? "unknown");
-              return (
-                <tr key={profileId}>
-                  <td>{String(item.profile_name ?? profileId)}</td>
-                  <td>
-                    {formatSignedScore(readNumber(item.rule_score_total) ?? 0)}
-                    {available ? null : "（缺失）"}
-                  </td>
-                  <td>{formatPercent(readNumber(item.analyst_weight))}</td>
-                  <td>{formatSignedScore(readNumber(item.weighted_score) ?? 0)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <details className="memo-analyst-scorecard__details">
-        <summary>40 项指标明细</summary>
-        <ul>
-          {analystItems.map((item) => {
-            const profileId = String(item.profile_id ?? "unknown");
-            const ruleScores = readRecordArray(item.rule_scores);
-            return (
-              <li key={profileId}>
-                <strong>{String(item.profile_name ?? profileId)}</strong>
-                <span>
-                  {ruleScores.length > 0
-                    ? ruleScores
-                        .map(
-                          (rule) =>
-                            `${String(rule.rule_label ?? rule.rule_id ?? "指标")} ${formatSignedScore(
-                              readNumber(rule.score) ?? 0
-                            )}`
-                        )
-                        .join(" · ")
-                    : "暂无指标"}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      </details>
-    </div>
-  );
-}
-
 function renderMemoListSection(title: string, value: unknown) {
   const items = normalizeStringList(value);
   if (items.length === 0) {
@@ -3385,11 +3323,6 @@ function readValuationQueue(memo: InvestmentMemo): string[] {
       return reason || null;
     })
     .filter((item): item is string => Boolean(item));
-}
-
-function formatSignedScore(value: number): string {
-  const normalized = Math.abs(value) < 0.005 ? 0 : value;
-  return `${normalized > 0 ? "+" : ""}${normalized.toFixed(2)}`;
 }
 
 function MetricFact({ label, value }: MetricFactProps) {
@@ -4330,10 +4263,19 @@ type AnalystPanelProps = {
 
 const analystRuleStatusLabels: Record<string, string> = {
   pass: "通过",
-  warn: "观察",
+  neutral: "中性",
+  warn: "谨慎",
   fail: "不通过",
   unknown: "未知"
 };
+
+const analystRuleStatusOrder: AnalystRuleStatus[] = [
+  "pass",
+  "neutral",
+  "unknown",
+  "warn",
+  "fail"
+];
 
 function AnalystPanel({
   profiles,
@@ -4351,7 +4293,14 @@ function AnalystPanel({
   const isRunningAll = runState.status === "running_all";
   const isRunningAny = runState.status === "running" || runState.status === "running_all";
   const isDeletingRun = deleteState.status === "deleting";
-  const sharedAccountingEvents = collectSharedAccountingEvents(runs.items);
+  const profileIds = new Set(profiles.items.map((profile) => profile.id));
+  const currentRuns = runs.items.filter(
+    (run) => typeof run.analyst_profile === "string" && profileIds.has(run.analyst_profile)
+  );
+  const currentFailedRuns = failedRuns.items.filter(
+    (run) => typeof run.analyst_profile === "string" && profileIds.has(run.analyst_profile)
+  );
+  const sharedAccountingEvents = collectSharedAccountingEvents(currentRuns);
 
   return (
     <section className="data-panel analyst-panel" aria-labelledby="analyst-view-heading">
@@ -4361,8 +4310,10 @@ function AnalystPanel({
           <h3 id="analyst-view-heading">分析师视角</h3>
         </div>
         <div className="data-panel__actions">
-          <span>{runs.total} 个成功 run</span>
-          {failedRuns.total > 0 ? <span>{failedRuns.total} 个最近失败</span> : null}
+          <span>{currentRuns.length} 个成功 run</span>
+          {currentFailedRuns.length > 0 ? (
+            <span>{currentFailedRuns.length} 个最近失败</span>
+          ) : null}
           <button
             className="panel-action"
             type="button"
@@ -4471,6 +4422,53 @@ function AnalystPanel({
                 ))}
               </div>
 
+              <details className="analyst-profile-details">
+                <summary>框架详情</summary>
+                <div className="analyst-profile-details__content">
+                  <section>
+                    <strong>投资哲学</strong>
+                    <p>{profile.philosophy}</p>
+                  </section>
+                  <div className="analyst-profile-details__grid">
+                    {[
+                      ["核心逻辑", profile.core_logic],
+                      ["决策顺序", profile.decision_sequence],
+                      ["偏好证据", profile.preferred_evidence],
+                      ["失败模式", profile.failure_modes],
+                      ["分析焦点", profile.prompt_focus]
+                    ].map(([title, items]) => (
+                      <section key={title as string}>
+                        <strong>{title}</strong>
+                        <ul>
+                          {((items as string[] | undefined) ?? []).map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    ))}
+                  </div>
+                  <section className="analyst-rule-definitions">
+                    <strong>规则判定口径</strong>
+                    {profile.rules.map((rule) => (
+                      <div className="analyst-rule-definition" key={rule.id}>
+                        <div>
+                          <strong>{rule.label}</strong>
+                          <p>{rule.description}</p>
+                        </div>
+                        <dl>
+                          {analystRuleStatusOrder.map((status) => (
+                            <div className={`rule-rubric rule-rubric--${status}`} key={status}>
+                              <dt>{analystRuleStatusLabels[status]}</dt>
+                              <dd>{rule.status_rubric?.[status] ?? "未提供判定口径"}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </div>
+                    ))}
+                  </section>
+                </div>
+              </details>
+
               {shouldShowFailure ? (
                 <div className="analyst-run-failure">
                   <div className="analyst-run-meta">
@@ -4505,7 +4503,7 @@ function AnalystPanel({
                     <span>{formatConfigVersion(latestRun.config_version)}</span>
                     <span>{formatDateTime(latestRun.created_at)}</span>
                     {typeof result.confidence === "number" ? (
-                      <span>数据置信度 {formatImportanceScore(result.confidence)}</span>
+                      <span>本次输入数据置信度 {formatImportanceScore(result.confidence)}</span>
                     ) : null}
                     {typeof result.profile_fit_score === "number" ? (
                       <span>视角适配度 {formatImportanceScore(result.profile_fit_score)}</span>
@@ -4585,8 +4583,9 @@ function AnalystPanel({
                               }
                             >
                               <option value="pass">{analystRuleStatusLabels.pass}</option>
-                              <option value="warn">{analystRuleStatusLabels.warn}</option>
+                              <option value="neutral">{analystRuleStatusLabels.neutral}</option>
                               <option value="unknown">{analystRuleStatusLabels.unknown}</option>
+                              <option value="warn">{analystRuleStatusLabels.warn}</option>
                               <option value="fail">{analystRuleStatusLabels.fail}</option>
                             </select>
                             <strong>{ruleLabel}</strong>
@@ -4980,25 +4979,20 @@ function validateValuationModelWeights(draft: ValuationModelWeightsDraft): strin
 function formatRuleStatus(value: unknown): string {
   const labels: Record<string, string> = {
     pass: "通过",
-    warn: "观察",
+    neutral: "中性",
+    warn: "谨慎",
     fail: "不通过",
     unknown: "未知"
   };
   return labels[String(value ?? "unknown")] ?? "未知";
 }
 
-function formatMappingKeys(value: unknown): string {
-  const mapping = readPlainRecord(value);
-  const keys = Object.keys(mapping);
-  return keys.length > 0 ? keys.map(matrixParameterLabel).join("、") : "无";
-}
-
-function formatRuleParameterContributions(
+function formatRuleDimensionContributions(
   rule: Record<string, unknown>,
-  parameterContributions: Record<string, unknown>
+  dimensionContributions: Record<string, unknown>
 ): string {
   const labels: string[] = [];
-  for (const [parameter, rawItems] of Object.entries(parameterContributions)) {
+  for (const [dimension, rawItems] of Object.entries(dimensionContributions)) {
     const match = readRecordArray(rawItems).find(
       (item) =>
         item.source_run_id === rule.source_run_id &&
@@ -5009,12 +5003,23 @@ function formatRuleParameterContributions(
     }
     const contribution = readNumber(match.contribution);
     labels.push(
-      `${matrixParameterLabel(parameter)} ${
+      `${matrixParameterLabel(dimension)} ${
         contribution === null ? "待计算" : formatCompactDecimal(contribution)
       }`
     );
   }
-  return labels.length > 0 ? labels.join("、") : "不参与计算";
+  return labels.length > 0 ? labels.join("、") : "无";
+}
+
+function readSafetyMarginContribution(
+  rule: Record<string, unknown>,
+  contributions: Array<Record<string, unknown>>
+): number | null {
+  const item = contributions.find(
+    (candidate) =>
+      candidate.source_run_id === rule.source_run_id && candidate.rule_id === rule.rule_id
+  );
+  return readNumber(item?.contribution);
 }
 
 function formatCompactDecimal(value: number): string {
@@ -5204,15 +5209,18 @@ function buildResearchReadiness({
     },
     { unprocessed: 0, quick: 0, deep: 0 }
   );
+  const currentProfileIds = new Set(analystProfiles.items.map((profile) => profile.id));
   const successfulProfileIds = new Set(
     analysisRuns.items
       .map((run) => run.analyst_profile)
       .filter((profileId): profileId is string => Boolean(profileId))
+      .filter((profileId) => currentProfileIds.has(profileId))
   );
   const failedProfileIds = new Set(
     failedAnalysisRuns.items
       .map((run) => run.analyst_profile)
       .filter((profileId): profileId is string => Boolean(profileId))
+      .filter((profileId) => currentProfileIds.has(profileId))
       .filter((profileId) => !successfulProfileIds.has(profileId))
   );
   const missingProfileCount = analystProfiles.items.filter(
@@ -5249,32 +5257,38 @@ function buildMemoPreparation(
   runs: AnalysisRunListResponse,
   failedRuns: AnalysisRunListResponse
 ): MemoPreparation {
-  const profileNameById = new Map(profiles.items.map((profile) => [profile.id, profile.display_name]));
+  const currentProfileIds = new Set(profiles.items.map((profile) => profile.id));
+  const currentRuns = runs.items.filter((run) =>
+    currentProfileIds.has(run.analyst_profile ?? "")
+  );
+  const currentFailedRuns = failedRuns.items.filter((run) =>
+    currentProfileIds.has(run.analyst_profile ?? "")
+  );
   const successfulProfileIds = new Set(
-    runs.items.map((run) => run.analyst_profile).filter((id): id is string => Boolean(id))
+    currentRuns.map((run) => run.analyst_profile).filter((id): id is string => Boolean(id))
   );
   const failedProfileIds = new Set(
-    failedRuns.items
+    currentFailedRuns
       .map((run) => run.analyst_profile)
       .filter((id): id is string => Boolean(id))
       .filter((id) => !successfulProfileIds.has(id))
   );
-  const successfulProfiles = runs.items.map((run) =>
-    getAnalystDisplayName(profiles, run.analyst_profile ?? "")
-  );
+  const successfulProfiles = profiles.items
+    .filter((profile) => successfulProfileIds.has(profile.id))
+    .map((profile) => profile.display_name);
   const missingProfiles = profiles.items
     .filter((profile) => !successfulProfileIds.has(profile.id))
     .map((profile) => profile.display_name);
-  const failedProfiles = Array.from(failedProfileIds).map(
-    (profileId) => `${profileNameById.get(profileId) ?? profileId} 最近失败`
-  );
-  const risks = uniqueStrings(runs.items.flatMap((run) => normalizeStringList(run.result.risk_flags)));
+  const failedProfiles = profiles.items
+    .filter((profile) => failedProfileIds.has(profile.id))
+    .map((profile) => `${profile.display_name} 最近失败`);
+  const risks = uniqueStrings(currentRuns.flatMap((run) => normalizeStringList(run.result.risk_flags)));
   const counterEvidence = uniqueStrings(
-    runs.items.flatMap((run) => normalizeStringList(run.result.counter_evidence))
+    currentRuns.flatMap((run) => normalizeStringList(run.result.counter_evidence))
   );
-  const dataGaps = uniqueStrings(runs.items.flatMap((run) => normalizeStringList(run.result.data_gaps)));
+  const dataGaps = uniqueStrings(currentRuns.flatMap((run) => normalizeStringList(run.result.data_gaps)));
   const valuationAssumptions = uniqueStrings(
-    runs.items.flatMap((run) => normalizeStringList(run.result.valuation_assumption_suggestions))
+    currentRuns.flatMap((run) => normalizeStringList(run.result.valuation_assumption_suggestions))
   );
 
   return {

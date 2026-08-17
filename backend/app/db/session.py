@@ -20,6 +20,7 @@ def create_sqlalchemy_engine(database_url: str) -> Engine:
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     database_engine = create_engine(database_url, connect_args=connect_args)
     if database_url.startswith("sqlite"):
+
         @event.listens_for(database_engine, "connect")
         def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
             cursor = dbapi_connection.cursor()

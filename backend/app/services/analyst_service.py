@@ -52,11 +52,23 @@ PRICE_SENSITIVE_TEXT_TERMS = (
     "市值",
     "持仓成本",
     "估值倍数",
+    "市盈率",
+    "市净率",
+    "市销率",
+    "评级",
+    "市场情绪",
+    "安全边际",
+    "买入",
+    "卖出",
+    "加仓",
+    "减仓",
     "current price",
     "historical price",
     "target price",
     "market cap",
     "holding cost",
+    "market sentiment",
+    "safety margin",
 )
 PRICE_SENSITIVE_FIELD_NAMES = {
     "current_price",
@@ -65,6 +77,15 @@ PRICE_SENSITIVE_FIELD_NAMES = {
     "target_price",
     "market_cap",
     "holding_cost",
+    "position_cost",
+    "valuation_multiple",
+    "ev_ebitda",
+    "rating",
+    "broker_rating",
+    "market_rating",
+    "market_sentiment",
+    "safety_margin",
+    "trade_action",
     "pe_ttm",
     "pe_dynamic",
     "pe_static",
@@ -384,8 +405,13 @@ def list_latest_company_analysis_runs(
     status: str | None = "success",
 ) -> list[AnalysisRun]:
     filters = [AnalysisRun.company_id == company_id]
+    current_profile_ids = [profile.id for profile in list_analyst_profiles()]
     if run_type:
         filters.append(AnalysisRun.run_type == run_type)
+    if run_type == RUN_TYPE_ANALYST_VIEW:
+        filters.append(AnalysisRun.analyst_profile.in_(current_profile_ids))
+        if status == "success":
+            filters.append(AnalysisRun.status == "success")
     if analyst_profile:
         filters.append(AnalysisRun.analyst_profile == analyst_profile)
     if status and run_type != RUN_TYPE_ANALYST_VIEW:
@@ -406,8 +432,13 @@ def list_latest_company_analysis_runs(
         if run_type == RUN_TYPE_ANALYST_VIEW
         else _dedupe_latest_runs_by_type_and_profile(runs)
     )
-    if status:
+    if status and status != "success":
         latest_runs = [run for run in latest_runs if run.status == status]
+    if run_type == RUN_TYPE_ANALYST_VIEW:
+        profile_order = {profile_id: index for index, profile_id in enumerate(current_profile_ids)}
+        latest_runs.sort(
+            key=lambda run: profile_order.get(str(run.analyst_profile or ""), len(profile_order))
+        )
     return latest_runs
 
 
@@ -432,7 +463,7 @@ def update_analysis_run_rule_status(
     company_id: int,
     run_id: int,
     rule_id: str,
-    status: Literal["pass", "warn", "fail", "unknown"],
+    status: Literal["pass", "neutral", "unknown", "warn", "fail"],
 ) -> AnalysisRun:
     run = session.get(AnalysisRun, run_id)
     if run is None or run.company_id != company_id or run.run_type != RUN_TYPE_ANALYST_VIEW:
@@ -1917,24 +1948,12 @@ def _compute_profile_relevance(
         elif profile.id in {"munger", "peter_lynch", "li_lu"}:
             score += float(feature.get("consumer_brand_secondary", 0.1))
             reasons.append("消费品牌生意较容易映射到业务质量、增长兑现和能力圈框架。")
-        elif profile.id == "ray_dalio":
-            score += float(feature.get("consumer_brand_dalio", -0.08))
-            reasons.append(
-                "消费品牌公司的一阶问题通常不是宏观周期暴露，宏观视角更适合作为风险补充。"
-            )
-        elif profile.id == "george_soros":
-            score += float(feature.get("consumer_brand_soros", 0.02))
-            reasons.append("消费品牌可用反身性视角检查叙事偏差，但主要结论仍应回到商业质量。")
     if signals["tech_growth"] and profile.id in {"fisher", "peter_lynch"}:
         score += float(feature.get("tech_growth", 0.16))
         reasons.append("公司文本包含科技、研发或创新信号，成长质量视角更适配。")
-    if signals["cyclical_macro"]:
-        if profile.id in {"ray_dalio", "george_soros"}:
-            score += float(feature.get("cyclical_macro_primary", 0.22))
-            reasons.append("公司暴露周期或宏观敏感行业，宏观周期和信用环境视角更适配。")
-        elif profile.id in {"graham", "li_lu"}:
-            score += float(feature.get("cyclical_macro_defensive", 0.08))
-            reasons.append("周期行业需要强调下行保护和永久损失风险。")
+    if signals["cyclical_macro"] and profile.id in {"graham", "li_lu"}:
+        score += float(feature.get("cyclical_macro_defensive", 0.08))
+        reasons.append("周期行业需要强调资本结构、资产质量和永久损失风险。")
     if signals["asset_heavy"] and profile.id == "graham":
         score += float(feature.get("asset_heavy_graham", 0.12))
         reasons.append("资产较重或金融地产属性更适合做资产保护和保守假设检查。")
@@ -2180,16 +2199,14 @@ def _build_company_feature_text(
 
 def _profile_required_topics(profile_id: str) -> list[str]:
     topics_by_profile = {
-        "buffett": ["profitability", "cash_flow", "consumer_channel", "governance"],
+        "buffett": ["profitability", "cash_flow", "capital_allocation", "governance"],
         "peter_lynch": ["growth", "consumer_channel", "balance_sheet", "industry_supply_demand"],
-        "munger": ["profitability", "governance", "regulatory", "major_event"],
+        "munger": ["governance", "regulatory", "balance_sheet", "major_event"],
         "duan_yongping": ["consumer_channel", "profitability", "cash_flow", "capital_return"],
-        "graham": ["balance_sheet", "profitability", "data_gaps", "price_sensitive"],
+        "graham": ["balance_sheet", "profitability", "accounting_quality", "data_gaps"],
         "fisher": ["growth", "industry_supply_demand", "governance", "operating_efficiency"],
         "lin_yuan": ["consumer_channel", "profitability", "cash_flow", "growth"],
-        "li_lu": ["profitability", "balance_sheet", "regulatory", "data_gaps"],
-        "ray_dalio": ["industry_supply_demand", "balance_sheet", "regulatory", "major_event"],
-        "george_soros": ["price_sensitive", "regulatory", "industry_supply_demand", "major_event"],
+        "li_lu": ["profitability", "balance_sheet", "governance", "data_gaps"],
     }
     return topics_by_profile.get(profile_id, ["profitability", "growth", "data_gaps"])
 

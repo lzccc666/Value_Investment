@@ -4187,6 +4187,116 @@ h2 {
 
 }
 
+.analyst-profile-details {
+  margin-top: 12px;
+  border-top: 1px solid #e1e7e5;
+}
+
+.analyst-profile-details > summary {
+  padding: 10px 0 2px;
+  color: #087f72;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.analyst-profile-details__content {
+  display: grid;
+  gap: 16px;
+  padding: 12px 0 4px;
+}
+
+.analyst-profile-details__content section > strong,
+.analyst-rule-definition > div > strong {
+  color: #172026;
+  font-size: 13px;
+}
+
+.analyst-profile-details__content p,
+.analyst-profile-details__content ul {
+  margin: 6px 0 0;
+  color: #53615e;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.analyst-profile-details__content ul {
+  display: grid;
+  gap: 4px;
+  padding-left: 18px;
+}
+
+.analyst-profile-details__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+}
+
+.analyst-rule-definitions,
+.analyst-rule-definition,
+.analyst-rule-definition dl {
+  display: grid;
+  gap: 10px;
+}
+
+.analyst-rule-definition {
+  padding-top: 12px;
+  border-top: 1px solid #e1e7e5;
+}
+
+.analyst-rule-definition dl {
+  margin: 0;
+}
+
+.rule-rubric {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.rule-rubric dt {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #eef3f1;
+  color: #3e4c48;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.rule-rubric--pass dt {
+  background: #dff4eb;
+  color: #176345;
+}
+
+.rule-rubric--neutral dt {
+  background: #e7f0f4;
+  color: #315d6d;
+}
+
+.rule-rubric--unknown dt {
+  background: #f0f1f1;
+  color: #59635f;
+}
+
+.rule-rubric--warn dt {
+  background: #fff0cf;
+  color: #785514;
+}
+
+.rule-rubric--fail dt {
+  background: #f8dfdc;
+  color: #8a3028;
+}
+
+.rule-rubric dd {
+  margin: 0;
+  color: #53615e;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 
 .analyst-rule-chip-list span,
 .analyst-run-meta span {
@@ -4508,6 +4618,14 @@ h2 {
   color: #0f5d55;
 
   background: #dff5ef;
+
+}
+
+.rule-status--neutral {
+
+  color: #305851;
+
+  background: #e6efec;
 
 }
 
@@ -5521,9 +5639,12 @@ h2 {
 }
 
 .matrix-table td:first-child {
+  min-width: 190px;
+}
+
+.matrix-rule-identity {
   display: grid;
   gap: 4px;
-  min-width: 190px;
 }
 
 .matrix-table th:nth-child(2),
@@ -5969,6 +6090,7 @@ h2 {
   .model-config-grid,
   .manual-evidence-form__grid,
   .analyst-profile-grid,
+  .analyst-profile-details__grid,
   .evidence-row__header {
 
     grid-template-columns: 1fr;

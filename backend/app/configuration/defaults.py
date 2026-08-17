@@ -19,8 +19,6 @@ def _rule_mappings() -> dict[str, dict[str, object]]:
                 "rule_id": rule.id,
                 "rule_label": rule.label,
                 "dimensions": dict(mapping.dimensions),
-                "parameter_impacts": dict(mapping.parameter_impacts),
-                "parameter_impacts_mode": "audit_only",
                 "calculation_role": mapping.calculation_role,
                 "price_blind_compatible": mapping.price_blind_compatible,
             }
@@ -94,17 +92,12 @@ _DEFAULT_CONFIG: dict[str, object] = {
             "fisher": 0.58,
             "lin_yuan": 0.62,
             "li_lu": 0.62,
-            "ray_dalio": 0.48,
-            "george_soros": 0.50,
         },
         "profile_default_score": 0.56,
         "feature_adjustments": {
             "consumer_brand_primary": 0.20,
             "consumer_brand_secondary": 0.10,
-            "consumer_brand_dalio": -0.08,
-            "consumer_brand_soros": 0.02,
             "tech_growth": 0.16,
-            "cyclical_macro_primary": 0.22,
             "cyclical_macro_defensive": 0.08,
             "asset_heavy_graham": 0.12,
             "cash_flow_quality": 0.06,
@@ -168,7 +161,23 @@ _DEFAULT_CONFIG: dict[str, object] = {
         "tier_thresholds": {"high": 0.78, "medium": 0.55},
     },
     "valuation_rule_matrix": {
-        "status_scores": {"pass": 1.0, "warn": -0.35, "fail": -2.0, "unknown": 0.0},
+        "status_scores": {
+            "pass": 1.0,
+            "neutral": 0.0,
+            "unknown": -0.1,
+            "warn": -0.5,
+            "fail": -2.0,
+        },
+        "safety_margin_additions": {
+            "pass": 0.0,
+            "neutral": 0.009,
+            "unknown": 0.012,
+            "warn": 0.016,
+            "fail": 0.030,
+        },
+        "safety_margin_analyst_scale": 8.0,
+        "safety_margin_min": 0.0,
+        "safety_margin_max": 1.0,
         "confidence_weight": 0.50,
         "profile_fit_weight": 0.50,
         "weight_exponent": 2.0,
@@ -179,12 +188,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
         "rule_mappings": _rule_mappings(),
     },
     "memo_decision": {
-        "status_scores": {"pass": 1.0, "warn": -0.30, "fail": -2.0, "unknown": -0.10},
-        "rule_weight_mode": "equal_weight_per_rule",
         "min_successful_analysts": 2,
-        "safety_margin_min": 0.0,
-        "safety_margin_max": 0.50,
-        "safety_margin_score_span": 3.0,
         "model_confidence_map": {"low": 0.35, "medium": 0.65, "high": 0.85},
     },
     "valuation_models": {
@@ -315,7 +319,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
     },
     "price_decision": {
         "safety_margin_min": 0.0,
-        "safety_margin_max": 0.50,
+        "safety_margin_max": 1.0,
         "buy_price_scenario": "base",
     },
 }

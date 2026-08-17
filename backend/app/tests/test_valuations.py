@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
-from app.analysis.analyst_profiles import get_analyst_profile
+from app.analysis.analyst_profiles import get_analyst_profile, list_analyst_profiles
 from app.db.init_db import init_db
 from app.db.models import AnalysisRun, Company, FinancialStatement, InvestmentMemo, ValuationRun
 from app.db.session import create_sqlalchemy_engine, get_db
@@ -238,13 +238,9 @@ def test_residual_income_dividend_discount_and_asset_value_are_calculated(
         "base": {"non_cash_asset_haircut": 0.80},
         "optimistic": {"non_cash_asset_haircut": 1.00},
     }
-    assert methods["asset_value"]["scenario_values"]["conservative"] == pytest.approx(
-        480_000_000
-    )
+    assert methods["asset_value"]["scenario_values"]["conservative"] == pytest.approx(480_000_000)
     assert methods["asset_value"]["scenario_values"]["base"] == pytest.approx(740_000_000)
-    assert methods["asset_value"]["scenario_values"]["optimistic"] == pytest.approx(
-        1_000_000_000
-    )
+    assert methods["asset_value"]["scenario_values"]["optimistic"] == pytest.approx(1_000_000_000)
 
 
 def test_model_weights_require_100_percent_and_positive_available_weight(
@@ -527,10 +523,10 @@ def test_010_uses_008_rule_matrix_and_ignores_009_signal_pack(tmp_path: Path) ->
             company,
             profile_id="li_lu",
             statuses={
-                "circle_of_competence": "pass",
-                "depth_of_research": "pass",
-                "intrinsic_value": "pass",
-                "permanent_loss": "fail",
+                "economic_knowability": "pass",
+                "moat_growth_coexistence": "pass",
+                "owner_governance": "pass",
+                "permanent_loss_resilience": "fail",
             },
         )
         _seed_memo(
@@ -565,7 +561,7 @@ def test_010_uses_008_rule_matrix_and_ignores_009_signal_pack(tmp_path: Path) ->
     )
     assert adjustment["delta_discount"] == pytest.approx(1.5 * unscaled_delta_discount)
     assert any(
-        item["rule_id"] == "permanent_loss" and item["status_score"] == -2.0
+        item["rule_id"] == "permanent_loss_resilience" and item["status_score"] == -2.0
         for item in adjustment["rule_impacts"]
     )
 
@@ -575,12 +571,10 @@ def test_010_uses_008_rule_matrix_and_ignores_009_signal_pack(tmp_path: Path) ->
         scenarios["base"]["discount_rate"] + spread * 0.60
     )
     assert (
-        scenarios["optimistic"]["terminal_growth_rate"] <= scenarios["base"]["terminal_growth_rate"]
+        scenarios["optimistic"]["terminal_growth_rate"] > scenarios["base"]["terminal_growth_rate"]
     )
 
-    weighting = {
-        item["method"]: item["weight"] for item in confirmed.results["model_weighting"]
-    }
+    weighting = {item["method"]: item["weight"] for item in confirmed.results["model_weighting"]}
     assert weighting == pytest.approx(
         {
             "dcf": 0.35,
@@ -620,44 +614,94 @@ def test_analyst_weight_uses_confidence_and_profile_fit_only(tmp_path: Path) -> 
     snapshot = run.model_suggested_assumptions["analyst_parameter_matrix_snapshot"]
     weights = {item["profile_id"]: item for item in snapshot["analyst_weights"]}
     assert weights["buffett"]["known_rule_completeness"] == 0.0
-    assert weights["buffett"]["price_blind_completeness"] == 0.75
+    assert weights["buffett"]["price_blind_completeness"] == 1.0
     assert weights["buffett"]["raw_weight"] == pytest.approx(0.7)
     assert weights["li_lu"]["raw_weight"] == pytest.approx(0.3)
-    assert weights["buffett"]["base_weight"] == pytest.approx(0.7)
-    assert weights["li_lu"]["base_weight"] == pytest.approx(0.3)
-    assert weights["buffett"]["weight"] == pytest.approx(0.7**2 / (0.7**2 + 0.3**2))
-    assert weights["li_lu"]["weight"] == pytest.approx(0.3**2 / (0.7**2 + 0.3**2))
+    assert weights["buffett"]["base_weight"] == pytest.approx(0.7 / 7.0)
+    assert weights["li_lu"]["base_weight"] == pytest.approx(0.3 / 7.0)
+    denominator = 0.7**2 + 0.3**2 + 6 * 1.0**2
+    assert weights["buffett"]["weight"] == pytest.approx(0.7**2 / denominator)
+    assert weights["li_lu"]["weight"] == pytest.approx(0.3**2 / denominator)
 
 
-def test_price_reference_rules_are_audited_but_not_calculated(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("status", "expected_margin"),
+    [
+        ("pass", 0.0),
+        ("neutral", 0.288),
+        ("unknown", 0.384),
+        ("warn", 0.512),
+        ("fail", 0.96),
+    ],
+)
+def test_all_32_rules_compute_and_dynamic_margin_hits_policy_endpoints(
+    tmp_path: Path, status: str, expected_margin: float
+) -> None:
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
-        company = _seed_ready_company(session, ticker="PRICE.US", name="Price Reference")
-        _seed_analyst_run(
+        company = _seed_company(
             session,
-            company,
-            profile_id="buffett",
-            statuses={
-                "moat": "pass",
-                "quality": "pass",
-                "management": "pass",
-                "margin_of_safety": "fail",
-            },
+            ticker=f"{status.upper()}.US",
+            name=f"{status} policy",
+            seed_analysts=False,
         )
+        _seed_all_analyst_runs(session, company, status=status)
+        _seed_financials(session, company)
+        _seed_memo(session, company)
         run = create_draft_valuation_run(session, company)
 
     snapshot = run.model_suggested_assumptions["analyst_parameter_matrix_snapshot"]
-    reference = next(
-        item for item in snapshot["price_reference_rules"] if item["rule_id"] == "margin_of_safety"
-    )
-    assert reference["status"] == "fail"
-    assert reference["calculation_role"] == "price_reference"
-    assert reference["price_blind_compatible"] is False
-    assert all(
-        trace["rule_id"] != "margin_of_safety"
-        for traces in snapshot["dimension_contributions"].values()
-        for trace in traces
-    )
+    assert len(snapshot["rule_impacts"]) == 32
+    assert all(item["calculation_role"] == "compute" for item in snapshot["rule_impacts"])
+    assert all(item["price_blind_compatible"] is True for item in snapshot["rule_impacts"])
+    assert len(snapshot["dynamic_safety_margin_contributions"]) == 32
+    assert snapshot["dynamic_safety_margin"] == pytest.approx(expected_margin)
+    assert run.results["dynamic_safety_margin"] == pytest.approx(expected_margin)
+
+
+def test_010_requires_all_eight_latest_successful_complete_analyst_runs(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = _seed_company(session, seed_analysts=False)
+        for profile in list_analyst_profiles()[:-1]:
+            _seed_analyst_run(
+                session,
+                company,
+                profile_id=profile.id,
+                statuses={rule.id: "neutral" for rule in profile.rules},
+            )
+        _seed_financials(session, company)
+        _seed_memo(session, company)
+
+        with pytest.raises(ValuationInputError, match="李录"):
+            create_draft_valuation_run(session, company)
+
+        li_lu = list_analyst_profiles()[-1]
+        _seed_analyst_run(
+            session,
+            company,
+            profile_id=li_lu.id,
+            statuses={rule.id: "neutral" for rule in li_lu.rules},
+        )
+        latest_munger = _seed_analyst_run(
+            session,
+            company,
+            profile_id="munger",
+            statuses={},
+        )
+        latest_munger.status = "failed"
+        session.commit()
+        with pytest.raises(ValuationInputError, match="failed"):
+            create_draft_valuation_run(session, company)
+
+        latest_munger.status = "success"
+        latest_munger.result = {
+            **latest_munger.result,
+            "rule_checks": latest_munger.result["rule_checks"][:3],
+        }
+        session.commit()
+        with pytest.raises(ValuationInputError, match="=3"):
+            create_draft_valuation_run(session, company)
 
 
 def test_new_draft_rederives_latest_008_matrix_instead_of_using_stale_snapshot(
@@ -670,7 +714,7 @@ def test_new_draft_rederives_latest_008_matrix_instead_of_using_stale_snapshot(
             session,
             company,
             profile_id="buffett",
-            statuses={"moat": "pass"},
+            statuses={"durable_moat": "pass"},
         )
         stale_result = dict(analyst_run.result)
         stale_result["valuation_parameter_matrix"] = {
@@ -684,7 +728,7 @@ def test_new_draft_rederives_latest_008_matrix_instead_of_using_stale_snapshot(
 
     snapshot = run.model_suggested_assumptions["analyst_parameter_matrix_snapshot"]
     assert snapshot["has_signals"] is True
-    moat = next(item for item in snapshot["rule_impacts"] if item["rule_id"] == "moat")
+    moat = next(item for item in snapshot["rule_impacts"] if item["rule_id"] == "durable_moat")
     assert moat["calculation_role"] == "compute"
     assert moat["price_blind_compatible"] is True
 
@@ -712,8 +756,7 @@ def test_high_severity_gaps_reduce_confidence_and_remain_reviewable(tmp_path: Pa
     assert ready_run.confidence is not None
     assert incomplete_run.confidence < ready_run.confidence
     assert any(
-        "高严重度输入缺口" in reason
-        for reason in incomplete_run.confidence_summary["reasons"]
+        "高严重度输入缺口" in reason for reason in incomplete_run.confidence_summary["reasons"]
     )
 
 
@@ -891,6 +934,7 @@ def _seed_company(
     *,
     ticker: str = "TEST010.US",
     name: str = "测试公司",
+    seed_analysts: bool = True,
 ) -> Company:
     company = Company(
         ticker=ticker,
@@ -906,7 +950,19 @@ def _seed_company(
     session.add(company)
     session.commit()
     session.refresh(company)
+    if seed_analysts:
+        _seed_all_analyst_runs(session, company)
     return company
+
+
+def _seed_all_analyst_runs(session, company: Company, *, status: str = "neutral") -> None:
+    for profile in list_analyst_profiles():
+        _seed_analyst_run(
+            session,
+            company,
+            profile_id=profile.id,
+            statuses={rule.id: status for rule in profile.rules},
+        )
 
 
 def _seed_financials(
@@ -1030,4 +1086,3 @@ def _seed_memo(
     session.commit()
     session.refresh(memo)
     return memo
-

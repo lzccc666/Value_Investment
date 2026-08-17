@@ -39,8 +39,8 @@ def test_create_uses_latest_calculated_valuation_and_deterministic_formula(
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
         company = _seed_company(session, price=80.0)
-        memo = _seed_memo(session, company, score=0.2, margin=0.2)
-        calculated = _seed_valuation(session, company, memo, calculated=True)
+        memo = _seed_memo(session, company)
+        calculated = _seed_valuation(session, company, memo, calculated=True, margin=0.2)
         _seed_valuation(session, company, memo, calculated=False)
 
     response = _make_client(session_factory).post(
@@ -68,6 +68,8 @@ def test_create_uses_latest_calculated_valuation_and_deterministic_formula(
     assert item["suggested_buy_price"] == pytest.approx(80.0)
     assert item["current_margin"] == pytest.approx(0.2)
     assert item["price_status"] == "达到目标安全边际"
+    assert "analyst_score_total" not in item
+    assert "analyst_scorecard_snapshot" not in item
     assert len(item["input_snapshot_hash"]) == 64
 
 
@@ -75,8 +77,8 @@ def test_override_margin_is_saved_separately_and_changes_price_status(tmp_path: 
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
         company = _seed_company(session, price=95.0)
-        memo = _seed_memo(session, company, score=-0.2, margin=0.25)
-        valuation = _seed_valuation(session, company, memo, calculated=True)
+        memo = _seed_memo(session, company)
+        valuation = _seed_valuation(session, company, memo, calculated=True, margin=0.25)
 
     response = _make_client(session_factory).post(
         f"/api/companies/{company.id}/price-decision-runs",
@@ -94,10 +96,10 @@ def test_override_margin_is_saved_separately_and_changes_price_status(tmp_path: 
 
     invalid = _make_client(session_factory).post(
         f"/api/companies/{company.id}/price-decision-runs",
-        json={"safety_margin_override": 0.51},
+        json={"safety_margin_override": 1.01},
     )
     assert invalid.status_code == 422
-    assert "0%-50%" in invalid.text
+    assert "0%-100%" in invalid.text
 
 
 @pytest.mark.parametrize(
@@ -111,12 +113,15 @@ def test_override_margin_is_saved_separately_and_changes_price_status(tmp_path: 
     ],
 )
 def test_price_status_boundaries(current_price: float, expected: str) -> None:
-    assert determine_price_status(
-        current_price=current_price,
-        suggested_buy_price=80.0,
-        base_intrinsic_value=100.0,
-        optimistic_intrinsic_value=130.0,
-    ) == expected
+    assert (
+        determine_price_status(
+            current_price=current_price,
+            suggested_buy_price=80.0,
+            base_intrinsic_value=100.0,
+            optimistic_intrinsic_value=130.0,
+        )
+        == expected
+    )
 
 
 def test_rejects_cross_company_valuation_and_memo_relationships(tmp_path: Path) -> None:
@@ -187,20 +192,20 @@ def test_uncalculated_valuation_is_rejected_even_when_run_status_is_draft(tmp_pa
     assert "估值记录本身可以保持 draft" in response.json()["detail"]
 
 
-def test_old_bound_memo_without_margin_does_not_fall_back_to_latest_memo(tmp_path: Path) -> None:
+def test_bound_valuation_without_margin_does_not_fall_back_to_memo(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
         company = _seed_company(session)
-        old_memo = _seed_memo(session, company, margin=None)
-        valuation = _seed_valuation(session, company, old_memo, calculated=True)
-        _seed_memo(session, company, margin=0.2)
+        old_memo = _seed_memo(session, company)
+        valuation = _seed_valuation(session, company, old_memo, calculated=True, margin=None)
+        _seed_memo(session, company)
 
     response = _make_client(session_factory).post(
         f"/api/companies/{company.id}/price-decision-runs",
         json={"valuation_run_id": valuation.id},
     )
     assert response.status_code == 400
-    assert "旧 Memo 没有动态安全边际" in response.json()["detail"]
+    assert "010 估值没有冻结动态安全边际" in response.json()["detail"]
 
 
 def test_versions_latest_list_detail_and_soft_delete(tmp_path: Path) -> None:
@@ -229,9 +234,10 @@ def test_versions_latest_list_detail_and_soft_delete(tmp_path: Path) -> None:
     deleted = client.delete(f"/api/price-decision-runs/{second['id']}")
     assert deleted.status_code == 200
     assert deleted.json()["latest_price_decision_run_id"] == first["id"]
-    assert client.get(
-        f"/api/companies/{company.id}/price-decision-runs/latest"
-    ).json()["item"]["id"] == first["id"]
+    assert (
+        client.get(f"/api/companies/{company.id}/price-decision-runs/latest").json()["item"]["id"]
+        == first["id"]
+    )
     assert client.get(f"/api/companies/{company.id}/price-decision-runs").json()["total"] == 1
     deleted_detail = client.get(f"/api/price-decision-runs/{second['id']}").json()
     assert deleted_detail["status"] == "deleted"
@@ -274,9 +280,7 @@ def _seed_company(
         exchange="NYSE",
         name=ticker,
         current_price=price,
-        market_data_updated_at=datetime(2026, 8, 16, 3, 0, tzinfo=UTC)
-        if has_market_time
-        else None,
+        market_data_updated_at=datetime(2026, 8, 16, 3, 0, tzinfo=UTC) if has_market_time else None,
     )
     session.add(company)
     session.commit()
@@ -287,9 +291,6 @@ def _seed_company(
 def _seed_memo(
     session,
     company: Company,
-    *,
-    score: float = 0.1,
-    margin: float | None = 0.2,
 ) -> InvestmentMemo:
     generation_run = AnalysisRun(
         company_id=company.id,
@@ -301,16 +302,13 @@ def _seed_memo(
     )
     session.add(generation_run)
     session.flush()
-    scorecard: dict[str, object] = {"total_score": score, "coverage": {"total_rules": 40}}
-    if margin is not None:
-        scorecard["suggested_safety_margin"] = margin
     memo = InvestmentMemo(
         company_id=company.id,
         generation_run_id=generation_run.id,
         version_no=1,
         title="综合投资备忘录",
         conclusion="需复核",
-        sections={"analyst_scorecard": scorecard},
+        sections={"executive_summary": "叙事性研究结论"},
         source_analyst_run_ids=[],
         source_snapshot_hash=f"memo-{company.id}-{generation_run.id}",
         status="draft",
@@ -328,6 +326,7 @@ def _seed_valuation(
     memo: InvestmentMemo,
     *,
     calculated: bool,
+    margin: float | None = 0.2,
 ) -> ValuationRun:
     run = ValuationRun(
         company_id=company.id,
@@ -354,6 +353,7 @@ def _seed_valuation(
                     "optimistic": 130.0,
                 }
             },
+            **({"dynamic_safety_margin": margin} if margin is not None else {}),
         },
         sensitivity={},
         confidence_summary={},

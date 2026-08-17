@@ -11,13 +11,11 @@
       "buffett": 0.68,
       "duan_yongping": 0.66,
       "fisher": 0.58,
-      "george_soros": 0.5,
       "graham": 0.58,
       "li_lu": 0.62,
       "lin_yuan": 0.62,
       "munger": 0.64,
-      "peter_lynch": 0.62,
-      "ray_dalio": 0.48
+      "peter_lynch": 0.62
     },
     "data_confidence": {
       "accounting_bonus": 0.1,
@@ -54,12 +52,9 @@
     "feature_adjustments": {
       "asset_heavy_graham": 0.12,
       "cash_flow_quality": 0.06,
-      "consumer_brand_dalio": -0.08,
       "consumer_brand_primary": 0.2,
       "consumer_brand_secondary": 0.1,
-      "consumer_brand_soros": 0.02,
       "cyclical_macro_defensive": 0.08,
-      "cyclical_macro_primary": 0.22,
       "tech_growth": 0.16
     },
     "manual_import_credibility_cap": 0.6,
@@ -130,19 +125,19 @@
     ],
     "deducted_profit_ratio_min": 0.8,
     "effective_tax_rate_max": 0.35,
-    "effective_tax_rate_min": 0,
+    "effective_tax_rate_min": 0.0,
     "fair_value_profit_ratio_abs_max": 0.1,
-    "fcf_to_profit_min": 0,
+    "fcf_to_profit_min": 0.0,
     "finance_expense_rise": 0.03,
     "impairment_profit_ratio_max": 0.1,
     "investment_profit_ratio_abs_max": 0.2,
     "margin_decline": 0.05,
-    "net_profit_yoy_min": 0,
+    "net_profit_yoy_min": 0.0,
     "non_operating_profit_ratio_abs_max": 0.1,
     "ocf_to_revenue_min": 0.05,
     "period_expense_rise": 0.05,
     "profit_revenue_gap_min": -0.1,
-    "revenue_yoy_min": 0,
+    "revenue_yoy_min": 0.0,
     "stability_periods": 5,
     "stability_range": 0.05,
     "trend_change": 0.05
@@ -153,22 +148,12 @@
       "high": 0.85,
       "low": 0.35,
       "medium": 0.65
-    },
-    "rule_weight_mode": "equal_weight_per_rule",
-    "safety_margin_max": 0.5,
-    "safety_margin_min": 0,
-    "safety_margin_score_span": 3,
-    "status_scores": {
-      "fail": -2,
-      "pass": 1,
-      "unknown": -0.1,
-      "warn": -0.3
     }
   },
   "price_decision": {
     "buy_price_scenario": "base",
-    "safety_margin_max": 0.5,
-    "safety_margin_min": 0
+    "safety_margin_max": 1.0,
+    "safety_margin_min": 0.0
   },
   "valuation_models": {
     "analyst_impact_scale": 1.5,
@@ -186,7 +171,7 @@
         0.15
       ],
       "terminal": [
-        0,
+        0.0,
         0.035
       ]
     },
@@ -232,7 +217,7 @@
     "discount_terminal_gap": 0.01,
     "dispersion_ratio": 1.35,
     "equity_fallback_haircuts": {
-      "base": 1,
+      "base": 1.0,
       "conservative": 0.8,
       "optimistic": 1.1
     },
@@ -256,7 +241,7 @@
       "medium": 0.12,
       "pack": 0.04
     },
-    "gap_penalty_cap": 1,
+    "gap_penalty_cap": 1.0,
     "growth_source_priority": [
       "free_cash_flow_cagr_5y",
       "free_cash_flow_cagr_3y",
@@ -276,7 +261,7 @@
     "non_cash_asset_haircuts": {
       "base": 0.8,
       "conservative": 0.6,
-      "optimistic": 1
+      "optimistic": 1.0
     },
     "parameter_deltas": {
       "discount_disagreement": 0.012,
@@ -312,14 +297,14 @@
           -0.1,
           0.1
         ],
-        "growth_spread": -1,
+        "growth_spread": -1.0,
         "owner_growth_bounds": [
           -0.1,
           0.1
         ],
-        "owner_growth_spread": -1,
+        "owner_growth_spread": -1.0,
         "terminal_bounds": [
-          0,
+          0.0,
           0.035
         ],
         "terminal_spread": -0.3
@@ -334,14 +319,14 @@
           -0.02,
           0.18
         ],
-        "growth_spread": 1,
+        "growth_spread": 1.0,
         "owner_growth_bounds": [
           -0.02,
           0.16
         ],
-        "owner_growth_spread": 1,
+        "owner_growth_spread": 1.0,
         "terminal_bounds": [
-          0,
+          0.0,
           0.035
         ],
         "terminal_spread": 0.25
@@ -353,741 +338,468 @@
     }
   },
   "valuation_rule_matrix": {
-    "analyst_score_max": 1,
+    "analyst_score_max": 1.0,
     "analyst_score_min": 0.2,
     "confidence_weight": 0.5,
-    "dimension_score_max": 1,
-    "dimension_score_min": -2,
+    "dimension_score_max": 1.0,
+    "dimension_score_min": -2.0,
     "profile_fit_weight": 0.5,
     "rule_mappings": {
-      "buffett.management": {
+      "buffett.capital_allocation": {
         "calculation_role": "compute",
         "dimensions": {
-          "business_quality": 0.3,
+          "capital_intensity": 1.0,
           "execution_quality": 0.5,
-          "management_quality": 1
+          "growth_runway": 0.3,
+          "management_quality": 0.8
         },
-        "parameter_impacts": {
-          "discount_rate": -0.3,
-          "owner_earnings_growth_rate": 0.4
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "buffett",
         "profile_name": "巴菲特",
-        "rule_id": "management",
-        "rule_label": "管理层"
+        "rule_id": "capital_allocation",
+        "rule_label": "资本配置"
       },
-      "buffett.margin_of_safety": {
-        "calculation_role": "price_reference",
-        "dimensions": {
-          "permanent_loss_risk": 0.8
-        },
-        "parameter_impacts": {},
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": false,
-        "profile_id": "buffett",
-        "profile_name": "巴菲特",
-        "rule_id": "margin_of_safety",
-        "rule_label": "安全边际"
-      },
-      "buffett.moat": {
+      "buffett.durable_moat": {
         "calculation_role": "compute",
         "dimensions": {
-          "business_quality": 0.7,
-          "moat_durability": 1,
-          "pricing_power": 0.6
+          "business_quality": 0.6,
+          "demand_durability": 0.4,
+          "moat_durability": 1.0,
+          "pricing_power": 0.7
         },
-        "parameter_impacts": {
-          "discount_rate": -0.4,
-          "scenario_spread": -0.3,
-          "terminal_growth_rate": 0.5
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "buffett",
         "profile_name": "巴菲特",
-        "rule_id": "moat",
-        "rule_label": "护城河"
+        "rule_id": "durable_moat",
+        "rule_label": "持久护城河"
       },
-      "buffett.quality": {
+      "buffett.management_candor": {
         "calculation_role": "compute",
         "dimensions": {
-          "accounting_quality": 0.4,
-          "business_quality": 0.5,
-          "capital_intensity": 0.3,
-          "cash_flow_reliability": 1
+          "accounting_quality": 0.7,
+          "management_quality": 1.0,
+          "permanent_loss_risk": 0.4
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.3,
-          "discount_rate": -0.4,
-          "scenario_spread": -0.4
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "buffett",
         "profile_name": "巴菲特",
-        "rule_id": "quality",
-        "rule_label": "盈利质量"
+        "rule_id": "management_candor",
+        "rule_label": "管理层坦诚"
+      },
+      "buffett.owner_earnings_quality": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "accounting_quality": 0.5,
+          "business_quality": 0.4,
+          "capital_intensity": 0.5,
+          "cash_flow_reliability": 1.0
+        },
+        "price_blind_compatible": true,
+        "profile_id": "buffett",
+        "profile_name": "巴菲特",
+        "rule_id": "owner_earnings_quality",
+        "rule_label": "所有者收益"
       },
       "duan_yongping.benfen_culture": {
         "calculation_role": "compute",
         "dimensions": {
+          "accounting_quality": 0.5,
           "execution_quality": 0.4,
-          "management_quality": 1,
-          "permanent_loss_risk": 0.4
+          "management_quality": 1.0,
+          "permanent_loss_risk": 0.5
         },
-        "parameter_impacts": {
-          "discount_rate": -0.4,
-          "owner_earnings_growth_rate": 0.3
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "duan_yongping",
         "profile_name": "段永平",
         "rule_id": "benfen_culture",
         "rule_label": "本分文化"
       },
-      "duan_yongping.business_quality": {
+      "duan_yongping.cash_reinvestment_discipline": {
         "calculation_role": "compute",
         "dimensions": {
-          "business_quality": 1,
-          "demand_durability": 0.5,
-          "moat_durability": 0.5
+          "capital_intensity": 0.8,
+          "cash_flow_reliability": 0.9,
+          "growth_runway": 0.4,
+          "management_quality": 0.6
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.3,
-          "discount_rate": -0.4,
-          "terminal_growth_rate": 0.3
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "duan_yongping",
         "profile_name": "段永平",
-        "rule_id": "business_quality",
-        "rule_label": "生意模式"
+        "rule_id": "cash_reinvestment_discipline",
+        "rule_label": "现金纪律"
       },
-      "duan_yongping.consumer_mindshare": {
+      "duan_yongping.consumer_value_mindshare": {
         "calculation_role": "compute",
         "dimensions": {
           "demand_durability": 0.8,
-          "moat_durability": 0.8,
+          "execution_quality": 0.3,
+          "moat_durability": 0.9,
           "pricing_power": 0.9
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.5,
-          "scenario_spread": -0.2,
-          "terminal_growth_rate": 0.5
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "duan_yongping",
         "profile_name": "段永平",
-        "rule_id": "consumer_mindshare",
-        "rule_label": "消费者心智"
+        "rule_id": "consumer_value_mindshare",
+        "rule_label": "用户心智"
       },
-      "duan_yongping.shareholder_return": {
+      "duan_yongping.right_business": {
         "calculation_role": "compute",
         "dimensions": {
-          "capital_intensity": 0.5,
-          "cash_flow_reliability": 0.7,
-          "management_quality": 0.7
+          "business_quality": 1.0,
+          "capital_intensity": 0.6,
+          "cash_flow_reliability": 0.6,
+          "demand_durability": 0.5
         },
-        "parameter_impacts": {
-          "owner_earnings_growth_rate": 0.5
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "duan_yongping",
         "profile_name": "段永平",
-        "rule_id": "shareholder_return",
-        "rule_label": "股东回报"
+        "rule_id": "right_business",
+        "rule_label": "好生意"
       },
-      "fisher.innovation": {
+      "fisher.innovation_productivity": {
         "calculation_role": "compute",
         "dimensions": {
-          "execution_quality": 0.7,
-          "growth_runway": 0.7,
-          "moat_durability": 0.5
+          "capital_intensity": 0.3,
+          "execution_quality": 0.8,
+          "growth_runway": 0.8,
+          "moat_durability": 0.7
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.5,
-          "scenario_spread": -0.2
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "fisher",
         "profile_name": "费雪",
-        "rule_id": "innovation",
-        "rule_label": "创新能力"
-      },
-      "fisher.long_term_growth": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "business_quality": 0.3,
-          "demand_durability": 0.6,
-          "growth_runway": 1
-        },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.8,
-          "owner_earnings_growth_rate": 0.6,
-          "terminal_growth_rate": 0.2
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "fisher",
-        "profile_name": "费雪",
-        "rule_id": "long_term_growth",
-        "rule_label": "长期成长"
+        "rule_id": "innovation_productivity",
+        "rule_label": "创新效率"
       },
       "fisher.management_depth": {
         "calculation_role": "compute",
         "dimensions": {
-          "execution_quality": 0.8,
-          "management_quality": 0.9
+          "execution_quality": 0.9,
+          "management_quality": 1.0,
+          "permanent_loss_risk": 0.3
         },
-        "parameter_impacts": {
-          "discount_rate": -0.3,
-          "owner_earnings_growth_rate": 0.4,
-          "scenario_spread": -0.2
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "fisher",
         "profile_name": "费雪",
         "rule_id": "management_depth",
         "rule_label": "管理深度"
       },
-      "fisher.sales_execution": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "demand_durability": 0.5,
-          "execution_quality": 1,
-          "growth_runway": 0.6
-        },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.6,
-          "owner_earnings_growth_rate": 0.4
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "fisher",
-        "profile_name": "费雪",
-        "rule_id": "sales_execution",
-        "rule_label": "销售执行"
-      },
-      "george_soros.counter_evidence": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "accounting_quality": 0.5,
-          "execution_quality": 0.4,
-          "permanent_loss_risk": 0.8
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.6,
-          "scenario_spread": -0.8
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "george_soros",
-        "profile_name": "乔治索罗斯",
-        "rule_id": "counter_evidence",
-        "rule_label": "反方证据"
-      },
-      "george_soros.macro_fragility": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "balance_sheet_risk": 0.5,
-          "cyclicality": 1,
-          "permanent_loss_risk": 0.6
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.7,
-          "scenario_spread": -0.9
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "george_soros",
-        "profile_name": "乔治索罗斯",
-        "rule_id": "macro_fragility",
-        "rule_label": "宏观脆弱点"
-      },
-      "george_soros.narrative_gap": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "accounting_quality": 0.7,
-          "business_quality": 0.4,
-          "execution_quality": 0.8
-        },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.4,
-          "discount_rate": -0.4,
-          "scenario_spread": -0.6
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "george_soros",
-        "profile_name": "乔治索罗斯",
-        "rule_id": "narrative_gap",
-        "rule_label": "预期偏差"
-      },
-      "george_soros.reflexivity": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "cyclicality": 0.7,
-          "execution_quality": 0.4,
-          "permanent_loss_risk": 0.4
-        },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.2,
-          "discount_rate": -0.4,
-          "scenario_spread": -0.8
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "george_soros",
-        "profile_name": "乔治索罗斯",
-        "rule_id": "reflexivity",
-        "rule_label": "反身性"
-      },
-      "graham.asset_protection": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "accounting_quality": 0.3,
-          "balance_sheet_risk": 1,
-          "permanent_loss_risk": 0.8
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.8,
-          "scenario_spread": -0.5
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "graham",
-        "profile_name": "格雷厄姆",
-        "rule_id": "asset_protection",
-        "rule_label": "资产保护"
-      },
-      "graham.conservatism": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "accounting_quality": 0.8,
-          "permanent_loss_risk": 0.5
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.4,
-          "scenario_spread": -0.4
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "graham",
-        "profile_name": "格雷厄姆",
-        "rule_id": "conservatism",
-        "rule_label": "保守假设"
-      },
-      "graham.earnings_stability": {
+      "fisher.market_runway": {
         "calculation_role": "compute",
         "dimensions": {
           "business_quality": 0.3,
-          "cash_flow_reliability": 0.7,
-          "cyclicality": 0.8
+          "demand_durability": 0.7,
+          "growth_runway": 1.0
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.2,
-          "discount_rate": -0.5,
-          "scenario_spread": -0.6
+        "price_blind_compatible": true,
+        "profile_id": "fisher",
+        "profile_name": "费雪",
+        "rule_id": "market_runway",
+        "rule_label": "市场空间"
+      },
+      "fisher.sales_customer_strength": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "demand_durability": 0.7,
+          "execution_quality": 1.0,
+          "growth_runway": 0.5,
+          "pricing_power": 0.5
         },
-        "parameter_impacts_mode": "audit_only",
+        "price_blind_compatible": true,
+        "profile_id": "fisher",
+        "profile_name": "费雪",
+        "rule_id": "sales_customer_strength",
+        "rule_label": "销售与客户"
+      },
+      "graham.asset_accounting_quality": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "accounting_quality": 1.0,
+          "balance_sheet_risk": 0.7,
+          "permanent_loss_risk": 0.7
+        },
         "price_blind_compatible": true,
         "profile_id": "graham",
         "profile_name": "格雷厄姆",
-        "rule_id": "earnings_stability",
-        "rule_label": "盈利稳定性"
+        "rule_id": "asset_accounting_quality",
+        "rule_label": "资产质量"
       },
-      "graham.valuation_discipline": {
-        "calculation_role": "price_reference",
+      "graham.capital_structure_safety": {
+        "calculation_role": "compute",
         "dimensions": {
+          "balance_sheet_risk": 1.0,
+          "cyclicality": 0.4,
           "permanent_loss_risk": 0.8
         },
-        "parameter_impacts": {},
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": false,
+        "price_blind_compatible": true,
         "profile_id": "graham",
         "profile_name": "格雷厄姆",
-        "rule_id": "valuation_discipline",
-        "rule_label": "估值纪律"
+        "rule_id": "capital_structure_safety",
+        "rule_label": "资本结构"
       },
-      "li_lu.circle_of_competence": {
+      "graham.earnings_record": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "accounting_quality": 0.4,
+          "business_quality": 0.3,
+          "cash_flow_reliability": 0.8,
+          "cyclicality": 0.9
+        },
+        "price_blind_compatible": true,
+        "profile_id": "graham",
+        "profile_name": "格雷厄姆",
+        "rule_id": "earnings_record",
+        "rule_label": "盈利记录"
+      },
+      "graham.working_capital_safety": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "balance_sheet_risk": 1.0,
+          "cash_flow_reliability": 0.5,
+          "permanent_loss_risk": 0.5
+        },
+        "price_blind_compatible": true,
+        "profile_id": "graham",
+        "profile_name": "格雷厄姆",
+        "rule_id": "working_capital_safety",
+        "rule_label": "营运安全"
+      },
+      "li_lu.economic_knowability": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "accounting_quality": 0.8,
+          "business_quality": 0.6,
+          "execution_quality": 0.3
+        },
+        "price_blind_compatible": true,
+        "profile_id": "li_lu",
+        "profile_name": "李录",
+        "rule_id": "economic_knowability",
+        "rule_label": "经济可理解"
+      },
+      "li_lu.moat_growth_coexistence": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "demand_durability": 0.6,
+          "growth_runway": 0.9,
+          "moat_durability": 0.8,
+          "pricing_power": 0.4
+        },
+        "price_blind_compatible": true,
+        "profile_id": "li_lu",
+        "profile_name": "李录",
+        "rule_id": "moat_growth_coexistence",
+        "rule_label": "护城河成长"
+      },
+      "li_lu.owner_governance": {
         "calculation_role": "compute",
         "dimensions": {
           "accounting_quality": 0.6,
-          "business_quality": 0.5,
-          "permanent_loss_risk": 0.4
+          "execution_quality": 0.4,
+          "management_quality": 1.0,
+          "permanent_loss_risk": 0.7
         },
-        "parameter_impacts": {
-          "discount_rate": -0.3,
-          "scenario_spread": -0.4
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "li_lu",
         "profile_name": "李录",
-        "rule_id": "circle_of_competence",
-        "rule_label": "能力圈"
+        "rule_id": "owner_governance",
+        "rule_label": "股东治理"
       },
-      "li_lu.depth_of_research": {
+      "li_lu.permanent_loss_resilience": {
         "calculation_role": "compute",
         "dimensions": {
-          "accounting_quality": 0.9,
-          "execution_quality": 0.3
+          "accounting_quality": 0.5,
+          "balance_sheet_risk": 0.8,
+          "cyclicality": 0.4,
+          "permanent_loss_risk": 1.0
         },
-        "parameter_impacts": {
-          "discount_rate": -0.3,
-          "scenario_spread": -0.5
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "li_lu",
         "profile_name": "李录",
-        "rule_id": "depth_of_research",
-        "rule_label": "研究充分度"
-      },
-      "li_lu.intrinsic_value": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "business_quality": 0.7,
-          "cash_flow_reliability": 0.8,
-          "moat_durability": 0.5
-        },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.3,
-          "discount_rate": -0.3,
-          "terminal_growth_rate": 0.3
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "li_lu",
-        "profile_name": "李录",
-        "rule_id": "intrinsic_value",
-        "rule_label": "内在价值线索"
-      },
-      "li_lu.permanent_loss": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "accounting_quality": 0.4,
-          "balance_sheet_risk": 0.6,
-          "permanent_loss_risk": 1
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.9,
-          "scenario_spread": -0.7
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "li_lu",
-        "profile_name": "李录",
-        "rule_id": "permanent_loss",
+        "rule_id": "permanent_loss_resilience",
         "rule_label": "永久损失"
       },
-      "lin_yuan.brand_power": {
+      "lin_yuan.cash_profitability": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "accounting_quality": 0.3,
+          "capital_intensity": 0.7,
+          "cash_flow_reliability": 1.0,
+          "pricing_power": 0.4
+        },
+        "price_blind_compatible": true,
+        "profile_id": "lin_yuan",
+        "profile_name": "林园",
+        "rule_id": "cash_profitability",
+        "rule_label": "现金盈利"
+      },
+      "lin_yuan.monopoly_brand_power": {
         "calculation_role": "compute",
         "dimensions": {
           "business_quality": 0.5,
-          "moat_durability": 0.9,
-          "pricing_power": 1
+          "demand_durability": 0.5,
+          "moat_durability": 1.0,
+          "pricing_power": 1.0
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.4,
-          "discount_rate": -0.3,
-          "terminal_growth_rate": 0.5
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "lin_yuan",
         "profile_name": "林园",
-        "rule_id": "brand_power",
-        "rule_label": "品牌壁垒"
+        "rule_id": "monopoly_brand_power",
+        "rule_label": "品牌垄断"
       },
-      "lin_yuan.cash_generation": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "accounting_quality": 0.4,
-          "capital_intensity": 0.5,
-          "cash_flow_reliability": 1
-        },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.4,
-          "discount_rate": -0.4
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "lin_yuan",
-        "profile_name": "林园",
-        "rule_id": "cash_generation",
-        "rule_label": "现金创造"
-      },
-      "lin_yuan.compounding": {
+      "lin_yuan.must_have_repeat_demand": {
         "calculation_role": "compute",
         "dimensions": {
           "business_quality": 0.6,
-          "execution_quality": 0.5,
-          "growth_runway": 0.8
+          "cyclicality": 0.5,
+          "demand_durability": 1.0,
+          "growth_runway": 0.4
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.6,
-          "owner_earnings_growth_rate": 0.5,
-          "terminal_growth_rate": 0.3
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "lin_yuan",
         "profile_name": "林园",
-        "rule_id": "compounding",
-        "rule_label": "复利能力"
+        "rule_id": "must_have_repeat_demand",
+        "rule_label": "刚性复购"
       },
-      "lin_yuan.must_have_demand": {
+      "lin_yuan.scalable_compounding": {
         "calculation_role": "compute",
         "dimensions": {
           "business_quality": 0.5,
-          "demand_durability": 1,
-          "growth_runway": 0.5
+          "capital_intensity": 0.6,
+          "execution_quality": 0.6,
+          "growth_runway": 0.9
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.5,
-          "scenario_spread": -0.3,
-          "terminal_growth_rate": 0.3
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "lin_yuan",
         "profile_name": "林园",
-        "rule_id": "must_have_demand",
-        "rule_label": "刚性需求"
+        "rule_id": "scalable_compounding",
+        "rule_label": "规模复利"
       },
-      "munger.avoid_stupidity": {
+      "munger.incentive_alignment": {
         "calculation_role": "compute",
         "dimensions": {
-          "accounting_quality": 0.4,
-          "balance_sheet_risk": 0.5,
-          "permanent_loss_risk": 1
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.8,
-          "scenario_spread": -0.6
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "munger",
-        "profile_name": "芒格",
-        "rule_id": "avoid_stupidity",
-        "rule_label": "不碰清单"
-      },
-      "munger.culture": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "business_quality": 0.4,
-          "management_quality": 1,
-          "moat_durability": 0.3
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.3,
-          "scenario_spread": -0.2
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "munger",
-        "profile_name": "芒格",
-        "rule_id": "culture",
-        "rule_label": "企业文化"
-      },
-      "munger.incentives": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "execution_quality": 0.5,
+          "execution_quality": 0.7,
           "management_quality": 0.9,
-          "permanent_loss_risk": 0.4
+          "permanent_loss_risk": 0.5
         },
-        "parameter_impacts": {
-          "discount_rate": -0.4,
-          "owner_earnings_growth_rate": 0.3
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "munger",
         "profile_name": "芒格",
-        "rule_id": "incentives",
-        "rule_label": "激励机制"
+        "rule_id": "incentive_alignment",
+        "rule_label": "激励一致"
       },
-      "munger.mental_models": {
+      "munger.multi_model_resilience": {
         "calculation_role": "compute",
         "dimensions": {
           "business_quality": 0.8,
-          "demand_durability": 0.4,
-          "moat_durability": 0.6
+          "demand_durability": 0.5,
+          "moat_durability": 0.8,
+          "pricing_power": 0.3
         },
-        "parameter_impacts": {
-          "discount_rate": -0.3,
-          "scenario_spread": -0.2,
-          "terminal_growth_rate": 0.3
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "munger",
         "profile_name": "芒格",
-        "rule_id": "mental_models",
-        "rule_label": "多元模型"
+        "rule_id": "multi_model_resilience",
+        "rule_label": "多元韧性"
       },
-      "peter_lynch.balance_sheet_risk": {
+      "munger.rational_culture": {
         "calculation_role": "compute",
         "dimensions": {
-          "balance_sheet_risk": 1,
-          "cash_flow_reliability": 0.3,
-          "permanent_loss_risk": 0.5
+          "accounting_quality": 0.4,
+          "execution_quality": 0.6,
+          "management_quality": 1.0
         },
-        "parameter_impacts": {
-          "discount_rate": -0.7,
-          "scenario_spread": -0.4
+        "price_blind_compatible": true,
+        "profile_id": "munger",
+        "profile_name": "芒格",
+        "rule_id": "rational_culture",
+        "rule_label": "理性文化"
+      },
+      "munger.ruin_risk_control": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "accounting_quality": 0.5,
+          "balance_sheet_risk": 0.7,
+          "cyclicality": 0.4,
+          "permanent_loss_risk": 1.0
         },
-        "parameter_impacts_mode": "audit_only",
+        "price_blind_compatible": true,
+        "profile_id": "munger",
+        "profile_name": "芒格",
+        "rule_id": "ruin_risk_control",
+        "rule_label": "毁灭风险"
+      },
+      "peter_lynch.business_understandability": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "accounting_quality": 0.4,
+          "business_quality": 0.8,
+          "execution_quality": 0.3
+        },
         "price_blind_compatible": true,
         "profile_id": "peter_lynch",
         "profile_name": "彼得林奇",
-        "rule_id": "balance_sheet_risk",
-        "rule_label": "资产负债风险"
+        "rule_id": "business_understandability",
+        "rule_label": "生意可理解"
+      },
+      "peter_lynch.growth_financial_resilience": {
+        "calculation_role": "compute",
+        "dimensions": {
+          "balance_sheet_risk": 1.0,
+          "capital_intensity": 0.6,
+          "cash_flow_reliability": 0.6,
+          "cyclicality": 0.3,
+          "permanent_loss_risk": 0.4
+        },
+        "price_blind_compatible": true,
+        "profile_id": "peter_lynch",
+        "profile_name": "彼得林奇",
+        "rule_id": "growth_financial_resilience",
+        "rule_label": "成长负担"
       },
       "peter_lynch.growth_runway": {
         "calculation_role": "compute",
         "dimensions": {
-          "demand_durability": 0.6,
-          "growth_runway": 1,
+          "demand_durability": 0.7,
+          "growth_runway": 1.0,
           "pricing_power": 0.3
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.8,
-          "owner_earnings_growth_rate": 0.6,
-          "terminal_growth_rate": 0.2
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "peter_lynch",
         "profile_name": "彼得林奇",
         "rule_id": "growth_runway",
         "rule_label": "成长空间"
       },
-      "peter_lynch.story_vs_numbers": {
+      "peter_lynch.story_numbers_alignment": {
         "calculation_role": "compute",
         "dimensions": {
-          "accounting_quality": 0.7,
+          "accounting_quality": 0.8,
           "cash_flow_reliability": 0.5,
-          "execution_quality": 0.7
+          "execution_quality": 0.8
         },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.3,
-          "discount_rate": -0.2,
-          "scenario_spread": -0.4
-        },
-        "parameter_impacts_mode": "audit_only",
         "price_blind_compatible": true,
         "profile_id": "peter_lynch",
         "profile_name": "彼得林奇",
-        "rule_id": "story_vs_numbers",
-        "rule_label": "故事与数字"
-      },
-      "peter_lynch.understandable_business": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "business_quality": 0.7,
-          "demand_durability": 0.5,
-          "execution_quality": 0.3
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.2,
-          "scenario_spread": -0.3
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "peter_lynch",
-        "profile_name": "彼得林奇",
-        "rule_id": "understandable_business",
-        "rule_label": "可理解业务"
-      },
-      "ray_dalio.credit_liquidity": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "balance_sheet_risk": 1,
-          "cash_flow_reliability": 0.5,
-          "permanent_loss_risk": 0.5
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.8,
-          "scenario_spread": -0.5
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "ray_dalio",
-        "profile_name": "瑞达利欧",
-        "rule_id": "credit_liquidity",
-        "rule_label": "信用流动性"
-      },
-      "ray_dalio.cycle_position": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "cyclicality": 1,
-          "growth_runway": 0.4
-        },
-        "parameter_impacts": {
-          "cash_flow_growth_rate": 0.3,
-          "discount_rate": -0.3,
-          "scenario_spread": -0.8
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "ray_dalio",
-        "profile_name": "瑞达利欧",
-        "rule_id": "cycle_position",
-        "rule_label": "周期位置"
-      },
-      "ray_dalio.macro_sensitivity": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "cyclicality": 0.9,
-          "demand_durability": 0.4
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.4,
-          "scenario_spread": -0.7
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "ray_dalio",
-        "profile_name": "瑞达利欧",
-        "rule_id": "macro_sensitivity",
-        "rule_label": "宏观敏感度"
-      },
-      "ray_dalio.portfolio_risk_signal": {
-        "calculation_role": "compute",
-        "dimensions": {
-          "cyclicality": 0.8,
-          "permanent_loss_risk": 0.7
-        },
-        "parameter_impacts": {
-          "discount_rate": -0.5,
-          "scenario_spread": -0.8
-        },
-        "parameter_impacts_mode": "audit_only",
-        "price_blind_compatible": true,
-        "profile_id": "ray_dalio",
-        "profile_name": "瑞达利欧",
-        "rule_id": "portfolio_risk_signal",
-        "rule_label": "组合风险信号"
+        "rule_id": "story_numbers_alignment",
+        "rule_label": "故事兑现"
       }
     },
-    "status_scores": {
-      "fail": -2,
-      "pass": 1,
-      "unknown": 0,
-      "warn": -0.35
+    "safety_margin_additions": {
+      "fail": 0.03,
+      "neutral": 0.009,
+      "pass": 0.0,
+      "unknown": 0.012,
+      "warn": 0.016
     },
-    "weight_exponent": 2
+    "safety_margin_analyst_scale": 8.0,
+    "safety_margin_max": 1.0,
+    "safety_margin_min": 0.0,
+    "status_scores": {
+      "fail": -2.0,
+      "neutral": 0.0,
+      "pass": 1.0,
+      "unknown": -0.1,
+      "warn": -0.5
+    },
+    "weight_exponent": 2.0
   }
 }

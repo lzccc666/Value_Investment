@@ -99,7 +99,7 @@ export const researchModules: ResearchModule[] = [
   {
     code: "008",
     name: "分析师视角",
-    description: "10 个 Profile 与 40 条规则",
+    description: "8 个 Profile 与 32 条规则",
     section: "analyst-views",
     icon: UsersRound
   },
@@ -120,7 +120,7 @@ export const researchModules: ResearchModule[] = [
   {
     code: "011",
     name: "价格对照与投资决策",
-    description: "安全边际、价格区间与行动建议",
+    description: "安全边际、价格区间与价格状态",
     section: "price-decision",
     icon: Scale
   }

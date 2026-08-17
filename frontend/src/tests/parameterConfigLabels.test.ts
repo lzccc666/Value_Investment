@@ -11,9 +11,9 @@ describe("parameter configuration copy", () => {
     );
   });
 
-  it("explains why a price-reference coefficient is disabled", () => {
+  it("treats every configured rule as a compute coefficient", () => {
     expect(
-      matrixCoefficientDescription("格雷厄姆", "估值纪律", "permanent_loss_risk", 0.8, "price_reference")
-    ).toContain("不进入 010 估值计算");
+      matrixCoefficientDescription("李录", "永久损失韧性", "permanent_loss_risk", 1, "compute")
+    ).toContain("永久损失风险贡献");
   });
 });

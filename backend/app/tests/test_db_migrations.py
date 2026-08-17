@@ -23,6 +23,10 @@ def test_init_db_migrates_legacy_sqlite_database(tmp_path: Path) -> None:
         investment_memo_columns = _table_columns(connection, "investment_memos")
         valuation_run_columns = _table_columns(connection, "valuation_runs")
         price_decision_run_columns = _table_columns(connection, "price_decision_runs")
+        price_decision_run_info = {
+            str(row[1]): row
+            for row in connection.execute(text("PRAGMA table_info(price_decision_runs)"))
+        }
         parameter_config_columns = _table_columns(connection, "parameter_config_versions")
         evidence_columns = _table_columns(connection, "evidence")
         sqlite_schema_version = connection.scalar(text("PRAGMA user_version"))
@@ -79,6 +83,7 @@ def test_init_db_migrates_legacy_sqlite_database(tmp_path: Path) -> None:
         evidence_columns
     )
     assert sqlite_schema_version == CURRENT_SQLITE_SCHEMA_VERSION
+    assert price_decision_run_info["analyst_score_total"][3] == 0
 
     with Session(engine) as session:
         seed_company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
@@ -92,7 +97,7 @@ def test_init_db_migrates_legacy_sqlite_database(tmp_path: Path) -> None:
     assert legacy_evidence.analysis_status == "search_lead"
     assert legacy_evidence.analysis_note is not None
     assert "搜索线索" in legacy_evidence.analysis_note
-    assert old_summary_run is None
+    assert old_summary_run is not None
 
 
 def _create_legacy_sqlite_schema(engine) -> None:

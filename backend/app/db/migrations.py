@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import Connection, Engine, text
 
-CURRENT_SQLITE_SCHEMA_VERSION = 3
+CURRENT_SQLITE_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -89,8 +89,6 @@ def run_schema_migrations(database_engine: Engine) -> None:
     if database_engine.dialect.name.startswith("sqlite"):
         _run_sqlite_schema_migrations(database_engine)
 
-    _delete_legacy_announcement_summary_runs(database_engine)
-
 
 def _run_sqlite_schema_migrations(database_engine: Engine) -> None:
     with database_engine.begin() as connection:
@@ -99,6 +97,7 @@ def _run_sqlite_schema_migrations(database_engine: Engine) -> None:
         _ensure_sqlite_valuation_runs_table(connection)
         _ensure_sqlite_price_decision_runs_table(connection)
         _ensure_sqlite_columns(connection, SQLITE_COLUMN_MIGRATIONS)
+        _make_price_decision_analyst_score_nullable(connection)
         _normalize_legacy_evidence_analysis_status(connection)
         _set_sqlite_schema_version(connection)
 
@@ -289,7 +288,7 @@ def _ensure_sqlite_price_decision_runs_table(connection: Connection) -> None:
                 intrinsic_values_per_share JSON DEFAULT '{}' NOT NULL,
                 current_price FLOAT NOT NULL,
                 market_data_updated_at DATETIME NOT NULL,
-                analyst_score_total FLOAT NOT NULL,
+                analyst_score_total FLOAT,
                 analyst_scorecard_snapshot JSON DEFAULT '{}' NOT NULL,
                 suggested_safety_margin FLOAT NOT NULL,
                 safety_margin_override FLOAT,
@@ -364,6 +363,74 @@ def _existing_sqlite_columns(connection: Connection, table_name: str) -> set[str
     return {str(row[1]) for row in connection.execute(text(f"PRAGMA table_info({table_name})"))}
 
 
+def _make_price_decision_analyst_score_nullable(connection: Connection) -> None:
+    columns = list(connection.execute(text("PRAGMA table_info(price_decision_runs)")))
+    score_column = next((row for row in columns if str(row[1]) == "analyst_score_total"), None)
+    if score_column is None or int(score_column[3]) == 0:
+        return
+
+    connection.execute(
+        text(
+            """
+            CREATE TABLE price_decision_runs_v4 (
+                id INTEGER PRIMARY KEY,
+                company_id INTEGER NOT NULL,
+                valuation_run_id INTEGER NOT NULL,
+                memo_id INTEGER NOT NULL,
+                version_no INTEGER DEFAULT 1 NOT NULL,
+                run_version VARCHAR(40) DEFAULT '011_v1' NOT NULL,
+                formula_version VARCHAR(40) DEFAULT '011_v1' NOT NULL,
+                status VARCHAR(40) DEFAULT 'active' NOT NULL,
+                input_snapshot JSON DEFAULT '{}' NOT NULL,
+                input_snapshot_hash VARCHAR(120) NOT NULL,
+                config_version INTEGER,
+                config_hash VARCHAR(64),
+                config_snapshot JSON DEFAULT '{}' NOT NULL,
+                intrinsic_values_per_share JSON DEFAULT '{}' NOT NULL,
+                current_price FLOAT NOT NULL,
+                market_data_updated_at DATETIME NOT NULL,
+                analyst_score_total FLOAT,
+                analyst_scorecard_snapshot JSON DEFAULT '{}' NOT NULL,
+                suggested_safety_margin FLOAT NOT NULL,
+                safety_margin_override FLOAT,
+                effective_safety_margin FLOAT NOT NULL,
+                scenario_buy_prices JSON DEFAULT '{}' NOT NULL,
+                suggested_buy_price FLOAT NOT NULL,
+                current_margin FLOAT NOT NULL,
+                price_status VARCHAR(80) NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                deleted_at DATETIME,
+                FOREIGN KEY(company_id) REFERENCES companies (id),
+                FOREIGN KEY(valuation_run_id) REFERENCES valuation_runs (id),
+                FOREIGN KEY(memo_id) REFERENCES investment_memos (id)
+            )
+            """
+        )
+    )
+    column_names = ", ".join(str(row[1]) for row in columns)
+    connection.execute(
+        text(
+            f"INSERT INTO price_decision_runs_v4 ({column_names}) "
+            f"SELECT {column_names} FROM price_decision_runs"
+        )
+    )
+    connection.execute(text("DROP TABLE price_decision_runs"))
+    connection.execute(text("ALTER TABLE price_decision_runs_v4 RENAME TO price_decision_runs"))
+    for index_name, index_columns in (
+        ("ix_price_decision_runs_company_id", "company_id"),
+        ("ix_price_decision_runs_valuation_run_id", "valuation_run_id"),
+        ("ix_price_decision_runs_memo_id", "memo_id"),
+        ("ix_price_decision_runs_company_created", "company_id, created_at"),
+        ("ix_price_decision_runs_company_status", "company_id, status"),
+    ):
+        connection.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS {index_name} ON price_decision_runs ({index_columns})"
+            )
+        )
+
+
 def _normalize_legacy_evidence_analysis_status(connection: Connection) -> None:
     if {"analysis_status", "analysis_note"}.difference(
         _existing_sqlite_columns(connection, "evidence")
@@ -399,10 +466,3 @@ def _set_sqlite_schema_version(connection: Connection) -> None:
     current_version = connection.scalar(text("PRAGMA user_version")) or 0
     if int(current_version) < CURRENT_SQLITE_SCHEMA_VERSION:
         connection.execute(text(f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION}"))
-
-
-def _delete_legacy_announcement_summary_runs(database_engine: Engine) -> None:
-    with database_engine.begin() as connection:
-        connection.execute(
-            text("DELETE FROM analysis_runs WHERE run_type = 'announcement_summary'")
-        )

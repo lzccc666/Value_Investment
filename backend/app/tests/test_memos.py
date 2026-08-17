@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app.analysis.analyst_profiles import list_analyst_profiles
 from app.analysis.model_gateway import ModelOutputValidationError
 from app.db.init_db import init_db
 from app.db.models import AnalysisRun, Company, InvestmentMemo
@@ -17,103 +17,11 @@ from app.schemas.memo import InvestmentMemoOutput
 from app.services.memo_service import (
     InvestmentMemoInsufficientSourcesError,
     archive_investment_memo,
-    build_analyst_scorecard,
     build_investment_memo_snapshot,
     delete_investment_memo,
     get_latest_memo_for_valuation,
     run_company_investment_memo,
 )
-
-
-def test_analyst_scorecard_uses_equal_rule_weights_and_safety_margin_mapping() -> None:
-    profiles = list_analyst_profiles()
-    statuses = ("pass", "fail", "warn", "unknown")
-    source_runs = []
-    for index, profile in enumerate(profiles):
-        status = statuses[index % len(statuses)]
-        source_runs.append(
-            {
-                "run_id": index + 1,
-                "analyst_profile": profile.id,
-                "confidence": 0.55 + (index * 0.03),
-                "profile_fit_score": 0.60 + (index * 0.025),
-                "result": {
-                    "rule_checks": [
-                        {"rule_id": rule.id, "status": status} for rule in profile.rules
-                    ]
-                },
-            }
-        )
-
-    scorecard = build_analyst_scorecard(source_runs)
-
-    assert scorecard["status_score_policy"] == {
-        "pass": 1.0,
-        "warn": -0.3,
-        "fail": -2.0,
-        "unknown": -0.1,
-    }
-    assert scorecard["independent_from_valuation"] is True
-    assert scorecard["coverage"] == {
-        "successful_profiles": 10,
-        "total_profiles": 10,
-        "known_rules": 32,
-        "total_rules": 40,
-    }
-    items = scorecard["analyst_items"]
-    assert [item["rule_score_total"] for item in items[:4]] == [4.0, -8.0, -1.2, -0.4]
-    assert sum(item["analyst_weight"] for item in items) == pytest.approx(1.0)
-    assert [item["analyst_weight"] for item in items] == pytest.approx([0.1] * 10)
-    assert [item["weighted_score"] for item in items[:4]] == pytest.approx(
-        [0.1, -0.2, -0.03, -0.01]
-    )
-    assert scorecard["total_score"] == pytest.approx(
-        sum(item["weighted_score"] for item in items)
-    )
-    assert scorecard["total_score"] == pytest.approx(-0.38)
-    assert scorecard["suggested_safety_margin"] == pytest.approx(0.23)
-    assert scorecard["score_range"] == {"minimum": -2.0, "maximum": 1.0}
-    assert scorecard["weight_policy"] == {
-        "mode": "equal_weight_per_rule",
-        "rule_weight": 0.025,
-        "total_rules": 40,
-        "formula": "sum(rule_status_score * 1/40)",
-        "uses_data_confidence": False,
-        "uses_profile_fit_score": False,
-    }
-
-
-@pytest.mark.parametrize(
-    ("status", "expected_score", "expected_margin"),
-    (
-        ("pass", 1.0, 0.0),
-        ("unknown", -0.1, 0.1833333333),
-        ("warn", -0.3, 0.2166666667),
-        ("fail", -2.0, 0.5),
-    ),
-)
-def test_analyst_scorecard_maps_pure_statuses_to_safety_margin(
-    status: str,
-    expected_score: float,
-    expected_margin: float,
-) -> None:
-    source_runs = [
-        {
-            "run_id": index + 1,
-            "analyst_profile": profile.id,
-            "result": {
-                "rule_checks": [
-                    {"rule_id": rule.id, "status": status} for rule in profile.rules
-                ]
-            },
-        }
-        for index, profile in enumerate(list_analyst_profiles())
-    ]
-
-    scorecard = build_analyst_scorecard(source_runs)
-
-    assert scorecard["total_score"] == pytest.approx(expected_score)
-    assert scorecard["suggested_safety_margin"] == pytest.approx(expected_margin)
 
 
 def _make_test_db(tmp_path: Path):
@@ -183,6 +91,23 @@ def test_memo_snapshot_reads_latest_successful_analyst_views_and_failed_profiles
     assert "peter_lynch 最近失败" in snapshot["committee_ledger"]["missing_profiles"]
 
 
+def test_memo_snapshot_excludes_retired_analyst_profiles(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = _seed_company_with_analyst_runs(
+            session,
+            profiles=["buffett", "fisher", "george_soros", "ray_dalio"],
+        )
+
+        snapshot = build_investment_memo_snapshot(session, company)
+
+    source_runs = snapshot["source_analyst_runs"]
+    assert isinstance(source_runs, list)
+    assert [item["analyst_profile"] for item in source_runs] == ["buffett", "fisher"]
+    assert "george_soros" not in str(snapshot)
+    assert "ray_dalio" not in str(snapshot)
+
+
 def test_memo_generation_creates_analysis_run_and_historical_versions(
     tmp_path: Path,
 ) -> None:
@@ -209,7 +134,7 @@ def test_memo_generation_creates_analysis_run_and_historical_versions(
 
     assert first_run.run_type == "investment_memo"
     assert first_run.status == "success"
-    assert first_run.prompt_version == "investment_memo_v1"
+    assert first_run.prompt_version == "investment_memo_v2"
     assert first_memo.editor_type == "model"
     assert first_memo.parent_memo_id is None
     assert first_memo.change_note is None
@@ -221,7 +146,7 @@ def test_memo_generation_creates_analysis_run_and_historical_versions(
     assert len(memos) == 2
 
 
-def test_memo_generation_marks_valuation_signal_pack_deprecated(
+def test_memo_generation_contains_narrative_only_without_numeric_score_layers(
     tmp_path: Path,
 ) -> None:
     session_factory = _make_test_db(tmp_path)
@@ -233,48 +158,30 @@ def test_memo_generation_marks_valuation_signal_pack_deprecated(
 
         _, memo = run_company_investment_memo(session, company, gateway=FakeMemoGateway())
 
-    pack = memo.sections["valuation_signal_pack"]
-    assert pack["price_blind_compatible"] is True
-    assert pack["source"] == "deprecated_009_display_compatibility_only"
-    assert pack["user_confirmation_required"] is True
-    assert pack["analyst_signals"] == []
-    scorecard = memo.sections["analyst_scorecard"]
-    assert scorecard["source"] == "latest_successful_008_rule_checks"
-    assert scorecard["coverage"]["successful_profiles"] == 3
-    assert len(scorecard["analyst_items"]) == 10
+    forbidden = {
+        "valuation_signal_pack",
+        "analyst_scorecard",
+        "total_score",
+        "weighted_score",
+        "rule_score",
+        "suggested_safety_margin",
+    }
+    serialized = json.dumps(memo.sections, ensure_ascii=False)
+    assert all(name not in serialized for name in forbidden)
+    assert memo.sections["executive_summary"]
 
 
-def test_valuation_signal_pack_scrubs_price_anchors(tmp_path: Path) -> None:
+def test_memo_output_with_price_anchor_is_rejected(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
         company = _seed_company_with_analyst_runs(session, profiles=["buffett", "fisher"])
 
-        _, memo = run_company_investment_memo(
-            session,
-            company,
-            gateway=FakePriceAnchorMemoGateway(),
-        )
-
-    serialized = json.dumps(
-        memo.sections["valuation_signal_pack"],
-        ensure_ascii=False,
-        sort_keys=True,
-    ).lower()
-    for forbidden in (
-        "current_price",
-        "historical_price",
-        "market_cap",
-        "valuation_multiple",
-        "position_cost",
-        "target_price",
-        "market_sentiment",
-        "目标价",
-        "市值",
-        "评级",
-    ):
-        assert forbidden not in serialized
-    assert "price_blind_compatible" in serialized
-    assert "deprecated_009_display_compatibility_only" in serialized
+        with pytest.raises((ModelOutputValidationError, ValueError)):
+            run_company_investment_memo(
+                session,
+                company,
+                gateway=FakePriceAnchorMemoGateway(),
+            )
 
 
 def test_delete_latest_memo_recomputes_latest_for_valuation(tmp_path: Path) -> None:
@@ -374,157 +281,20 @@ def test_memo_generation_fails_when_model_outputs_trade_action(tmp_path: Path) -
             run_company_investment_memo(session, company, gateway=FakeTradeActionMemoGateway())
 
 
-def test_memo_schema_accepts_common_model_aliases_without_executive_summary() -> None:
-    output = InvestmentMemoOutput.model_validate(
-        {
-            "summary": "The company needs a valuation-input review.",
-            "consensus": [
+def test_memo_schema_rejects_legacy_numeric_and_signal_layers() -> None:
+    for legacy_field in (
+        "analyst_scorecard",
+        "valuation_signal_pack",
+        "total_score",
+        "suggested_safety_margin",
+    ):
+        with pytest.raises(ValidationError):
+            InvestmentMemoOutput.model_validate(
                 {
-                    "topic": "cash flow quality",
-                    "assessment": "Multiple analyst views require cash flow checks.",
-                    "profiles": ["buffett", "duan_yongping"],
-                    "source_refs": {
-                        "source_run_ids": ["11"],
-                        "evidence_ids": ["2"],
-                        "announcement_ids": ["3"],
-                        "financial_periods": ["2025A"],
-                    },
+                    "executive_summary": "只保留叙事综合。",
+                    legacy_field: {},
                 }
-            ],
-            "valuation_assumptions": [
-                {
-                    "type": "base_free_cash_flow",
-                    "rationale": "010 needs normalized free cash flow inputs.",
-                    "inputs": "operating cash flow",
-                    "sources": {"source_run_ids": [11]},
-                }
-            ],
-            "analyst_valuation_matrix": {
-                "price_blind_compatible": False,
-                "source": "latest_successful_analyst_view_runs",
-                "analyst_signals": [
-                    {
-                        "profile": "buffett",
-                        "run_id": 11,
-                        "confidence": 0.6,
-                        "parameter_signals": [
-                            {
-                                "metric": "discount_rate",
-                                "direction": "up",
-                                "reason": "Risk needs user review.",
-                                "source_map": {"source_run_ids": [11]},
-                            }
-                        ],
-                    }
-                ],
-                "user_confirmation_required": False,
-            },
-            "sources": {"source_run_ids": [11]},
-        }
-    )
-
-    assert output.executive_summary == "The company needs a valuation-input review."
-    assert output.consensus_points[0].summary == (
-        "Multiple analyst views require cash flow checks."
-    )
-    assert output.consensus_points[0].source_run_ids == [11]
-    assert output.valuation_assumption_queue[0].assumption_type == "base_free_cash_flow"
-    assert output.valuation_assumption_queue[0].needed_inputs == ["operating cash flow"]
-    assert output.valuation_signal_pack.price_blind_compatible is True
-    assert output.valuation_signal_pack.user_confirmation_required is True
-    assert output.valuation_signal_pack.analyst_signals[0].profile_id == "buffett"
-    assert output.valuation_signal_pack.analyst_signals[0].source_run_id == 11
-    assert output.source_map.analyst_run_ids == [11]
-
-
-def test_memo_schema_normalizes_model_valuation_signal_aliases() -> None:
-    output = InvestmentMemoOutput.model_validate(
-        {
-            "summary": "Model output contains natural-language valuation signals.",
-            "valuation_signal_pack": {
-                "price_blind_compatible": False,
-                "source": "latest_successful_analyst_view_runs",
-                "analyst_signals": [
-                    {
-                        "profile": "duan_yongping",
-                        "display_name": "段永平",
-                        "run_id": "21",
-                        "profile_fit_score": "80%",
-                        "confidence": "70%",
-                        "business_quality_signal": "较强",
-                        "moat_durability_signal": "偏正面",
-                        "growth_runway_signal": "偏正面",
-                        "pricing_power_signal": "高",
-                        "capital_intensity_signal": "低风险",
-                        "cash_flow_reliability_signal": "稳定",
-                        "balance_sheet_risk_signal": "较高风险",
-                        "management_capital_allocation_signal": "不确定",
-                        "cyclicality_signal": "较高风险",
-                        "permanent_loss_risk_signal": "证据不足",
-                        "valuation_methods": [
-                            "现金流折现",
-                            {
-                                "valuation_method": "所有者盈余",
-                                "direction": "提高",
-                                "confidence": "75%",
-                            },
-                        ],
-                        "parameter_signals": [
-                            "折现率上调，需要用户复核",
-                            {
-                                "metric": "scenario_spread",
-                                "direction": "扩大",
-                                "magnitude": "较高",
-                                "scenario": "保守",
-                                "confidence": "65%",
-                                "needs_review": False,
-                            },
-                        ],
-                    }
-                ],
-                "consensus_parameter_impacts": ["现金流增长率需要保守复核"],
-                "user_confirmation_required": False,
-            },
-        }
-    )
-
-    pack = output.valuation_signal_pack
-    signal = pack.analyst_signals[0]
-    method = signal.valuation_method_preference[0]
-    second_method = signal.valuation_method_preference[1]
-    impact = signal.parameter_impacts[1]
-
-    assert pack.price_blind_compatible is True
-    assert pack.user_confirmation_required is True
-    assert signal.profile_id == "duan_yongping"
-    assert signal.source_run_id == 21
-    assert signal.profile_fit_score == 0.8
-    assert signal.data_confidence == 0.7
-    assert signal.business_quality_signal == "positive"
-    assert signal.moat_durability_signal == "positive"
-    assert signal.growth_runway_signal == "positive"
-    assert signal.pricing_power_signal == "positive"
-    assert signal.capital_intensity_signal == "negative"
-    assert signal.cash_flow_reliability_signal == "neutral"
-    assert signal.balance_sheet_risk_signal == "negative"
-    assert signal.management_capital_allocation_signal == "unknown"
-    assert signal.cyclicality_signal == "negative"
-    assert signal.permanent_loss_risk_signal == "unknown"
-    assert method.method == "dcf"
-    assert method.direction == "neutral"
-    assert method.reason == "现金流折现"
-    assert second_method.method == "owner_earnings"
-    assert second_method.direction == "up"
-    assert second_method.confidence == 0.75
-    assert signal.parameter_impacts[0].parameter == "review_parameter"
-    assert signal.parameter_impacts[0].requires_user_review is True
-    assert impact.direction == "widen"
-    assert impact.magnitude == "high"
-    assert impact.scenario == "conservative"
-    assert impact.confidence == 0.65
-    assert impact.requires_user_review is True
-    assert pack.consensus_parameter_impacts[0].parameter == "review_parameter"
-    assert pack.consensus_parameter_impacts[0].requires_user_review is True
+            )
 
 
 def test_memo_api_generates_lists_and_deletes_history(tmp_path: Path, monkeypatch) -> None:

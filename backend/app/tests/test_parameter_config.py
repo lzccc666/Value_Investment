@@ -25,21 +25,19 @@ def test_default_parameter_config_is_complete_and_valid() -> None:
 
     assert result.valid is True
     assert result.errors == []
-    assert result.actual_parameter_count == 372
-    assert result.audit_parameter_count == 92
+    assert result.actual_parameter_count == 375
+    assert result.audit_parameter_count == 0
 
 
 def test_parameter_metadata_keeps_scores_counts_and_multipliers_as_raw_numbers() -> None:
-    metadata = {
-        item["path"]: item for item in build_parameter_metadata(default_parameter_config())
-    }
+    metadata = {item["path"]: item for item in build_parameter_metadata(default_parameter_config())}
 
     assert metadata["valuation_rule_matrix.status_scores.pass"]["unit"] == "数值"
     assert metadata["valuation_rule_matrix.weight_exponent"]["unit"] == "数值"
     assert metadata["analyst_engine.data_confidence.announcement_target_count"]["unit"] == "条公告"
     assert metadata["financial_flags.cagr_years.0"]["unit"] == "年"
     assert metadata["data_sampling.announcement_model_chars"]["unit"] == "字符"
-    assert metadata["memo_decision.safety_margin_score_span"]["unit"] == "数值"
+    assert metadata["valuation_rule_matrix.safety_margin_additions.warn"]["unit"] == "%"
     assert metadata["valuation_models.scenarios.conservative.growth_spread"]["unit"] == "倍"
     assert metadata["valuation_models.base_discount_rate"]["unit"] == "%"
 
@@ -54,7 +52,7 @@ def test_all_visible_parameter_copy_is_chinese_specific_and_uniquely_named() -> 
     labels = [str(item["label"]) for item in metadata]
     descriptions = [str(item["description"]) for item in metadata]
 
-    assert len(metadata) == 269
+    assert len(metadata) == 265
     assert len(labels) == len(set(labels))
     assert all("_" not in label and "未审计" not in label for label in labels)
     assert all(len(description) >= 24 for description in descriptions)
@@ -64,27 +62,29 @@ def test_all_visible_parameter_copy_is_chinese_specific_and_uniquely_named() -> 
     assert by_path["analyst_engine.feature_adjustments.cash_flow_quality"]["label"] == (
         "存在经营现金流数据的质量视角加分"
     )
-    assert "不是现金流质量结论" in by_path[
-        "analyst_engine.feature_adjustments.cash_flow_quality"
-    ]["description"]
+    assert (
+        "不是现金流质量结论"
+        in by_path["analyst_engine.feature_adjustments.cash_flow_quality"]["description"]
+    )
     assert by_path["valuation_models.permanent_loss_optimistic_cap"]["label"] == (
         "停止上调乐观永续增长的永久损失风险阈值"
     )
-    assert "不是增长率上限" in by_path[
-        "valuation_models.permanent_loss_optimistic_cap"
-    ]["description"]
-    assert "与 010 状态分相互独立" in by_path[
-        "memo_decision.status_scores.warn"
-    ]["description"]
+    assert (
+        "不是增长率上限" in by_path["valuation_models.permanent_loss_optimistic_cap"]["description"]
+    )
+    assert (
+        "32 条贡献累加"
+        in by_path["valuation_rule_matrix.safety_margin_additions.warn"]["description"]
+    )
 
 
 def test_validation_returns_all_detected_errors() -> None:
     config = default_parameter_config()
     config["valuation_models"]["model_weights"]["dcf"] = 0.9
-    config["memo_decision"]["safety_margin_max"] = 0.8
+    config["valuation_rule_matrix"]["safety_margin_max"] = 1.2
     config["valuation_models"]["base_discount_rate"] = 0.01
     config["valuation_models"]["base_terminal_growth"] = 0.02
-    del config["valuation_rule_matrix"]["rule_mappings"]["buffett.moat"]
+    del config["valuation_rule_matrix"]["rule_mappings"]["buffett.durable_moat"]
 
     result = validate_parameter_config(config)
     codes = {issue.code for issue in result.errors}
@@ -151,9 +151,7 @@ def test_api_validation_does_not_persist_and_publish_requires_warning_acknowledg
     config = client.get("/api/parameter-config/defaults").json()["config_json"]
     config["valuation_models"]["default_growth"] = 0.05
 
-    validation = client.post(
-        "/api/parameter-config/validate", json={"config_json": config}
-    )
+    validation = client.post("/api/parameter-config/validate", json={"config_json": config})
     assert validation.status_code == 200
     assert validation.json()["valid"] is True
     assert len(validation.json()["warnings"]) == 1

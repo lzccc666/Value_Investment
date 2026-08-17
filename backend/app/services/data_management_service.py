@@ -146,9 +146,7 @@ def get_summary(session: Session) -> DataManagementSummary:
         database_size=database_path.stat().st_size if database_path.exists() else 0,
         record_counts=_record_counts(session),
         soft_deleted_counts={
-            "investment_memos": _count(
-                session, InvestmentMemo, InvestmentMemo.status == "deleted"
-            ),
+            "investment_memos": _count(session, InvestmentMemo, InvestmentMemo.status == "deleted"),
             "price_decision_runs": _count(
                 session, PriceDecisionRun, PriceDecisionRun.status == "deleted"
             ),
@@ -380,9 +378,7 @@ def _build_prune_plan(
     session: Session, *, company_id: int | None, keep_count: int
 ) -> dict[str, Any]:
     company_filter = (
-        (lambda model: [model.company_id == company_id])
-        if company_id
-        else (lambda model: [])
+        (lambda model: [model.company_id == company_id]) if company_id else (lambda model: [])
     )
     if company_id and session.get(Company, company_id) is None:
         raise DataManagementError("指定公司不存在。")
@@ -456,9 +452,7 @@ def _build_prune_plan(
             keep_price.add(item.id)
             reasons[("price_decision_runs", item.id)] = "latest 价格决策"
     for item in valuations:
-        latest_id = next(
-            (run.id for run in valuations if run.company_id == item.company_id), None
-        )
+        latest_id = next((run.id for run in valuations if run.company_id == item.company_id), None)
         if item.id == latest_id:
             keep_valuation.add(item.id)
             reasons[("valuation_runs", item.id)] = "latest 估值"
@@ -657,7 +651,9 @@ def _purge_deleted_and_vacuum(
             delete(PriceDecisionRun).where(PriceDecisionRun.id.in_(ids["price_decision_runs"]))
         )
     if ids.get("investment_memos"):
-        session.execute(delete(InvestmentMemo).where(InvestmentMemo.id.in_(ids["investment_memos"])))
+        session.execute(
+            delete(InvestmentMemo).where(InvestmentMemo.id.in_(ids["investment_memos"]))
+        )
     _recompute_latest_flags(session)
     session.commit()
     session.close()

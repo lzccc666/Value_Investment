@@ -215,11 +215,13 @@ def validate_parameter_config(
 
     _validate_range(config, "valuation_models.model_weights", 0.0, 1.0, errors)
     _validate_range(config, "analyst_engine.model_temperatures", 0.0, 1.0, errors)
-    _validate_safety_margin(config, "memo_decision", errors)
+    _validate_safety_margin(config, "valuation_rule_matrix", errors)
     _validate_safety_margin(config, "price_decision", errors)
     _validate_discount_terminal(config, errors)
     _validate_scenarios(config, errors)
     _validate_rule_mappings(config, errors)
+    _validate_status_policies(config, errors)
+    _validate_dynamic_safety_margin(config, errors)
     _validate_tiers(config, errors)
 
     if compare_to_default and config_hash(config) != config_hash(defaults):
@@ -255,9 +257,7 @@ def count_parameter_values(config: dict[str, object]) -> tuple[int, int]:
             for index, nested in enumerate(value):
                 walk(nested, (*path, str(index)))
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            if "parameter_impacts" in path:
-                audit += 1
-            elif not any(part in {"profile_id", "rule_id"} for part in path):
+            if not any(part in {"profile_id", "rule_id"} for part in path):
                 actual += 1
 
     walk(config, ())
@@ -278,8 +278,7 @@ LABELS = {
     "safety_margin_min": "安全边际最小值",
     "safety_margin_max": "安全边际最大值",
     "model_temperatures": "模型温度",
-    "rule_mappings": "40 条规则矩阵",
-    "parameter_impacts": "参数方向审计权重",
+    "rule_mappings": "32 条规则矩阵",
     "dimensions": "估值维度映射",
 }
 
@@ -304,7 +303,7 @@ def build_parameter_metadata(config: dict[str, object]) -> list[dict[str, object
         if not path:
             return
         dotted = ".".join(path)
-        audit_only = "parameter_impacts" in path
+        audit_only = False
         expert = path[0] in {"analyst_engine", "valuation_rule_matrix", "valuation_models"}
         unit = _parameter_unit(path)
         percent = unit == "%"
@@ -401,14 +400,12 @@ def _validate_rule_mappings(
         _issue(
             errors,
             "valuation_rule_matrix.rule_mappings",
-            "40 条规则映射不得缺失或多出。",
+            "32 条规则映射不得缺失或多出。",
             "rule_coverage",
         )
         return
     compute = 0
-    price_reference = 0
     dimension_coefficients = 0
-    audit_coefficients = 0
     valid_dimensions = set(VALUATION_DIMENSIONS)
     for key, raw in mappings.items():
         if not isinstance(raw, dict):
@@ -423,20 +420,11 @@ def _validate_rule_mappings(
                     "compute 规则必须兼容 price-blind。",
                     "price_blind",
                 )
-        elif role == "price_reference":
-            price_reference += 1
-            if raw.get("price_blind_compatible") is not False:
-                _issue(
-                    errors,
-                    f"valuation_rule_matrix.rule_mappings.{key}",
-                    "price_reference 必须与 010 隔离。",
-                    "price_reference",
-                )
         else:
             _issue(
                 errors,
                 f"valuation_rule_matrix.rule_mappings.{key}.calculation_role",
-                "角色只能是 compute 或 price_reference。",
+                "所有规则的角色只能是 compute。",
                 "rule_role",
             )
         dimensions = raw.get("dimensions")
@@ -449,36 +437,71 @@ def _validate_rule_mappings(
                     "包含未知估值维度。",
                     "dimension",
                 )
-        impacts = raw.get("parameter_impacts")
-        if isinstance(impacts, dict):
-            audit_coefficients += len(impacts)
-        if raw.get("parameter_impacts_mode") != "audit_only":
-            _issue(
-                errors,
-                f"valuation_rule_matrix.rule_mappings.{key}.parameter_impacts_mode",
-                "parameter_impacts 必须明确为 audit_only。",
-                "audit_only",
-            )
-    if compute != 38 or price_reference != 2:
+    if compute != 32:
         _issue(
             errors,
             "valuation_rule_matrix.rule_mappings",
-            f"必须保持 38 条 compute 和 2 条 price_reference，当前为 {compute}/{price_reference}。",
+            f"32 条规则必须全部参与计算，当前参与计算={compute}。",
             "rule_roles",
         )
-    if dimension_coefficients != 111:
+    if dimension_coefficients != 117:
         _issue(
             errors,
             "valuation_rule_matrix.rule_mappings",
-            f"维度映射系数必须为 111 个，当前为 {dimension_coefficients}。",
+            f"维度映射系数必须为 117 个，当前为 {dimension_coefficients}。",
             "dimension_count",
         )
-    if audit_coefficients != 92:
+
+
+def _validate_status_policies(
+    config: dict[str, object], errors: list[ParameterValidationIssue]
+) -> None:
+    expected = {"pass", "neutral", "unknown", "warn", "fail"}
+    for path in (
+        "valuation_rule_matrix.status_scores",
+        "valuation_rule_matrix.safety_margin_additions",
+    ):
+        policy = _at(config, path)
+        if not isinstance(policy, dict) or set(policy) != expected:
+            _issue(
+                errors,
+                path,
+                "状态策略必须精确包含 pass/neutral/unknown/warn/fail。",
+                "status_policy",
+            )
+
+
+def _validate_dynamic_safety_margin(
+    config: dict[str, object], errors: list[ParameterValidationIssue]
+) -> None:
+    additions = _at(config, "valuation_rule_matrix.safety_margin_additions")
+    scale = _number(_at(config, "valuation_rule_matrix.safety_margin_analyst_scale"))
+    if not isinstance(additions, dict) or scale is None:
+        return
+    values = [_number(value) for value in additions.values()]
+    if any(value is None or value < 0 for value in values):
         _issue(
             errors,
-            "valuation_rule_matrix.rule_mappings",
-            f"审计参数必须为 92 个，当前为 {audit_coefficients}。",
-            "audit_count",
+            "valuation_rule_matrix.safety_margin_additions",
+            "五状态安全边际加点必须是非负有限数。",
+            "safety_margin_addition",
+        )
+        return
+    if scale <= 0:
+        _issue(
+            errors,
+            "valuation_rule_matrix.safety_margin_analyst_scale",
+            "安全边际分析师数量缩放值必须大于 0。",
+            "safety_margin_scale",
+        )
+        return
+    maximum = max(float(value) for value in values if value is not None) * 4 * scale
+    if maximum > 1.0 + 1e-9:
+        _issue(
+            errors,
+            "valuation_rule_matrix.safety_margin_additions",
+            f"默认最坏状态的理论动态安全边际为 {maximum:.2%}，不得超过 100%。",
+            "dynamic_safety_margin_maximum",
         )
 
 
@@ -544,8 +567,8 @@ def _validate_safety_margin(
 ) -> None:
     minimum = _number(_at(config, f"{domain}.safety_margin_min"))
     maximum = _number(_at(config, f"{domain}.safety_margin_max"))
-    if minimum is not None and maximum is not None and not (0 <= minimum <= maximum <= 0.50):
-        _issue(errors, domain, "安全边际范围必须位于 0%-50%。", "safety_margin")
+    if minimum is not None and maximum is not None and not (0 <= minimum <= maximum <= 1.0):
+        _issue(errors, domain, "安全边际范围必须位于 0%-100%。", "safety_margin")
 
 
 def _validate_tiers(config: dict[str, object], errors: list[ParameterValidationIssue]) -> None:
@@ -708,7 +731,6 @@ def _parameter_unit(path: list[str]) -> str:
         "analyst_engine.data_confidence.financial_periods_required": "期",
         "analyst_engine.data_confidence.announcement_target_count": "条公告",
         "memo_decision.min_successful_analysts": "位分析师",
-        "memo_decision.rule_weight_mode": "选项",
         "price_decision.buy_price_scenario": "选项",
     }
     if dotted in explicit_units:
@@ -724,7 +746,7 @@ def _parameter_unit(path: list[str]) -> str:
         "valuation_rule_matrix.weight_exponent",
         "valuation_rule_matrix.dimension_score_min",
         "valuation_rule_matrix.dimension_score_max",
-        "memo_decision.safety_margin_score_span",
+        "valuation_rule_matrix.safety_margin_analyst_scale",
         "valuation_models.dispersion_ratio",
     }
     if dotted in raw_value_paths or "status_scores" in path or "rule_mappings" in path:

@@ -40,40 +40,6 @@ const mocks = vi.hoisted(() => {
       executive_summary: "多视角显示公司质量较好，但估值输入仍需复核。",
       core_thesis: ["现金流质量是后续估值的核心输入。"],
       key_risks: ["渠道库存恶化会削弱增长质量。"],
-      analyst_scorecard: {
-        total_score: 0.07,
-        suggested_safety_margin: 0.155,
-        coverage: {
-          successful_profiles: 2,
-          total_profiles: 10,
-          known_rules: 8,
-          total_rules: 40
-        },
-        analyst_items: [
-          {
-            profile_id: "buffett",
-            profile_name: "巴菲特",
-            availability: "success",
-            rule_score_total: 4,
-            analyst_weight: 0.1,
-            weighted_score: 0.1,
-            rule_scores: [
-              { rule_id: "moat", rule_label: "护城河", status: "pass", score: 1 },
-              { rule_id: "quality", rule_label: "盈利质量", status: "pass", score: 1 },
-              { rule_id: "management", rule_label: "管理层", status: "pass", score: 1 },
-              { rule_id: "margin_of_safety", rule_label: "安全边际", status: "pass", score: 1 }
-            ]
-          },
-          {
-            profile_id: "fisher",
-            profile_name: "费雪",
-            availability: "success",
-            rule_score_total: -1.2,
-            analyst_weight: 0.1,
-            weighted_score: -0.03
-          }
-        ]
-      },
       valuation_assumption_queue: [
         {
           assumption_type: "base_free_cash_flow",
@@ -176,6 +142,95 @@ const mocks = vi.hoisted(() => {
     publishParameterConfig: vi.fn()
   };
 });
+
+const analystStatusRubric = {
+  pass: "证据明确支持。",
+  neutral: "证据充分但结论中性。",
+  unknown: "关键证据不足。",
+  warn: "存在重要警示。",
+  fail: "证据明确反对。"
+};
+
+function makeAnalystRule(id: string, label: string) {
+  return {
+    id,
+    label,
+    description: `${label}的完整判断说明。`,
+    status_rubric: analystStatusRubric
+  };
+}
+
+function makeAnalystProfile(
+  id: string,
+  name: string,
+  displayName: string,
+  rules: Array<[string, string]>
+) {
+  return {
+    id,
+    name,
+    display_name: displayName,
+    description: `${displayName}分析框架。`,
+    philosophy: `${displayName}投资哲学。`,
+    core_logic: ["核心逻辑"],
+    decision_sequence: ["决策顺序"],
+    preferred_evidence: ["偏好证据"],
+    failure_modes: ["失败模式"],
+    prompt_focus: ["分析焦点"],
+    rules: rules.map(([ruleId, label]) => makeAnalystRule(ruleId, label))
+  };
+}
+
+const fixedAnalystProfiles = [
+  makeAnalystProfile("buffett", "Warren Buffett", "巴菲特", [
+    ["durable_moat", "持久护城河"],
+    ["owner_earnings_quality", "所有者收益"],
+    ["capital_allocation", "资本配置"],
+    ["management_candor", "管理层坦诚"]
+  ]),
+  makeAnalystProfile("peter_lynch", "Peter Lynch", "彼得林奇", [
+    ["business_understandability", "业务可理解"],
+    ["growth_runway", "成长空间"],
+    ["story_numbers_alignment", "叙事对账"],
+    ["growth_financial_resilience", "成长负担"]
+  ]),
+  makeAnalystProfile("munger", "Charlie Munger", "芒格", [
+    ["multi_model_resilience", "多元验证"],
+    ["incentive_alignment", "激励一致"],
+    ["rational_culture", "理性文化"],
+    ["ruin_risk_control", "毁灭风险"]
+  ]),
+  makeAnalystProfile("duan_yongping", "Duan Yongping", "段永平", [
+    ["right_business", "好生意"],
+    ["consumer_value_mindshare", "用户心智"],
+    ["benfen_culture", "本分文化"],
+    ["cash_reinvestment_discipline", "现金再投资"]
+  ]),
+  makeAnalystProfile("graham", "Benjamin Graham", "格雷厄姆", [
+    ["working_capital_safety", "营运安全"],
+    ["capital_structure_safety", "资本结构"],
+    ["earnings_record", "盈利记录"],
+    ["asset_accounting_quality", "资产质量"]
+  ]),
+  makeAnalystProfile("fisher", "Philip Fisher", "费雪", [
+    ["market_runway", "市场空间"],
+    ["innovation_productivity", "创新效率"],
+    ["sales_customer_strength", "销售与客户"],
+    ["management_depth", "管理纵深"]
+  ]),
+  makeAnalystProfile("lin_yuan", "Lin Yuan", "林园", [
+    ["must_have_repeat_demand", "刚需复购"],
+    ["monopoly_brand_power", "品牌垄断"],
+    ["cash_profitability", "现金盈利"],
+    ["scalable_compounding", "规模复利"]
+  ]),
+  makeAnalystProfile("li_lu", "Li Lu", "李录", [
+    ["economic_knowability", "经济可知性"],
+    ["moat_growth_coexistence", "护城河成长"],
+    ["owner_governance", "股东治理"],
+    ["permanent_loss_resilience", "永久损失"]
+  ])
+];
 
 vi.mock("../services/api", () => ({
   getHealth: mocks.getHealth,
@@ -642,35 +697,7 @@ beforeEach(() => {
     ]
   });
   mocks.deleteEvidence.mockResolvedValue({ id: 1, deleted: true });
-  mocks.getAnalystProfiles.mockResolvedValue({
-    items: [
-      {
-        id: "buffett",
-        name: "Warren Buffett",
-        display_name: "巴菲特",
-        description: "从护城河、长期盈利质量、管理层可信度和安全边际看公司。",
-        philosophy: "只在证据支持的范围内判断企业长期经济特征。",
-        rules: [
-          { id: "moat", label: "护城河", description: "业务是否具备可持续竞争优势。" },
-          { id: "quality", label: "盈利质量", description: "利润是否由现金流支撑。" },
-          { id: "management", label: "管理层", description: "管理层是否审慎透明。" },
-          { id: "margin_of_safety", label: "安全边际", description: "是否有足够容错。" }
-        ],
-        prompt_focus: ["长期业务质量", "现金流质量"]
-      },
-      {
-        id: "peter_lynch",
-        name: "Peter Lynch",
-        display_name: "彼得林奇",
-        description: "从可理解业务、成长路径、行业景气和财务兑现度看公司。",
-        philosophy: "先理解生意和增长来源，再核对财务是否兑现。",
-        rules: [
-          { id: "understandable_business", label: "可理解业务", description: "业务模式是否清楚。" }
-        ],
-        prompt_focus: ["业务故事", "增长兑现"]
-      }
-    ]
-  });
+  mocks.getAnalystProfiles.mockResolvedValue({ items: fixedAnalystProfiles });
   mocks.getCompanyAnalysisRuns.mockResolvedValue({
     items: [],
     total: 0,
@@ -711,7 +738,7 @@ beforeEach(() => {
                     key_observations: ["种子财务显示利润和现金流匹配。"],
                     rule_checks: [
                       {
-                        rule_id: "moat",
+                        rule_id: "durable_moat",
                         status: "warn",
                         summary: "有白酒标签和行业证据，但护城河证据还不足。",
                         evidence_ids: [1],
@@ -885,8 +912,8 @@ beforeEach(() => {
           key_observations: ["种子财务显示利润和现金流匹配。"],
           rule_checks: [
             {
-              rule_id: "moat",
-              status: ruleId === "moat" ? status : "warn",
+              rule_id: "durable_moat",
+              status: ruleId === "durable_moat" ? status : "warn",
               summary: "有白酒标签和行业证据，但护城河证据还不足。",
               evidence_ids: [1],
               financial_periods: ["2025A"],
@@ -1520,8 +1547,6 @@ function makePriceDecisionRun(
     intrinsic_values_per_share: intrinsicValues,
     current_price: 1355.29,
     market_data_updated_at: "2026-08-13T12:00:00Z",
-    analyst_score_total: 0.07,
-    analyst_scorecard_snapshot: mocks.investmentMemo.sections.analyst_scorecard,
     suggested_safety_margin: 0.155,
     safety_margin_override: overrides.safety_margin_override ?? null,
     effective_safety_margin: effectiveMargin,
@@ -1860,6 +1885,54 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "新增公司" })).not.toBeInTheDocument();
   });
 
+  it("filters retired analyst runs from the memo preparation area", async () => {
+    const currentResponse = await mocks.getLatestCompanyAnalysisRuns(1, { status: "success" });
+    const currentRun = currentResponse.items[0];
+    mocks.getLatestCompanyAnalysisRuns.mockImplementation(
+      (_companyId: number, params: { status?: string } = {}) =>
+        Promise.resolve(
+          params.status === "failed"
+            ? {
+                company_id: 1,
+                run_type: "analyst_view",
+                analyst_profile: null,
+                status: "failed",
+                items: []
+              }
+            : {
+                ...currentResponse,
+                items: [
+                  currentRun,
+                  {
+                    ...currentRun,
+                    id: 99,
+                    analyst_profile: "george_soros",
+                    result: {
+                      ...currentRun.result,
+                      analyst_profile: "george_soros",
+                      risk_flags: ["退役视角风险不应进入当前汇总。"]
+                    }
+                  }
+                ]
+              }
+        )
+    );
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Memo");
+
+    const successfulBlock = screen
+      .getByText("可用于综合的成功视角")
+      .closest(".memo-prep-block");
+    expect(successfulBlock).toHaveTextContent("巴菲特");
+    expect(successfulBlock).not.toHaveTextContent("george_soros");
+    expect(screen.queryByText("退役视角风险不应进入当前汇总。")).not.toBeInTheDocument();
+    expect(screen.getByText("1 个可用视角")).toBeInTheDocument();
+  });
+
   it("keeps the company profile visible when optional workspace modules fail", async () => {
     mocks.getLatestInvestmentMemo.mockRejectedValueOnce(new Error("Request failed: 404"));
     mocks.getInvestmentMemos.mockRejectedValueOnce(new Error("Request failed: 404"));
@@ -1887,8 +1960,8 @@ describe("App", () => {
         analystParameterMatrixSnapshot: {
           analyst_weights: [
             {
-              profile_id: "george_soros",
-              profile_name: "乔治索罗斯",
+              profile_id: "li_lu",
+              profile_name: "李录",
               source_run_id: 92,
               weight: 0.4
             },
@@ -1901,32 +1974,33 @@ describe("App", () => {
           ],
           rule_impacts: [
             {
-              profile_id: "george_soros",
-              profile_name: "乔治索罗斯",
+              profile_id: "li_lu",
+              profile_name: "李录",
               source_run_id: 92,
-              rule_id: "reflexivity",
-              rule_label: "反身性",
+              rule_id: "economic_knowability",
+              rule_label: "经济可理解性",
               status: "warn",
               dimensions: { cyclicality: 1 },
-              calculation_role: "compute"
+              calculation_role: "compute",
+              price_blind_compatible: true
             },
             {
               profile_id: "buffett",
               profile_name: "巴菲特",
               source_run_id: 91,
-              rule_id: "moat",
-              rule_label: "护城河",
+              rule_id: "durable_moat",
+              rule_label: "持久护城河",
               status: "pass",
               dimensions: { moat_durability: 1 },
-              calculation_role: "compute"
+              calculation_role: "compute",
+              price_blind_compatible: true
             }
           ],
-          price_reference_rules: [],
-          parameter_contributions: {
-            discount_rate: [
+          dimension_contributions: {
+            moat_durability: [
               {
                 source_run_id: 91,
-                rule_id: "moat",
+                rule_id: "durable_moat",
                 contribution: 0.10000000000000002
               }
             ]
@@ -1958,14 +2032,15 @@ describe("App", () => {
     const analystAudit = screen.getByText("008 规则到参数审计").closest("article");
     const analystAuditText = analystAudit?.textContent ?? "";
     expect(analystAuditText.indexOf("巴菲特")).toBeLessThan(
-      analystAuditText.indexOf("乔治索罗斯")
+      analystAuditText.indexOf("李录")
     );
     expect(analystAuditText).toContain("护城河持久性");
-    expect(analystAuditText).toContain("周期性");
-    expect(analystAuditText).toContain("折现率 0.1");
+    expect(analystAuditText).toMatch(/持久护城河：通过；\s*维度贡献/u);
+    expect(analystAuditText).toContain("护城河持久性 0.1");
+    expect(analystAuditText).not.toContain("计算 参与计算");
+    expect(analystAuditText).not.toContain("不参与计算");
     expect(analystAuditText).not.toContain("moat_durability");
     expect(analystAuditText).not.toContain("cyclicality");
-    expect(analystAuditText).not.toContain("discount_rate");
     expect(screen.getByText("行情更新时间")).toBeInTheDocument();
     expect(screen.getByText("基本信息")).toBeInTheDocument();
     expect(screen.getByText("1,355.29")).toBeInTheDocument();
@@ -2042,7 +2117,7 @@ describe("App", () => {
     expect(screen.queryByText(/仓位建议|强制卖出/)).not.toBeInTheDocument();
   });
 
-  it("allows a 0%-50% margin override while keeping the suggested margin visible", async () => {
+  it("allows a 0%-100% margin override while keeping the suggested margin visible", async () => {
     const valuation = makeValuationRun();
     const first = makePriceDecisionRun();
     const overridden = makePriceDecisionRun({
@@ -2130,7 +2205,7 @@ describe("App", () => {
     mocks.getLatestValuationRun.mockResolvedValue({ company_id: 1, item: valuation });
     mocks.getValuationRuns.mockResolvedValue({ items: [valuation], total: 1, limit: 20, offset: 0 });
     mocks.createPriceDecisionRun.mockRejectedValueOnce(
-      new Error("该估值绑定的旧 Memo 没有动态安全边际，请重新生成 Memo 和 010 估值。")
+      new Error("该 010 估值没有冻结动态安全边际，请使用完整 8 位分析师结果重新生成 010。")
     );
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
@@ -2139,7 +2214,9 @@ describe("App", () => {
     await openWorkspaceSection("Price Decision");
     fireEvent.click(screen.getByRole("button", { name: "生成价格决策" }));
     expect(
-      await screen.findByText("该估值绑定的旧 Memo 没有动态安全边际，请重新生成 Memo 和 010 估值。")
+      await screen.findByText(
+        "该 010 估值没有冻结动态安全边际，请使用完整 8 位分析师结果重新生成 010。",
+      )
     ).toBeInTheDocument();
   });
 
@@ -2170,17 +2247,12 @@ describe("App", () => {
       await screen.findByText("多视角显示公司质量较好，但估值输入仍需复核。")
     ).toBeInTheDocument();
     expect(await screen.findAllByText("010 需要复核自由现金流基准。")).not.toHaveLength(0);
-    expect(await screen.findByText("分析师评分")).toBeInTheDocument();
-    expect(await screen.findByText("+0.07")).toBeInTheDocument();
-    expect(await screen.findByText("+0.10")).toBeInTheDocument();
-    expect(await screen.findByText(/动态安全边际 15\.50%/)).toBeInTheDocument();
+    expect(screen.queryByText("分析师评分")).not.toBeInTheDocument();
     const latestMemoPanel = screen.getByText("最新综合备忘录").closest(".memo-latest");
     expect(latestMemoPanel).not.toBeNull();
     expect(within(latestMemoPanel as HTMLElement).queryByText("研究结论")).not.toBeInTheDocument();
     expect(within(latestMemoPanel as HTMLElement).queryByText("来源视角")).not.toBeInTheDocument();
     expect(within(latestMemoPanel as HTMLElement).queryByText("状态")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("40 项指标明细"));
-    expect(await screen.findByText(/护城河 \+1\.00/)).toBeInTheDocument();
     expect(screen.queryByText(/base_free_cash_flow:/)).not.toBeInTheDocument();
     expect(await screen.findByText("历史分析记录")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "查看备忘录 v1" }));
@@ -2230,7 +2302,7 @@ describe("App", () => {
           display_name: "巴菲特",
           description: "从护城河、长期盈利质量、管理层可信度和安全边际看公司。",
           philosophy: "只在证据支持的范围内判断企业长期经济特征。",
-          rules: [{ id: "moat", label: "护城河", description: "业务是否具备可持续竞争优势。" }],
+          rules: [makeAnalystRule("durable_moat", "持久护城河")],
           prompt_focus: ["长期业务质量"]
         },
         {
@@ -3341,7 +3413,7 @@ describe("App", () => {
             key_observations: [],
             rule_checks: [
               {
-                rule_id: "quality",
+                rule_id: "owner_earnings_quality",
                 status: "pass",
                 summary: "利润和现金流匹配度较好。",
                 evidence_ids: [],
@@ -3476,7 +3548,7 @@ describe("App", () => {
       expect(mocks.runCompanyAnalysisBatch).toHaveBeenCalledWith(
         1,
         expect.objectContaining({
-          analyst_profiles: ["buffett", "peter_lynch"],
+          analyst_profiles: fixedAnalystProfiles.map((profile) => profile.id),
           signal: expect.any(AbortSignal)
         })
       );
@@ -3628,13 +3700,18 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "档案" }));
     await openWorkspaceSection("Analyst Views");
 
-    const statusSelect = await screen.findByLabelText("调整巴菲特护城河结论");
+    const statusSelect = await screen.findByLabelText("调整巴菲特持久护城河结论");
     expect(statusSelect).toHaveValue("warn");
 
     fireEvent.change(statusSelect, { target: { value: "pass" } });
 
     await waitFor(() => {
-      expect(mocks.updateAnalysisRunRuleStatus).toHaveBeenCalledWith(1, 11, "moat", "pass");
+      expect(mocks.updateAnalysisRunRuleStatus).toHaveBeenCalledWith(
+        1,
+        11,
+        "durable_moat",
+        "pass"
+      );
     });
     expect(await screen.findByText("已保存规则结论")).toBeInTheDocument();
     expect(statusSelect).toHaveValue("pass");

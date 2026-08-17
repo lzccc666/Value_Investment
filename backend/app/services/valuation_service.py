@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.analysis.analyst_profiles import get_analyst_profile
+from app.analysis.analyst_profiles import list_analyst_profiles
 from app.analysis.analyst_weights import (
     analyst_raw_weight,
     differentiate_and_normalize_analyst_weights,
@@ -44,6 +44,8 @@ FORBIDDEN_PRICE_FIELDS = {
     "target_price",
     "broker_rating",
     "market_sentiment",
+    "safety_margin",
+    "trade_action",
 }
 FORBIDDEN_PRICE_TERMS = (
     "当前价格",
@@ -60,6 +62,12 @@ FORBIDDEN_PRICE_TERMS = (
     "浮盈",
     "浮亏",
     "市场情绪",
+    "安全边际",
+    "买入",
+    "卖出",
+    "持有",
+    "加仓",
+    "减仓",
 )
 
 
@@ -139,28 +147,63 @@ def _latest_analyst_parameter_matrices(
         .where(
             AnalysisRun.company_id == company_id,
             AnalysisRun.run_type == "analyst_view",
-            AnalysisRun.status == "success",
-            AnalysisRun.is_latest.is_(True),
         )
         .order_by(AnalysisRun.created_at.desc(), AnalysisRun.id.desc())
     ).all()
-    matrices = []
-    seen_profiles: set[str] = set()
+    latest_by_profile: dict[str, AnalysisRun] = {}
     for run in runs:
         profile_id = str(run.analyst_profile or "")
-        if not profile_id or profile_id in seen_profiles:
+        if profile_id and profile_id not in latest_by_profile:
+            latest_by_profile[profile_id] = run
+
+    allowed_statuses = {"pass", "neutral", "unknown", "warn", "fail"}
+    issues: list[str] = []
+    matrices: list[dict[str, object]] = []
+    for profile in list_analyst_profiles():
+        run = latest_by_profile.get(profile.id)
+        if run is None:
+            issues.append(f"{profile.display_name}：缺少最新运行")
             continue
-        seen_profiles.add(profile_id)
+        if run.status != "success":
+            issues.append(f"{profile.display_name}：最新运行状态为 {run.status}，不是 success")
+            continue
         result = _dict(run.result)
-        profile = get_analyst_profile(profile_id)
-        if profile is None:
+        checks = result.get("rule_checks")
+        if not isinstance(checks, list):
+            issues.append(f"{profile.display_name}：缺少四条规则结果")
             continue
-        matrix = derive_valuation_parameter_matrix(
-            source_run_id=run.id,
-            profile=profile,
-            result=result,
+        check_rows = [item for item in checks if isinstance(item, dict)]
+        actual_ids = [str(item.get("rule_id") or "") for item in check_rows]
+        expected_ids = [rule.id for rule in profile.rules]
+        invalid_statuses = sorted(
+            {
+                str(item.get("status") or "")
+                for item in check_rows
+                if str(item.get("status") or "") not in allowed_statuses
+            }
         )
-        matrices.append(matrix)
+        if len(check_rows) != 4 or actual_ids != expected_ids or invalid_statuses:
+            details: list[str] = []
+            if len(check_rows) != 4:
+                details.append(f"规则数={len(check_rows)}")
+            if actual_ids != expected_ids:
+                details.append("规则 ID 或顺序不完整")
+            if invalid_statuses:
+                details.append(f"非法状态={invalid_statuses}")
+            issues.append(f"{profile.display_name}：{'，'.join(details)}")
+            continue
+        try:
+            matrices.append(
+                derive_valuation_parameter_matrix(
+                    source_run_id=run.id,
+                    profile=profile,
+                    result=result,
+                )
+            )
+        except ValueError as exc:
+            issues.append(f"{profile.display_name}：{exc}")
+    if issues:
+        raise ValuationInputError("010 完整性门槛未通过：" + "；".join(issues))
     return matrices
 
 
@@ -285,6 +328,7 @@ def _calculate_valuation_payload(
         input_gaps,
         analyst_matrices,
     )
+    analyst_snapshot = _dict(suggested_assumptions.get("analyst_parameter_matrix_snapshot"))
     user_confirmed = bool(user_assumptions)
     final_assumptions = (
         _deep_merge(suggested_assumptions, user_assumptions) if user_confirmed else {}
@@ -366,6 +410,15 @@ def _calculate_valuation_payload(
             "intrinsic_value_range": intrinsic_value_range,
             "valuation_input_gaps": input_gaps,
             "dispersion_warning": dispersion_warning,
+            "dynamic_safety_margin": analyst_snapshot.get("dynamic_safety_margin"),
+            "dynamic_safety_margin_contributions": analyst_snapshot.get(
+                "dynamic_safety_margin_contributions", []
+            ),
+            "dynamic_safety_margin_policy": analyst_snapshot.get(
+                "dynamic_safety_margin_policy", {}
+            ),
+            "analyst_weight_snapshot": analyst_snapshot.get("analyst_weights", []),
+            "dynamic_safety_margin_formula_version": "010_dynamic_safety_margin_v1",
             "next_step": (
                 "参数已确认，估值结果已生成。" if user_confirmed else "请先确认或调整模型建议参数。"
             ),
@@ -634,14 +687,11 @@ def _derive_normalized_free_cash_flow(financial_pack: dict[str, object]) -> dict
                 f"正常化 FCF/净利润超过 {cap_text}，已按 {cap_text} 倍净利润设置保守上限。"
             )
         elif fcf_to_net_profit is not None:
-            weak_threshold = float(
-                parameter_value("valuation_models.fcf_profit_weak", 0.60)
-            )
+            weak_threshold = float(parameter_value("valuation_models.fcf_profit_weak", 0.60))
             if fcf_to_net_profit < weak_threshold:
                 threshold_text = f"{weak_threshold:g}"
                 warnings.append(
-                    f"正常化 FCF/净利润低于 {threshold_text}，"
-                    "现金转化偏弱，基准置信度已降低。"
+                    f"正常化 FCF/净利润低于 {threshold_text}，现金转化偏弱，基准置信度已降低。"
                 )
                 confidence = "low"
 
@@ -1153,11 +1203,20 @@ def _derive_analyst_matrix_adjustment(
     dimension_scores: dict[str, float] = {}
     dimension_disagreement: dict[str, float] = {}
     dimension_traces: dict[str, list[dict[str, object]]] = {}
-    parameter_traces: dict[str, list[dict[str, object]]] = {}
     all_compute_rules = 0
     unknown_compute_rules = 0
-    price_reference_rules = []
     rule_audit = []
+    safety_margin_additions = parameter_value(
+        "valuation_rule_matrix.safety_margin_additions",
+        {"pass": 0.0, "neutral": 0.009, "unknown": 0.012, "warn": 0.016, "fail": 0.03},
+    )
+    safety_margin_additions = (
+        safety_margin_additions if isinstance(safety_margin_additions, dict) else {}
+    )
+    safety_margin_scale = float(
+        parameter_value("valuation_rule_matrix.safety_margin_analyst_scale", 8.0)
+    )
+    safety_margin_contributions: list[dict[str, object]] = []
     for analyst in analyst_rows:
         analyst_weight = float(analyst["weight"])
         for rule in analyst["rules"]:
@@ -1171,8 +1230,6 @@ def _derive_analyst_matrix_adjustment(
                 all_compute_rules += 1
                 if status == "unknown":
                     unknown_compute_rules += 1
-            else:
-                price_reference_rules.append(rule)
             trace_base = {
                 "profile_id": analyst["profile_id"],
                 "profile_name": analyst["profile_name"],
@@ -1192,10 +1249,25 @@ def _derive_analyst_matrix_adjustment(
                 {
                     **trace_base,
                     "dimensions": rule.get("dimensions", {}),
-                    "parameter_impacts": rule.get("parameter_impacts", {}),
                 }
             )
-            if not gate or status == "unknown":
+            if gate:
+                margin_addition = float(safety_margin_additions.get(status, 0.0))
+                safety_margin_contributions.append(
+                    {
+                        "profile_id": analyst["profile_id"],
+                        "profile_name": analyst["profile_name"],
+                        "source_run_id": analyst["source_run_id"],
+                        "rule_id": rule.get("rule_id"),
+                        "rule_label": rule.get("rule_label"),
+                        "status": status,
+                        "status_addition": margin_addition,
+                        "analyst_weight": analyst_weight,
+                        "analyst_scale": safety_margin_scale,
+                        "contribution": margin_addition * analyst_weight * safety_margin_scale,
+                    }
+                )
+            if not gate:
                 continue
             for dimension, raw_weight in _dict(rule.get("dimensions")).items():
                 dimension_weight = _num(raw_weight)
@@ -1207,17 +1279,6 @@ def _derive_analyst_matrix_adjustment(
                         **trace_base,
                         "mapping_weight": dimension_weight,
                         "contribution": contribution,
-                    }
-                )
-            for parameter, raw_weight in _dict(rule.get("parameter_impacts")).items():
-                parameter_weight = _num(raw_weight)
-                if parameter_weight is None:
-                    continue
-                parameter_traces.setdefault(parameter, []).append(
-                    {
-                        **trace_base,
-                        "mapping_weight": parameter_weight,
-                        "contribution": status_score * parameter_weight * analyst_weight,
                     }
                 )
 
@@ -1310,6 +1371,11 @@ def _derive_analyst_matrix_adjustment(
         float(parameter_value("valuation_models.scenario_spread_min", 0.015)),
         float(parameter_value("valuation_models.scenario_spread_max", 0.080)),
     )
+    dynamic_safety_margin = _clamp(
+        sum(float(item["contribution"]) for item in safety_margin_contributions),
+        float(parameter_value("valuation_rule_matrix.safety_margin_min", 0.0)),
+        float(parameter_value("valuation_rule_matrix.safety_margin_max", 1.0)),
+    )
     return {
         "source": "latest_successful_008_analyst_view_runs",
         "has_signals": bool(analyst_rows),
@@ -1319,12 +1385,10 @@ def _derive_analyst_matrix_adjustment(
             {key: value for key, value in item.items() if key != "rules"} for item in analyst_rows
         ],
         "rule_impacts": rule_audit,
-        "price_reference_rules": price_reference_rules,
         "dimension_scores": dimension_scores,
         "dimension_disagreement": dimension_disagreement,
         "dimension_disagreement_avg": disagreement_avg,
         "dimension_contributions": dimension_traces,
-        "parameter_contributions": parameter_traces,
         "unknown_ratio": unknown_ratio,
         "data_gap_penalty": data_gap_penalty,
         "quality_score": quality_score,
@@ -1336,257 +1400,16 @@ def _derive_analyst_matrix_adjustment(
         "delta_discount": delta_discount,
         "delta_terminal": delta_terminal,
         "scenario_spread": scenario_spread,
+        "dynamic_safety_margin": dynamic_safety_margin,
+        "dynamic_safety_margin_contributions": safety_margin_contributions,
+        "dynamic_safety_margin_policy": {
+            "status_additions": dict(safety_margin_additions),
+            "analyst_scale": safety_margin_scale,
+            "minimum": float(parameter_value("valuation_rule_matrix.safety_margin_min", 0.0)),
+            "maximum": float(parameter_value("valuation_rule_matrix.safety_margin_max", 1.0)),
+            "formula": "sum(status_addition * analyst_weight * analyst_scale)",
+        },
     }
-
-
-def _derive_analyst_signal_adjustment(
-    *,
-    memo_inputs: dict[str, object],
-    input_gaps: list[dict[str, object]],
-) -> dict[str, object]:
-    score_policy = {"pass": 1.0, "warn": -0.35, "fail": -2.0, "unknown": 0.0}
-    pack: dict[str, object] = {}
-    analysts = [item for item in _list(pack.get("analyst_signals")) if isinstance(item, dict)]
-    dimensions = [
-        "business_quality_signal",
-        "moat_durability_signal",
-        "growth_runway_signal",
-        "pricing_power_signal",
-        "capital_intensity_signal",
-        "cash_flow_reliability_signal",
-        "balance_sheet_risk_signal",
-        "management_capital_allocation_signal",
-        "cyclicality_signal",
-        "permanent_loss_risk_signal",
-    ]
-    empty = {
-        "has_signals": False,
-        "status_score_policy": score_policy,
-        "analyst_weights": [],
-        "dimension_scores": {dimension: 0.0 for dimension in dimensions},
-        "dimension_confidence": {dimension: 0.0 for dimension in dimensions},
-        "dimension_disagreement": {dimension: 0.0 for dimension in dimensions},
-        "unknown_penalty": 0.0,
-        "dimension_disagreement_avg": 0.0,
-        "data_gap_penalty": _data_gap_penalty(input_gaps, pack),
-        "quality_score": 0.0,
-        "growth_score": 0.0,
-        "risk_score": 0.0,
-        "permanent_loss_risk_negative": 0.0,
-        "delta_growth": 0.0,
-        "delta_owner_growth": 0.0,
-        "delta_discount": 0.0,
-        "delta_terminal": 0.0,
-        "scenario_spread": 0.02 + 0.01 * _data_gap_penalty(input_gaps, pack),
-    }
-    if not analysts:
-        return empty
-
-    analyst_weights = _analyst_weights(analysts, dimensions)
-    if not analyst_weights:
-        return empty
-
-    dimension_scores: dict[str, float] = {}
-    dimension_confidence: dict[str, float] = {}
-    dimension_disagreement: dict[str, float] = {}
-    unknown_ratios = []
-    for dimension in dimensions:
-        scored_items = []
-        unknown_weight = 0.0
-        total_weight = 0.0
-        for weight_item in analyst_weights:
-            analyst = weight_item["analyst"]
-            weight = float(weight_item["weight"])
-            raw_signal = str(analyst.get(dimension) or "unknown")
-            score = _analyst_signal_score(raw_signal, score_policy)
-            total_weight += weight
-            if _is_unknown_signal(raw_signal):
-                unknown_weight += weight
-                continue
-            scored_items.append({"score": score, "weight": weight})
-        known_weight = sum(float(item["weight"]) for item in scored_items)
-        if known_weight > 0:
-            score = (
-                sum(float(item["score"]) * float(item["weight"]) for item in scored_items)
-                / known_weight
-            )
-        else:
-            score = 0.0
-        unknown_ratio = unknown_weight / total_weight if total_weight > 0 else 1.0
-        unknown_ratios.append(unknown_ratio)
-        dimension_scores[dimension] = _clamp(score, -2.0, 1.0)
-        dimension_confidence[dimension] = 1.0 - min(0.35, unknown_ratio * 0.35)
-        dimension_disagreement[dimension] = _weighted_std(
-            [float(item["score"]) for item in scored_items],
-            [float(item["weight"]) for item in scored_items],
-        )
-
-    disagreement_avg = (
-        sum(dimension_disagreement.values()) / len(dimension_disagreement)
-        if dimension_disagreement
-        else 0.0
-    )
-    unknown_penalty = min(0.20, (sum(unknown_ratios) / len(unknown_ratios)) * 0.20)
-    data_gap_penalty = _data_gap_penalty(input_gaps, pack)
-
-    business_quality = dimension_scores["business_quality_signal"]
-    moat_durability = dimension_scores["moat_durability_signal"]
-    growth_runway = dimension_scores["growth_runway_signal"]
-    pricing_power = dimension_scores["pricing_power_signal"]
-    capital_intensity = dimension_scores["capital_intensity_signal"]
-    cash_flow_reliability = dimension_scores["cash_flow_reliability_signal"]
-    balance_sheet_risk = dimension_scores["balance_sheet_risk_signal"]
-    management_capital_allocation = dimension_scores["management_capital_allocation_signal"]
-    cyclicality = dimension_scores["cyclicality_signal"]
-    permanent_loss_risk = dimension_scores["permanent_loss_risk_signal"]
-
-    quality_score = (
-        0.30 * business_quality
-        + 0.25 * moat_durability
-        + 0.20 * cash_flow_reliability
-        + 0.15 * management_capital_allocation
-        + 0.10 * pricing_power
-    )
-    growth_score = (
-        0.45 * growth_runway
-        + 0.25 * pricing_power
-        + 0.20 * cash_flow_reliability
-        - 0.10 * max(0.0, -capital_intensity)
-    )
-    risk_score = (
-        0.30 * max(0.0, -balance_sheet_risk)
-        + 0.25 * max(0.0, -cyclicality)
-        + 0.35 * max(0.0, -permanent_loss_risk)
-        + 0.10 * data_gap_penalty
-        + 0.10 * unknown_penalty
-    )
-
-    delta_growth = (
-        0.030 * growth_score + 0.012 * quality_score - 0.025 * risk_score - 0.006 * unknown_penalty
-    )
-    delta_owner_growth = (
-        0.024 * growth_score
-        + 0.016 * quality_score
-        - 0.024 * max(0.0, -capital_intensity)
-        - 0.022 * risk_score
-        - 0.006 * unknown_penalty
-    )
-    delta_discount = (
-        -0.014 * max(0.0, quality_score)
-        + 0.028 * risk_score
-        + 0.012 * disagreement_avg
-        + 0.008 * unknown_penalty
-    )
-    delta_terminal = (
-        0.010 * moat_durability
-        + 0.006 * pricing_power
-        - 0.014 * risk_score
-        - 0.006 * unknown_penalty
-    )
-    scenario_spread = (
-        0.020
-        + 0.020 * risk_score
-        + 0.015 * disagreement_avg
-        + 0.010 * data_gap_penalty
-        + 0.005 * unknown_penalty
-    )
-
-    return {
-        "has_signals": True,
-        "status_score_policy": score_policy,
-        "analyst_weights": [
-            {
-                "profile_id": item["profile_id"],
-                "weight": item["weight"],
-                "profile_fit_score": item["profile_fit_score"],
-                "data_confidence": item["data_confidence"],
-                "known_signal_ratio": item["known_signal_ratio"],
-            }
-            for item in analyst_weights
-        ],
-        "dimension_scores": dimension_scores,
-        "dimension_confidence": dimension_confidence,
-        "dimension_disagreement": dimension_disagreement,
-        "unknown_penalty": unknown_penalty,
-        "dimension_disagreement_avg": disagreement_avg,
-        "data_gap_penalty": data_gap_penalty,
-        "quality_score": quality_score,
-        "growth_score": growth_score,
-        "risk_score": risk_score,
-        "permanent_loss_risk_negative": max(0.0, -permanent_loss_risk),
-        "delta_growth": delta_growth,
-        "delta_owner_growth": delta_owner_growth,
-        "delta_discount": delta_discount,
-        "delta_terminal": delta_terminal,
-        "scenario_spread": scenario_spread,
-    }
-
-
-def _analyst_weights(
-    analysts: list[dict[str, object]],
-    dimensions: list[str],
-) -> list[dict[str, object]]:
-    weighted: list[dict[str, object]] = []
-    for analyst in analysts:
-        fit = _clamp(_num(analyst.get("profile_fit_score")) or 0.60, 0.20, 1.00)
-        confidence = _clamp(_num(analyst.get("data_confidence")) or 0.60, 0.20, 1.00)
-        known_count = sum(
-            1
-            for dimension in dimensions
-            if not _is_unknown_signal(str(analyst.get(dimension) or "unknown"))
-        )
-        known_ratio = known_count / len(dimensions) if dimensions else 0.0
-        raw_weight = analyst_raw_weight(
-            data_confidence=confidence,
-            profile_fit_score=fit,
-        )
-        weighted.append(
-            {
-                "analyst": analyst,
-                "profile_id": str(analyst.get("profile_id") or ""),
-                "profile_fit_score": fit,
-                "data_confidence": confidence,
-                "known_signal_ratio": known_ratio,
-                "raw_weight": raw_weight,
-            }
-        )
-    weight_components = differentiate_and_normalize_analyst_weights(
-        [float(item["raw_weight"]) for item in weighted]
-    )
-    return [
-        {**item, **components} for item, components in zip(weighted, weight_components, strict=True)
-    ]
-
-
-def _analyst_signal_score(signal: str, score_policy: dict[str, float]) -> float:
-    normalized = signal.strip().lower()
-    if normalized in {"positive", "pass", "passed", "strong", "good", "通过"}:
-        return score_policy["pass"]
-    if normalized in {"warn", "watch", "mixed", "observe", "observation", "观察"}:
-        return score_policy["warn"]
-    if normalized in {"negative", "fail", "failed", "weak", "risk", "不通过"}:
-        return score_policy["fail"]
-    return score_policy["unknown"]
-
-
-def _is_unknown_signal(signal: str) -> bool:
-    normalized = signal.strip().lower()
-    return normalized in {"", "unknown", "uncertain", "insufficient", "未知"}
-
-
-def _weighted_std(values: list[float], weights: list[float]) -> float:
-    if not values or not weights:
-        return 0.0
-    total_weight = sum(weights)
-    if total_weight <= 0:
-        return 0.0
-    mean = sum(value * weight for value, weight in zip(values, weights, strict=False))
-    mean /= total_weight
-    variance = (
-        sum(weight * ((value - mean) ** 2) for value, weight in zip(values, weights, strict=False))
-        / total_weight
-    )
-    return variance**0.5
 
 
 def _data_gap_penalty(input_gaps: list[dict[str, object]], pack: dict[str, object]) -> float:
@@ -1604,6 +1427,21 @@ def _data_gap_penalty(input_gaps: list[dict[str, object]], pack: dict[str, objec
         0.0,
         float(parameter_value("valuation_models.gap_penalty_cap", 1.0)),
     )
+
+
+def _weighted_std(values: list[float], weights: list[float]) -> float:
+    if not values or not weights:
+        return 0.0
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return 0.0
+    mean = sum(value * weight for value, weight in zip(values, weights, strict=False))
+    mean /= total_weight
+    variance = (
+        sum(weight * ((value - mean) ** 2) for value, weight in zip(values, weights, strict=False))
+        / total_weight
+    )
+    return variance**0.5
 
 
 def _calculate_dcf(

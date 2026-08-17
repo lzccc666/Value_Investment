@@ -272,13 +272,13 @@ function RuleMatrixEditor({ config, analyst, ruleQuery, dimension, onAnalyst, on
         <label><span>分析师</span><select value={analyst} onChange={(event) => onAnalyst(event.target.value)}><option value="">全部</option>{analysts.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label><span>规则</span><Search size={15} /><input value={ruleQuery} onChange={(event) => onRuleQuery(event.target.value)} placeholder="输入规则名称" /></label>
         <label><span>维度</span><select value={dimension} onChange={(event) => onDimension(event.target.value)}><option value="">全部</option>{dimensions.map((value) => <option key={value} value={value}>{matrixParameterLabel(value)}</option>)}</select></label>
-        <strong>{filtered.length} / 40</strong>
+        <strong>{filtered.length} / 32</strong>
       </div>
       <div className="matrix-table-wrap">
         <table className="matrix-table"><thead><tr><th>分析师 / 规则</th><th>计算角色</th><th>实际计算维度</th></tr></thead><tbody>
           {filtered.map(([key, row]) => <tr key={key}>
-            <td><span className="matrix-mobile-label">分析师 / 规则</span><strong>{row.profile_name}</strong><span>{row.rule_label}</span></td>
-            <td><span className="matrix-mobile-label">计算角色</span><span className={`config-status config-status--${row.calculation_role === "compute" ? "published" : "archived"}`}>{calculationRoleLabel(row.calculation_role)}</span></td>
+            <td><span className="matrix-mobile-label">分析师 / 规则</span><div className="matrix-rule-identity"><strong>{row.profile_name}</strong><span>{row.rule_label}</span></div></td>
+            <td><span className="matrix-mobile-label">计算角色</span><span className="config-status config-status--published">{calculationRoleLabel(row.calculation_role)}</span></td>
             <td><span className="matrix-mobile-label">实际计算维度</span><CoefficientInputs row={row} onChange={(name, value) => onChange(key, name, value)} /></td>
           </tr>)}
         </tbody></table>

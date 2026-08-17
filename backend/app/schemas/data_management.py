@@ -39,10 +39,14 @@ class DataOperationPreviewRequest(BaseModel):
             and self.parameters.keep_count is None
         ):
             raise ValueError("版本保留操作必须指定 keep_count。")
-        if self.operation_type in {
-            DataOperationType.RESTORE_BACKUP,
-            DataOperationType.DELETE_BACKUP,
-        } and not self.parameters.backup_id:
+        if (
+            self.operation_type
+            in {
+                DataOperationType.RESTORE_BACKUP,
+                DataOperationType.DELETE_BACKUP,
+            }
+            and not self.parameters.backup_id
+        ):
             raise ValueError("该操作必须指定 backup_id。")
         return self
 

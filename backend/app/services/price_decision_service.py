@@ -70,7 +70,7 @@ def _create_price_decision_run_with_config(
     )
     memo = _resolve_bound_memo(session, company_id=company.id, valuation_run=valuation_run)
     intrinsic_values = _read_intrinsic_values(valuation_run)
-    analyst_score_total, suggested_margin, scorecard_snapshot = _read_scorecard(memo)
+    suggested_margin = _read_valuation_safety_margin(valuation_run)
     current_price, market_data_updated_at = _read_market_price(company)
     override = _validate_margin_override(safety_margin_override)
     effective_margin = suggested_margin if override is None else override
@@ -109,8 +109,10 @@ def _create_price_decision_run_with_config(
             "company_id": memo.company_id,
             "version_no": memo.version_no,
             "source_snapshot_hash": memo.source_snapshot_hash,
-            "analyst_score_total": analyst_score_total,
-            "suggested_safety_margin": suggested_margin,
+        },
+        "valuation_dynamic_safety_margin": {
+            "suggested": suggested_margin,
+            "formula_version": valuation_run.results.get("dynamic_safety_margin_formula_version"),
         },
         "margin": {
             "suggested": suggested_margin,
@@ -149,8 +151,8 @@ def _create_price_decision_run_with_config(
         intrinsic_values_per_share=intrinsic_values,
         current_price=current_price,
         market_data_updated_at=market_data_updated_at,
-        analyst_score_total=analyst_score_total,
-        analyst_scorecard_snapshot=scorecard_snapshot,
+        analyst_score_total=None,
+        analyst_scorecard_snapshot={},
         suggested_safety_margin=suggested_margin,
         safety_margin_override=override,
         effective_safety_margin=effective_margin,
@@ -299,28 +301,17 @@ def _read_intrinsic_values(valuation_run: ValuationRun) -> dict[str, float]:
     return values
 
 
-def _read_scorecard(memo: InvestmentMemo) -> tuple[float, float, dict[str, object]]:
-    sections = memo.sections
-    scorecard = sections.get("analyst_scorecard") if isinstance(sections, dict) else None
-    if not isinstance(scorecard, dict):
-        raise PriceDecisionInputError(
-            "该估值绑定的旧 Memo 缺少分析师评分，请重新生成 Memo 和 010 估值。"
-        )
-    suggested_margin = _finite_number(scorecard.get("suggested_safety_margin"))
+def _read_valuation_safety_margin(valuation_run: ValuationRun) -> float:
+    suggested_margin = _finite_number(valuation_run.results.get("dynamic_safety_margin"))
     if suggested_margin is None:
         raise PriceDecisionInputError(
-            "该估值绑定的旧 Memo 没有动态安全边际，请重新生成 Memo 和 010 估值。"
+            "该 010 估值没有冻结动态安全边际，请使用完整 8 位分析师结果重新生成 010。"
         )
     minimum = float(parameter_value("price_decision.safety_margin_min", 0.0))
-    maximum = float(parameter_value("price_decision.safety_margin_max", 0.5))
+    maximum = float(parameter_value("price_decision.safety_margin_max", 1.0))
     if not minimum <= suggested_margin <= maximum:
-        raise PriceDecisionInputError("绑定 Memo 的动态安全边际超出 0%-50%，请重新生成 Memo。")
-    analyst_score_total = _finite_number(scorecard.get("total_score"))
-    if analyst_score_total is None:
-        raise PriceDecisionInputError(
-            "该估值绑定的 Memo 缺少分析师综合评分，请重新生成 Memo 和 010 估值。"
-        )
-    return analyst_score_total, suggested_margin, deepcopy(scorecard)
+        raise PriceDecisionInputError("绑定 010 的动态安全边际超出 0%-100%，请重新生成 010。")
+    return suggested_margin
 
 
 def _read_market_price(company: Company) -> tuple[float, datetime]:
@@ -337,9 +328,9 @@ def _validate_margin_override(value: float | None) -> float | None:
         return None
     normalized = _finite_number(value)
     minimum = float(parameter_value("price_decision.safety_margin_min", 0.0))
-    maximum = float(parameter_value("price_decision.safety_margin_max", 0.5))
+    maximum = float(parameter_value("price_decision.safety_margin_max", 1.0))
     if normalized is None or not minimum <= normalized <= maximum:
-        raise PriceDecisionInputError("用户覆盖安全边际必须位于 0%-50%。")
+        raise PriceDecisionInputError("用户覆盖安全边际必须位于 0%-100%。")
     return normalized
 
 

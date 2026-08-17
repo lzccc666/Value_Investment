@@ -110,7 +110,9 @@ class BackupService:
             if not manifest_path.is_file():
                 continue
             try:
-                manifests.append(BackupManifest.model_validate_json(manifest_path.read_text("utf-8")))
+                manifests.append(
+                    BackupManifest.model_validate_json(manifest_path.read_text("utf-8"))
+                )
             except (OSError, ValueError):
                 continue
         return sorted(manifests, key=lambda item: item.created_at, reverse=True)

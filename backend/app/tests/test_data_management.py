@@ -177,9 +177,12 @@ def test_company_reset_is_isolated_and_preserves_company(tmp_path: Path) -> None
     assert result["backup_id"]
     with factory() as session:
         assert session.get(Company, target.id) is not None
-        assert session.scalar(
-            select(FinancialStatement).where(FinancialStatement.company_id == target.id)
-        ) is None
+        assert (
+            session.scalar(
+                select(FinancialStatement).where(FinancialStatement.company_id == target.id)
+            )
+            is None
+        )
         assert session.get(Evidence, other_ids["evidence"]) is not None
         assert session.get(PriceDecisionRun, other_ids["decision"]) is not None
 
@@ -260,9 +263,7 @@ def test_backup_verify_restore_and_pre_restore_backup(tmp_path: Path) -> None:
     assert created.status_code == 200
     backup = created.json()
     assert len(backup["sha256"]) == 64
-    assert client.post(
-        f"/api/data-management/backups/{backup['backup_id']}/verify"
-    ).json() == {
+    assert client.post(f"/api/data-management/backups/{backup['backup_id']}/verify").json() == {
         "backup_id": backup["backup_id"],
         "valid": True,
         "sha256_matches": True,

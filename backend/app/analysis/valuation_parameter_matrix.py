@@ -8,9 +8,10 @@ from app.analysis.analyst_profiles import AnalystProfile, list_analyst_profiles
 
 STATUS_SCORES = {
     "pass": 1.0,
-    "warn": -0.35,
+    "neutral": 0.0,
+    "unknown": -0.1,
+    "warn": -0.5,
     "fail": -2.0,
-    "unknown": 0.0,
 }
 
 VALUATION_DIMENSIONS = (
@@ -49,6 +50,8 @@ PRICE_ANCHOR_FIELDS = frozenset(
         "market_rating",
         "target_price",
         "market_sentiment",
+        "safety_margin",
+        "trade_action",
         "当前价格",
         "历史价格",
         "股价",
@@ -62,6 +65,7 @@ PRICE_ANCHOR_FIELDS = frozenset(
         "目标价",
         "市场情绪",
         "安全边际",
+        "交易动作",
     }
 )
 
@@ -70,251 +74,240 @@ PRICE_ANCHOR_TEXT_PATTERNS = (
     ("historical_price", re.compile(r"(?<![a-z0-9_])historical_price(?![a-z0-9_])", re.I)),
     ("market_cap", re.compile(r"(?<![a-z0-9_])market_cap(?![a-z0-9_])", re.I)),
     ("valuation_multiple", re.compile(r"(?<![a-z0-9_])valuation_multiple(?![a-z0-9_])", re.I)),
-    ("pe_ttm", re.compile(r"(?<![a-z0-9_])pe_ttm(?![a-z0-9_])", re.I)),
+    ("pe", re.compile(r"(?<![a-z0-9_])(?:pe_ttm|pe_dynamic|pe_static)(?![a-z0-9_])", re.I)),
     ("pb_ratio", re.compile(r"(?<![a-z0-9_])pb_ratio(?![a-z0-9_])", re.I)),
     ("ps_ratio", re.compile(r"(?<![a-z0-9_])ps_ratio(?![a-z0-9_])", re.I)),
-    ("position_cost", re.compile(r"(?<![a-z0-9_])position_cost(?![a-z0-9_])", re.I)),
+    ("position_cost", re.compile(r"(?<![a-z0-9_])(?:position|holding)_cost(?![a-z0-9_])", re.I)),
     ("target_price", re.compile(r"(?<![a-z0-9_])target_price(?![a-z0-9_])", re.I)),
     ("market_sentiment", re.compile(r"(?<![a-z0-9_])market_sentiment(?![a-z0-9_])", re.I)),
     ("rating", re.compile(r"\b(?:broker|analyst|market|investment)[ _-]?rating\b", re.I)),
-    ("当前价格", re.compile(r"当前(?:市场)?价格")),
-    ("历史价格", re.compile(r"历史(?:交易)?价格")),
-    ("股价", re.compile(r"(?<!每)股价|每股价格")),
-    ("市值", re.compile(r"市值")),
-    ("估值倍数", re.compile(r"估值倍数")),
-    ("市盈率", re.compile(r"市盈率")),
-    ("市净率", re.compile(r"市净率")),
-    ("市销率", re.compile(r"市销率")),
-    ("持仓成本", re.compile(r"持仓成本")),
-    ("评级", re.compile(r"(?:券商|机构|市场|投资|分析师)(?:的)?评级")),
-    ("目标价", re.compile(r"目标价")),
-    ("市场情绪", re.compile(r"市场情绪")),
-    ("安全边际", re.compile(r"安全边际")),
+    ("safety_margin", re.compile(r"(?<![a-z0-9_])safety_margin(?![a-z0-9_])", re.I)),
+    ("current_price", re.compile(r"当前(?:市场)?价格")),
+    ("historical_price", re.compile(r"历史(?:交易)?价格")),
+    ("share_price", re.compile(r"(?<!每)股价|每股价格")),
+    ("market_cap", re.compile(r"市值")),
+    ("valuation_multiple", re.compile(r"估值倍数|市盈率|市净率|市销率")),
+    ("position_cost", re.compile(r"持仓成本")),
+    ("rating", re.compile(r"(?:券商|机构|市场|投资|分析师)(?:的)?评级")),
+    ("target_price", re.compile(r"目标价")),
+    ("market_sentiment", re.compile(r"市场情绪")),
+    ("safety_margin", re.compile(r"安全边际")),
+    ("trade_action", re.compile(r"(?:买入|卖出|持有|加仓|减仓|建仓|清仓)(?:建议|动作|信号)?")),
 )
+
+
+class PriceAnchorOutputError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
 class RuleValuationMapping:
     dimensions: Mapping[str, float]
-    parameter_impacts: Mapping[str, float]
     calculation_role: str = "compute"
     price_blind_compatible: bool = True
 
 
-def _rule(
-    dimensions: Mapping[str, float],
-    parameter_impacts: Mapping[str, float],
-    *,
-    calculation_role: str = "compute",
-    price_blind_compatible: bool = True,
-) -> RuleValuationMapping:
-    return RuleValuationMapping(
-        dimensions=dimensions,
-        parameter_impacts=parameter_impacts,
-        calculation_role=calculation_role,
-        price_blind_compatible=price_blind_compatible,
-    )
+def _rule(dimensions: Mapping[str, float]) -> RuleValuationMapping:
+    return RuleValuationMapping(dimensions=dimensions)
 
 
 RULE_VALUATION_MAPPINGS: dict[tuple[str, str], RuleValuationMapping] = {
-    ("buffett", "moat"): _rule(
-        {"business_quality": 0.7, "moat_durability": 1.0, "pricing_power": 0.6},
+    ("buffett", "durable_moat"): _rule(
         {
-            "discount_rate": -0.4,
-            "terminal_growth_rate": 0.5,
-            "scenario_spread": -0.3,
-        },
+            "moat_durability": 1.0,
+            "pricing_power": 0.7,
+            "business_quality": 0.6,
+            "demand_durability": 0.4,
+        }
     ),
-    ("buffett", "quality"): _rule(
+    ("buffett", "owner_earnings_quality"): _rule(
         {
-            "business_quality": 0.5,
             "cash_flow_reliability": 1.0,
-            "accounting_quality": 0.4,
-            "capital_intensity": 0.3,
-        },
+            "accounting_quality": 0.5,
+            "capital_intensity": 0.5,
+            "business_quality": 0.4,
+        }
+    ),
+    ("buffett", "capital_allocation"): _rule(
         {
-            "cash_flow_growth_rate": 0.3,
-            "discount_rate": -0.4,
-            "scenario_spread": -0.4,
-        },
+            "capital_intensity": 1.0,
+            "management_quality": 0.8,
+            "execution_quality": 0.5,
+            "growth_runway": 0.3,
+        }
     ),
-    ("buffett", "management"): _rule(
-        {"management_quality": 1.0, "execution_quality": 0.5, "business_quality": 0.3},
-        {
-            "owner_earnings_growth_rate": 0.4,
-            "discount_rate": -0.3,
-        },
+    ("buffett", "management_candor"): _rule(
+        {"management_quality": 1.0, "accounting_quality": 0.7, "permanent_loss_risk": 0.4}
     ),
-    ("buffett", "margin_of_safety"): _rule(
-        {"permanent_loss_risk": 0.8},
-        {},
-        calculation_role="price_reference",
-        price_blind_compatible=False,
-    ),
-    ("peter_lynch", "understandable_business"): _rule(
-        {"business_quality": 0.7, "demand_durability": 0.5, "execution_quality": 0.3},
-        {"discount_rate": -0.2, "scenario_spread": -0.3},
+    ("peter_lynch", "business_understandability"): _rule(
+        {"business_quality": 0.8, "accounting_quality": 0.4, "execution_quality": 0.3}
     ),
     ("peter_lynch", "growth_runway"): _rule(
-        {"growth_runway": 1.0, "demand_durability": 0.6, "pricing_power": 0.3},
+        {"growth_runway": 1.0, "demand_durability": 0.7, "pricing_power": 0.3}
+    ),
+    ("peter_lynch", "story_numbers_alignment"): _rule(
+        {"execution_quality": 0.8, "accounting_quality": 0.8, "cash_flow_reliability": 0.5}
+    ),
+    ("peter_lynch", "growth_financial_resilience"): _rule(
         {
-            "cash_flow_growth_rate": 0.8,
-            "owner_earnings_growth_rate": 0.6,
-            "terminal_growth_rate": 0.2,
-        },
+            "balance_sheet_risk": 1.0,
+            "cash_flow_reliability": 0.6,
+            "capital_intensity": 0.6,
+            "cyclicality": 0.3,
+            "permanent_loss_risk": 0.4,
+        }
     ),
-    ("peter_lynch", "story_vs_numbers"): _rule(
-        {"accounting_quality": 0.7, "cash_flow_reliability": 0.5, "execution_quality": 0.7},
-        {"cash_flow_growth_rate": 0.3, "discount_rate": -0.2, "scenario_spread": -0.4},
-    ),
-    ("peter_lynch", "balance_sheet_risk"): _rule(
-        {"balance_sheet_risk": 1.0, "permanent_loss_risk": 0.5, "cash_flow_reliability": 0.3},
-        {"discount_rate": -0.7, "scenario_spread": -0.4},
-    ),
-    ("munger", "mental_models"): _rule(
-        {"business_quality": 0.8, "moat_durability": 0.6, "demand_durability": 0.4},
-        {"discount_rate": -0.3, "terminal_growth_rate": 0.3, "scenario_spread": -0.2},
-    ),
-    ("munger", "incentives"): _rule(
-        {"management_quality": 0.9, "execution_quality": 0.5, "permanent_loss_risk": 0.4},
+    ("munger", "multi_model_resilience"): _rule(
         {
-            "owner_earnings_growth_rate": 0.3,
-            "discount_rate": -0.4,
-        },
+            "business_quality": 0.8,
+            "moat_durability": 0.8,
+            "demand_durability": 0.5,
+            "pricing_power": 0.3,
+        }
     ),
-    ("munger", "culture"): _rule(
-        {"management_quality": 1.0, "business_quality": 0.4, "moat_durability": 0.3},
-        {"discount_rate": -0.3, "scenario_spread": -0.2},
+    ("munger", "incentive_alignment"): _rule(
+        {"management_quality": 0.9, "execution_quality": 0.7, "permanent_loss_risk": 0.5}
     ),
-    ("munger", "avoid_stupidity"): _rule(
-        {"permanent_loss_risk": 1.0, "balance_sheet_risk": 0.5, "accounting_quality": 0.4},
-        {"discount_rate": -0.8, "scenario_spread": -0.6},
+    ("munger", "rational_culture"): _rule(
+        {"management_quality": 1.0, "execution_quality": 0.6, "accounting_quality": 0.4}
     ),
-    ("duan_yongping", "business_quality"): _rule(
-        {"business_quality": 1.0, "moat_durability": 0.5, "demand_durability": 0.5},
-        {"cash_flow_growth_rate": 0.3, "discount_rate": -0.4, "terminal_growth_rate": 0.3},
+    ("munger", "ruin_risk_control"): _rule(
+        {
+            "permanent_loss_risk": 1.0,
+            "balance_sheet_risk": 0.7,
+            "accounting_quality": 0.5,
+            "cyclicality": 0.4,
+        }
+    ),
+    ("duan_yongping", "right_business"): _rule(
+        {
+            "business_quality": 1.0,
+            "cash_flow_reliability": 0.6,
+            "capital_intensity": 0.6,
+            "demand_durability": 0.5,
+        }
+    ),
+    ("duan_yongping", "consumer_value_mindshare"): _rule(
+        {
+            "pricing_power": 0.9,
+            "moat_durability": 0.9,
+            "demand_durability": 0.8,
+            "execution_quality": 0.3,
+        }
     ),
     ("duan_yongping", "benfen_culture"): _rule(
-        {"management_quality": 1.0, "execution_quality": 0.4, "permanent_loss_risk": 0.4},
-        {"owner_earnings_growth_rate": 0.3, "discount_rate": -0.4},
-    ),
-    ("duan_yongping", "consumer_mindshare"): _rule(
-        {"pricing_power": 0.9, "moat_durability": 0.8, "demand_durability": 0.8},
-        {"cash_flow_growth_rate": 0.5, "terminal_growth_rate": 0.5, "scenario_spread": -0.2},
-    ),
-    ("duan_yongping", "shareholder_return"): _rule(
-        {"cash_flow_reliability": 0.7, "management_quality": 0.7, "capital_intensity": 0.5},
-        {"owner_earnings_growth_rate": 0.5},
-    ),
-    ("graham", "asset_protection"): _rule(
-        {"balance_sheet_risk": 1.0, "permanent_loss_risk": 0.8, "accounting_quality": 0.3},
-        {"discount_rate": -0.8, "scenario_spread": -0.5},
-    ),
-    ("graham", "earnings_stability"): _rule(
-        {"cash_flow_reliability": 0.7, "cyclicality": 0.8, "business_quality": 0.3},
-        {"cash_flow_growth_rate": 0.2, "discount_rate": -0.5, "scenario_spread": -0.6},
-    ),
-    ("graham", "conservatism"): _rule(
-        {"accounting_quality": 0.8, "permanent_loss_risk": 0.5},
-        {"discount_rate": -0.4, "scenario_spread": -0.4},
-    ),
-    ("graham", "valuation_discipline"): _rule(
-        {"permanent_loss_risk": 0.8},
-        {},
-        calculation_role="price_reference",
-        price_blind_compatible=False,
-    ),
-    ("fisher", "long_term_growth"): _rule(
-        {"growth_runway": 1.0, "demand_durability": 0.6, "business_quality": 0.3},
         {
-            "cash_flow_growth_rate": 0.8,
-            "owner_earnings_growth_rate": 0.6,
-            "terminal_growth_rate": 0.2,
-        },
+            "management_quality": 1.0,
+            "accounting_quality": 0.5,
+            "permanent_loss_risk": 0.5,
+            "execution_quality": 0.4,
+        }
     ),
-    ("fisher", "innovation"): _rule(
-        {"growth_runway": 0.7, "moat_durability": 0.5, "execution_quality": 0.7},
-        {"cash_flow_growth_rate": 0.5, "scenario_spread": -0.2},
+    ("duan_yongping", "cash_reinvestment_discipline"): _rule(
+        {
+            "cash_flow_reliability": 0.9,
+            "capital_intensity": 0.8,
+            "management_quality": 0.6,
+            "growth_runway": 0.4,
+        }
     ),
-    ("fisher", "sales_execution"): _rule(
-        {"execution_quality": 1.0, "growth_runway": 0.6, "demand_durability": 0.5},
-        {"cash_flow_growth_rate": 0.6, "owner_earnings_growth_rate": 0.4},
+    ("graham", "working_capital_safety"): _rule(
+        {"balance_sheet_risk": 1.0, "cash_flow_reliability": 0.5, "permanent_loss_risk": 0.5}
+    ),
+    ("graham", "capital_structure_safety"): _rule(
+        {"balance_sheet_risk": 1.0, "permanent_loss_risk": 0.8, "cyclicality": 0.4}
+    ),
+    ("graham", "earnings_record"): _rule(
+        {
+            "cyclicality": 0.9,
+            "cash_flow_reliability": 0.8,
+            "accounting_quality": 0.4,
+            "business_quality": 0.3,
+        }
+    ),
+    ("graham", "asset_accounting_quality"): _rule(
+        {"accounting_quality": 1.0, "balance_sheet_risk": 0.7, "permanent_loss_risk": 0.7}
+    ),
+    ("fisher", "market_runway"): _rule(
+        {"growth_runway": 1.0, "demand_durability": 0.7, "business_quality": 0.3}
+    ),
+    ("fisher", "innovation_productivity"): _rule(
+        {
+            "execution_quality": 0.8,
+            "growth_runway": 0.8,
+            "moat_durability": 0.7,
+            "capital_intensity": 0.3,
+        }
+    ),
+    ("fisher", "sales_customer_strength"): _rule(
+        {
+            "execution_quality": 1.0,
+            "demand_durability": 0.7,
+            "pricing_power": 0.5,
+            "growth_runway": 0.5,
+        }
     ),
     ("fisher", "management_depth"): _rule(
-        {"management_quality": 0.9, "execution_quality": 0.8},
-        {"owner_earnings_growth_rate": 0.4, "discount_rate": -0.3, "scenario_spread": -0.2},
+        {"management_quality": 1.0, "execution_quality": 0.9, "permanent_loss_risk": 0.3}
     ),
-    ("lin_yuan", "must_have_demand"): _rule(
-        {"demand_durability": 1.0, "growth_runway": 0.5, "business_quality": 0.5},
-        {"cash_flow_growth_rate": 0.5, "terminal_growth_rate": 0.3, "scenario_spread": -0.3},
-    ),
-    ("lin_yuan", "brand_power"): _rule(
-        {"pricing_power": 1.0, "moat_durability": 0.9, "business_quality": 0.5},
-        {"cash_flow_growth_rate": 0.4, "discount_rate": -0.3, "terminal_growth_rate": 0.5},
-    ),
-    ("lin_yuan", "cash_generation"): _rule(
-        {"cash_flow_reliability": 1.0, "capital_intensity": 0.5, "accounting_quality": 0.4},
-        {"cash_flow_growth_rate": 0.4, "discount_rate": -0.4},
-    ),
-    ("lin_yuan", "compounding"): _rule(
-        {"growth_runway": 0.8, "business_quality": 0.6, "execution_quality": 0.5},
+    ("lin_yuan", "must_have_repeat_demand"): _rule(
         {
-            "cash_flow_growth_rate": 0.6,
-            "owner_earnings_growth_rate": 0.5,
-            "terminal_growth_rate": 0.3,
-        },
+            "demand_durability": 1.0,
+            "business_quality": 0.6,
+            "cyclicality": 0.5,
+            "growth_runway": 0.4,
+        }
     ),
-    ("li_lu", "circle_of_competence"): _rule(
-        {"business_quality": 0.5, "accounting_quality": 0.6, "permanent_loss_risk": 0.4},
-        {"discount_rate": -0.3, "scenario_spread": -0.4},
-    ),
-    ("li_lu", "depth_of_research"): _rule(
-        {"accounting_quality": 0.9, "execution_quality": 0.3},
-        {"discount_rate": -0.3, "scenario_spread": -0.5},
-    ),
-    ("li_lu", "intrinsic_value"): _rule(
-        {"business_quality": 0.7, "cash_flow_reliability": 0.8, "moat_durability": 0.5},
+    ("lin_yuan", "monopoly_brand_power"): _rule(
         {
-            "cash_flow_growth_rate": 0.3,
-            "discount_rate": -0.3,
-            "terminal_growth_rate": 0.3,
-        },
+            "pricing_power": 1.0,
+            "moat_durability": 1.0,
+            "business_quality": 0.5,
+            "demand_durability": 0.5,
+        }
     ),
-    ("li_lu", "permanent_loss"): _rule(
-        {"permanent_loss_risk": 1.0, "balance_sheet_risk": 0.6, "accounting_quality": 0.4},
-        {"discount_rate": -0.9, "scenario_spread": -0.7},
+    ("lin_yuan", "cash_profitability"): _rule(
+        {
+            "cash_flow_reliability": 1.0,
+            "capital_intensity": 0.7,
+            "pricing_power": 0.4,
+            "accounting_quality": 0.3,
+        }
     ),
-    ("ray_dalio", "macro_sensitivity"): _rule(
-        {"cyclicality": 0.9, "demand_durability": 0.4},
-        {"discount_rate": -0.4, "scenario_spread": -0.7},
+    ("lin_yuan", "scalable_compounding"): _rule(
+        {
+            "growth_runway": 0.9,
+            "capital_intensity": 0.6,
+            "execution_quality": 0.6,
+            "business_quality": 0.5,
+        }
     ),
-    ("ray_dalio", "cycle_position"): _rule(
-        {"cyclicality": 1.0, "growth_runway": 0.4},
-        {"cash_flow_growth_rate": 0.3, "discount_rate": -0.3, "scenario_spread": -0.8},
+    ("li_lu", "economic_knowability"): _rule(
+        {"accounting_quality": 0.8, "business_quality": 0.6, "execution_quality": 0.3}
     ),
-    ("ray_dalio", "credit_liquidity"): _rule(
-        {"balance_sheet_risk": 1.0, "cash_flow_reliability": 0.5, "permanent_loss_risk": 0.5},
-        {"discount_rate": -0.8, "scenario_spread": -0.5},
+    ("li_lu", "moat_growth_coexistence"): _rule(
+        {
+            "growth_runway": 0.9,
+            "moat_durability": 0.8,
+            "demand_durability": 0.6,
+            "pricing_power": 0.4,
+        }
     ),
-    ("ray_dalio", "portfolio_risk_signal"): _rule(
-        {"cyclicality": 0.8, "permanent_loss_risk": 0.7},
-        {"discount_rate": -0.5, "scenario_spread": -0.8},
+    ("li_lu", "owner_governance"): _rule(
+        {
+            "management_quality": 1.0,
+            "permanent_loss_risk": 0.7,
+            "accounting_quality": 0.6,
+            "execution_quality": 0.4,
+        }
     ),
-    ("george_soros", "reflexivity"): _rule(
-        {"cyclicality": 0.7, "execution_quality": 0.4, "permanent_loss_risk": 0.4},
-        {"cash_flow_growth_rate": 0.2, "discount_rate": -0.4, "scenario_spread": -0.8},
-    ),
-    ("george_soros", "narrative_gap"): _rule(
-        {"accounting_quality": 0.7, "execution_quality": 0.8, "business_quality": 0.4},
-        {"cash_flow_growth_rate": 0.4, "discount_rate": -0.4, "scenario_spread": -0.6},
-    ),
-    ("george_soros", "macro_fragility"): _rule(
-        {"cyclicality": 1.0, "balance_sheet_risk": 0.5, "permanent_loss_risk": 0.6},
-        {"discount_rate": -0.7, "scenario_spread": -0.9},
-    ),
-    ("george_soros", "counter_evidence"): _rule(
-        {"accounting_quality": 0.5, "permanent_loss_risk": 0.8, "execution_quality": 0.4},
-        {"discount_rate": -0.6, "scenario_spread": -0.8},
+    ("li_lu", "permanent_loss_resilience"): _rule(
+        {
+            "permanent_loss_risk": 1.0,
+            "balance_sheet_risk": 0.8,
+            "accounting_quality": 0.5,
+            "cyclicality": 0.4,
+        }
     ),
 }
 
@@ -325,35 +318,26 @@ def derive_valuation_parameter_matrix(
     profile: AnalystProfile,
     result: dict[str, object],
 ) -> dict[str, object]:
+    price_anchor_match = find_price_anchor(result)
+    if price_anchor_match is not None:
+        raise PriceAnchorOutputError(
+            f"分析师输出包含禁止的价格锚“{price_anchor_match}”；"
+            "008 必须保持 price-blind，本次分析已拒绝。"
+        )
+
     checks = result.get("rule_checks")
     if not isinstance(checks, list):
         checks = []
     checks_by_id = {str(item.get("rule_id")): item for item in checks if isinstance(item, dict)}
-    rule_impacts = []
+    status_scores = _parameter_value("valuation_rule_matrix.status_scores", STATUS_SCORES)
+    status_scores = status_scores if isinstance(status_scores, dict) else STATUS_SCORES
+    rule_impacts: list[dict[str, object]] = []
     for rule in profile.rules:
         check = checks_by_id.get(rule.id, {})
         mapping = _runtime_rule_mapping(profile.id, rule.id)
-        status_scores = _parameter_value(
-            "valuation_rule_matrix.status_scores",
-            STATUS_SCORES,
-        )
         status = str(check.get("status") or "unknown").strip().lower()
         if status not in status_scores:
             status = "unknown"
-        source_refs = {
-            "evidence_ids": _list(check.get("evidence_ids")),
-            "announcement_ids": _list(check.get("announcement_ids")),
-            "financial_periods": _list(check.get("financial_periods")),
-        }
-        price_anchor_match = _find_price_anchor(check)
-        price_blind = (
-            mapping.price_blind_compatible
-            and mapping.calculation_role == "compute"
-            and price_anchor_match is None
-        )
-        calculation_role = (
-            mapping.calculation_role if price_anchor_match is None else "price_reference"
-        )
         rule_impacts.append(
             {
                 "profile_id": profile.id,
@@ -365,30 +349,21 @@ def derive_valuation_parameter_matrix(
                 "rule_label": rule.label,
                 "status": status,
                 "status_score": float(status_scores[status]),
-                "price_blind_compatible": price_blind,
-                "calculation_role": calculation_role,
+                "price_blind_compatible": True,
+                "calculation_role": "compute",
                 "dimensions": dict(mapping.dimensions),
-                "parameter_impacts": dict(mapping.parameter_impacts),
-                "source_refs": source_refs,
+                "source_refs": {
+                    "evidence_ids": _list(check.get("evidence_ids")),
+                    "announcement_ids": _list(check.get("announcement_ids")),
+                    "financial_periods": _list(check.get("financial_periods")),
+                },
                 "summary": str(check.get("summary") or "").strip(),
-                "exclusion_reason": (
-                    f"price_anchor:{price_anchor_match}"
-                    if price_anchor_match
-                    else (
-                        "configured_price_reference"
-                        if calculation_role == "price_reference"
-                        else None
-                    )
-                ),
+                "exclusion_reason": None,
             }
         )
     return {
         "source": "analyst_rule_checks",
-        "price_blind_compatible": all(
-            item["price_blind_compatible"]
-            for item in rule_impacts
-            if item["calculation_role"] == "compute"
-        ),
+        "price_blind_compatible": True,
         "status_score_policy": dict(status_scores),
         "analyst_items": [
             {
@@ -410,15 +385,10 @@ def _runtime_rule_mapping(profile_id: str, rule_id: str) -> RuleValuationMapping
         if isinstance(configured_mappings, dict)
         else None
     )
-    if not isinstance(configured, dict):
-        return RULE_VALUATION_MAPPINGS[(profile_id, rule_id)]
-    dimensions = configured.get("dimensions")
-    impacts = configured.get("parameter_impacts")
-    if not isinstance(dimensions, dict) or not isinstance(impacts, dict):
+    if not isinstance(configured, dict) or not isinstance(configured.get("dimensions"), dict):
         return RULE_VALUATION_MAPPINGS[(profile_id, rule_id)]
     return RuleValuationMapping(
-        dimensions={str(key): float(value) for key, value in dimensions.items()},
-        parameter_impacts={str(key): float(value) for key, value in impacts.items()},
+        dimensions={str(key): float(value) for key, value in configured["dimensions"].items()},
         calculation_role=str(configured.get("calculation_role") or "compute"),
         price_blind_compatible=configured.get("price_blind_compatible") is True,
     )
@@ -430,14 +400,23 @@ def validate_rule_mapping_coverage() -> None:
     }
     actual = set(RULE_VALUATION_MAPPINGS)
     if expected != actual:
-        missing = sorted(expected - actual)
-        extra = sorted(actual - expected)
         raise RuntimeError(
-            f"Invalid valuation rule mapping coverage: missing={missing}, extra={extra}"
+            "Invalid valuation rule mapping coverage: "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+    if any(
+        mapping.calculation_role != "compute" or not mapping.price_blind_compatible
+        for mapping in RULE_VALUATION_MAPPINGS.values()
+    ):
+        raise RuntimeError("All analyst rules must be compute and price-blind compatible.")
+    coefficient_count = sum(len(mapping.dimensions) for mapping in RULE_VALUATION_MAPPINGS.values())
+    if coefficient_count != 117:
+        raise RuntimeError(
+            f"Expected 117 valuation dimension coefficients, got {coefficient_count}."
         )
 
 
-def _find_price_anchor(value: object) -> str | None:
+def find_price_anchor(value: object) -> str | None:
     structured_match = _find_price_anchor_field(value)
     if structured_match is not None:
         return structured_match

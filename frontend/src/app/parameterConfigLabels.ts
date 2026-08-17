@@ -75,9 +75,6 @@ export function matrixCoefficientDescription(
   calculationRole: string
 ): string {
   const dimension = matrixParameterLabel(dimensionName);
-  if (calculationRole !== "compute") {
-    return `${analystName}《${ruleLabel}》属于价格参考规则，不进入 010 估值计算；该维度系数不可调整。`;
-  }
   const direction = coefficient >= 0
     ? "通过会提高该维度分，不通过会降低该维度分"
     : "通过会降低该维度分，不通过会提高该维度分";
@@ -89,5 +86,5 @@ function formatCoefficient(value: number): string {
 }
 
 export function calculationRoleLabel(role: string): string {
-  return role === "compute" ? "参与计算" : "价格参考（隔离）";
+  return role === "compute" ? "参与计算" : "配置错误";
 }

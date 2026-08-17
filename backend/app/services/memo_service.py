@@ -22,9 +22,10 @@ from app.analysis.prompts.memo import (
     build_memo_prompt,
 )
 from app.analysis.result_sanitizer import sanitize_error_text
+from app.analysis.valuation_parameter_matrix import find_price_anchor
 from app.configuration.runtime import parameter_config_context, parameter_value
 from app.db.models import AnalysisRun, Company, InvestmentMemo, utc_now
-from app.schemas.memo import InvestmentMemoOutput, MemoValuationSignalPack
+from app.schemas.memo import InvestmentMemoOutput
 from app.services.analyst_service import RUN_TYPE_ANALYST_VIEW, list_latest_company_analysis_runs
 from app.services.parameter_config_service import get_runtime_parameter_config
 
@@ -33,14 +34,6 @@ RUN_VERSION = "009_v1"
 MEMO_PROFILE = "investment_committee"
 MIN_SOURCE_ANALYST_RUNS = 2
 DELETED_MEMO_STATUSES = {"deleted", "archived"}
-MEMO_ANALYST_STATUS_SCORES = {
-    "pass": 1.0,
-    "warn": -0.3,
-    "fail": -2.0,
-    "unknown": -0.1,
-}
-MEMO_SAFETY_MARGIN_MINIMUM = 0.0
-MEMO_SAFETY_MARGIN_MAXIMUM = 0.50
 PROHIBITED_ACTION_TERMS = (
     "买入",
     "卖出",
@@ -145,7 +138,9 @@ def build_investment_memo_snapshot(session: Session, company: Company) -> dict[s
         status="failed",
     )
     profiles = list_analyst_profiles()
-    source_run_snapshots = [_source_run_snapshot(run) for run in source_runs]
+    source_run_snapshots = [
+        _scrub_price_blind_value(_source_run_snapshot(run)) for run in source_runs
+    ]
     committee_ledger = build_committee_ledger(
         source_run_snapshots,
         all_profile_ids=[profile.id for profile in profiles],
@@ -284,114 +279,6 @@ def build_committee_ledger(
         "critical_risk_candidates": critical_risk_candidates or risk_flags[:6],
         "data_gap_candidates": _dedupe_summary_dicts(data_gaps),
         "valuation_assumption_queue": _dedupe_valuation_assumptions(valuation_assumptions),
-        "analyst_scorecard": build_analyst_scorecard(source_analyst_runs),
-    }
-
-
-def build_analyst_scorecard(
-    source_analyst_runs: list[dict[str, object]],
-) -> dict[str, object]:
-    profiles = list_analyst_profiles()
-    status_scores = parameter_value("memo_decision.status_scores", MEMO_ANALYST_STATUS_SCORES)
-    status_scores = status_scores if isinstance(status_scores, dict) else MEMO_ANALYST_STATUS_SCORES
-    runs_by_profile = {str(run.get("analyst_profile") or ""): run for run in source_analyst_runs}
-    total_rule_count = sum(len(profile.rules) for profile in profiles)
-    rule_weight = 1.0 / total_rule_count if total_rule_count > 0 else 0.0
-
-    analyst_items: list[dict[str, object]] = []
-    total_score = 0.0
-    known_rule_count = 0
-    for profile in profiles:
-        run = runs_by_profile.get(profile.id)
-        result = run.get("result") if isinstance(run, dict) else {}
-        if not isinstance(result, dict):
-            result = {}
-        checks = {
-            str(item.get("rule_id") or ""): item
-            for item in result.get("rule_checks", [])
-            if isinstance(item, dict)
-        }
-        rule_scores = []
-        for rule in profile.rules:
-            check = checks.get(rule.id, {})
-            status = str(check.get("status") or "unknown").strip().lower()
-            if status not in status_scores:
-                status = "unknown"
-            if status != "unknown":
-                known_rule_count += 1
-            rule_scores.append(
-                {
-                    "rule_id": rule.id,
-                    "rule_label": rule.label,
-                    "status": status,
-                    "score": float(status_scores[status]),
-                }
-            )
-
-        rule_score_total = sum(float(item["score"]) for item in rule_scores)
-        analyst_weight = len(profile.rules) * rule_weight
-        weighted_score = rule_score_total * rule_weight
-        total_score += weighted_score
-        analyst_items.append(
-            {
-                "profile_id": profile.id,
-                "profile_name": profile.display_name,
-                "availability": "success" if run is not None else "missing",
-                "source_run_id": _as_int(run.get("run_id")) if isinstance(run, dict) else None,
-                "profile_fit_score": (
-                    _clamp(_as_float(run.get("profile_fit_score")) or 0.60, 0.20, 1.00)
-                    if isinstance(run, dict)
-                    else None
-                ),
-                "data_confidence": (
-                    _clamp(_as_float(run.get("confidence")) or 0.60, 0.20, 1.00)
-                    if isinstance(run, dict)
-                    else None
-                ),
-                "analyst_weight": analyst_weight,
-                "rule_score_total": rule_score_total,
-                "weighted_score": weighted_score,
-                "rule_scores": rule_scores,
-            }
-        )
-
-    suggested_safety_margin = _clamp(
-        (
-            (float(status_scores["pass"]) - total_score)
-            / float(parameter_value("memo_decision.safety_margin_score_span", 3.0))
-        )
-        * float(parameter_value("memo_decision.safety_margin_max", 0.50)),
-        float(parameter_value("memo_decision.safety_margin_min", 0.0)),
-        float(parameter_value("memo_decision.safety_margin_max", 0.50)),
-    )
-    return {
-        "source": "latest_successful_008_rule_checks",
-        "independent_from_valuation": True,
-        "status_score_policy": dict(status_scores),
-        "weight_policy": {
-            "mode": "equal_weight_per_rule",
-            "rule_weight": rule_weight,
-            "total_rules": total_rule_count,
-            "formula": "sum(rule_status_score * 1/40)",
-            "uses_data_confidence": False,
-            "uses_profile_fit_score": False,
-        },
-        "coverage": {
-            "successful_profiles": sum(1 for profile in profiles if profile.id in runs_by_profile),
-            "total_profiles": len(profiles),
-            "known_rules": known_rule_count,
-            "total_rules": total_rule_count,
-        },
-        "analyst_items": analyst_items,
-        "total_score": total_score,
-        "score_range": {"minimum": -2.0, "maximum": 1.0},
-        "suggested_safety_margin": suggested_safety_margin,
-        "safety_margin_policy": {
-            "minimum": float(parameter_value("memo_decision.safety_margin_min", 0.0)),
-            "maximum": float(parameter_value("memo_decision.safety_margin_max", 0.50)),
-            "formula": "clamp(((1 - total_score) / 3) * 0.50, 0.0, 0.50)",
-            "score_source": "equal_weight_40_rule_average",
-        },
     }
 
 
@@ -440,21 +327,8 @@ def run_company_investment_memo(
                 temperature=float(parameter_value("analyst_engine.model_temperatures.memo", 0.2)),
             )
             output_payload = output.model_dump(mode="json")
+            _validate_price_blind_output(output_payload)
             _apply_source_map_override(output_payload, data_snapshot)
-            ledger = data_snapshot.get("committee_ledger")
-            output_payload["analyst_scorecard"] = (
-                ledger.get("analyst_scorecard", {}) if isinstance(ledger, dict) else {}
-            )
-            output_payload["valuation_signal_pack"] = {
-                "price_blind_compatible": True,
-                "source": "deprecated_009_display_compatibility_only",
-                "analyst_signals": [],
-                "consensus_parameter_impacts": [],
-                "dissent_parameter_impacts": [],
-                "risk_constraints": [],
-                "data_gaps_for_valuation": [],
-                "user_confirmation_required": True,
-            }
             _validate_output_references(output_payload, data_snapshot)
             _validate_no_prohibited_actions(output_payload)
             _complete_memo_run(session, run, output_payload)
@@ -719,413 +593,6 @@ def _compact_analyst_result(result: dict[str, object]) -> dict[str, object]:
     return {key: result.get(key) for key in keys if key in result}
 
 
-def _prepare_valuation_signal_pack(
-    model_pack: object,
-    data_snapshot: dict[str, object],
-) -> dict[str, object]:
-    pack = _build_service_valuation_signal_pack(data_snapshot)
-    sanitized_model_pack = _scrub_price_blind_value(model_pack)
-    if isinstance(sanitized_model_pack, dict):
-        for key in (
-            "consensus_parameter_impacts",
-            "dissent_parameter_impacts",
-            "risk_constraints",
-            "data_gaps_for_valuation",
-        ):
-            values = sanitized_model_pack.get(key)
-            if isinstance(values, list) and values:
-                pack[key] = values
-
-    scrubbed_pack = _scrub_price_blind_value(pack)
-    validated = MemoValuationSignalPack.model_validate(scrubbed_pack).model_dump(mode="json")
-    validated["price_blind_compatible"] = True
-    validated["user_confirmation_required"] = True
-    _assert_price_blind_signal_pack(validated)
-    return validated
-
-
-def _build_service_valuation_signal_pack(data_snapshot: dict[str, object]) -> dict[str, object]:
-    source_runs = data_snapshot.get("source_analyst_runs")
-    if not isinstance(source_runs, list):
-        source_runs = []
-    profile_names = {profile.id: profile.display_name for profile in list_analyst_profiles()}
-    analyst_signals = [
-        _build_analyst_valuation_signal(run, profile_names)
-        for run in source_runs
-        if isinstance(run, dict)
-    ]
-    ledger = data_snapshot.get("committee_ledger")
-    if not isinstance(ledger, dict):
-        ledger = {}
-    item_limit = int(parameter_value("data_sampling.memo_list_items", 12))
-    return {
-        "price_blind_compatible": True,
-        "source": "latest_successful_analyst_view_runs",
-        "analyst_signals": analyst_signals,
-        "consensus_parameter_impacts": _build_consensus_parameter_impacts(ledger),
-        "dissent_parameter_impacts": [],
-        "risk_constraints": [
-            str(item.get("summary") or "")
-            for item in ledger.get("critical_risk_candidates", [])
-            if isinstance(item, dict) and str(item.get("summary") or "").strip()
-        ][:item_limit],
-        "data_gaps_for_valuation": [
-            str(item.get("summary") or "")
-            for item in ledger.get("data_gap_candidates", [])
-            if isinstance(item, dict) and str(item.get("summary") or "").strip()
-        ][:item_limit],
-        "user_confirmation_required": True,
-    }
-
-
-def _build_analyst_valuation_signal(
-    run: dict[str, object],
-    profile_names: dict[str, str],
-) -> dict[str, object]:
-    run_id = _as_int(run.get("run_id"))
-    profile_id = str(run.get("analyst_profile") or "").strip()
-    result = run.get("result")
-    if not isinstance(result, dict):
-        result = {}
-    text = _analyst_text(result)
-    source_refs = _source_refs_from_result(result, default_run_id=run_id)
-    cash_signal = _signal_from_terms(
-        text,
-        positive=("cash flow", "free cash flow", "现金流", "自由现金流", "现金创造"),
-        negative=("cash flow risk", "现金流恶化", "现金流不足", "缺少现金流"),
-    )
-    balance_sheet_signal = _signal_from_terms(
-        text,
-        positive=("net cash", "low leverage", "现金充足", "低杠杆", "净现金"),
-        negative=("debt", "leverage", "偿债", "杠杆", "负债压力"),
-    )
-    return {
-        "profile_id": profile_id,
-        "profile_name": profile_names.get(profile_id, profile_id),
-        "source_run_id": run_id,
-        "profile_fit_score": _as_float(run.get("profile_fit_score")),
-        "data_confidence": _as_float(run.get("confidence")),
-        "business_quality_signal": _signal_from_terms(
-            text,
-            positive=("business quality", "商业质量", "生意模式", "高质量"),
-            negative=("business risk", "模式风险", "质量下滑"),
-        ),
-        "moat_durability_signal": _signal_from_terms(
-            text,
-            positive=("moat", "brand", "护城河", "品牌", "竞争优势"),
-            negative=("moat erosion", "竞争恶化", "护城河削弱"),
-        ),
-        "growth_runway_signal": _signal_from_terms(
-            text,
-            positive=("growth", "runway", "成长", "增长", "天花板"),
-            negative=("growth slowdown", "增长放缓", "增长质量下调"),
-        ),
-        "pricing_power_signal": _signal_from_terms(
-            text,
-            positive=("pricing power", "gross margin", "定价权", "毛利率"),
-            negative=("price war", "定价权削弱", "毛利率下滑"),
-        ),
-        "capital_intensity_signal": _signal_from_terms(
-            text,
-            positive=("asset light", "low capex", "轻资产", "低资本开支"),
-            negative=("capital expenditure", "capex", "资本开支", "重资产"),
-        ),
-        "cash_flow_reliability_signal": cash_signal,
-        "balance_sheet_risk_signal": balance_sheet_signal,
-        "management_capital_allocation_signal": _signal_from_terms(
-            text,
-            positive=("capital allocation", "dividend", "buyback", "资本配置", "分红", "回购"),
-            negative=("misallocation", "资本配置风险", "激进扩张"),
-        ),
-        "cyclicality_signal": _signal_from_terms(
-            text,
-            positive=("stable demand", "稳定需求", "刚需"),
-            negative=("cyclical", "macro", "周期", "宏观"),
-            default="unknown",
-        ),
-        "permanent_loss_risk_signal": _signal_from_terms(
-            text,
-            positive=("downside protection", "下行保护", "资产保护"),
-            negative=("permanent loss", "永久损失", "诚信", "治理风险"),
-            default="unknown",
-        ),
-        "valuation_method_preference": _derive_method_preferences(
-            text,
-            cash_signal=cash_signal,
-            balance_sheet_signal=balance_sheet_signal,
-        ),
-        "parameter_impacts": _derive_parameter_impacts(result, source_refs),
-        "source_refs": source_refs,
-    }
-
-
-def _build_consensus_parameter_impacts(ledger: dict[str, object]) -> list[dict[str, object]]:
-    impacts: list[dict[str, object]] = []
-    for item in ledger.get("valuation_assumption_queue", []):
-        if not isinstance(item, dict):
-            continue
-        source_refs = item.get("source_refs") if isinstance(item.get("source_refs"), dict) else {}
-        impacts.append(
-            {
-                "parameter": _map_parameter_name(str(item.get("assumption_type") or "")),
-                "direction": _direction_from_text(str(item.get("reason") or "")),
-                "magnitude": "low",
-                "scenario": "all",
-                "reason": str(item.get("reason") or ""),
-                "confidence": 0.45,
-                "requires_user_review": True,
-                "source_refs": source_refs,
-            }
-        )
-    return impacts[:20]
-
-
-def _derive_method_preferences(
-    text: str,
-    *,
-    cash_signal: str,
-    balance_sheet_signal: str,
-) -> list[dict[str, object]]:
-    preferences: list[dict[str, object]] = []
-    if cash_signal in {"positive", "neutral"} or _has_any(text, ("现金流", "cash flow")):
-        preferences.append(
-            {
-                "method": "dcf",
-                "direction": "up",
-                "reason": "cash-flow-oriented analyst signal",
-                "confidence": 0.55,
-            }
-        )
-        preferences.append(
-            {
-                "method": "owner_earnings",
-                "direction": "up",
-                "reason": "owner-earnings inputs should be reviewed",
-                "confidence": 0.55,
-            }
-        )
-    if _has_any(text, ("dividend", "payout", "分红", "股东回报")):
-        preferences.append(
-            {
-                "method": "dividend_discount",
-                "direction": "up",
-                "reason": "shareholder-return signal",
-                "confidence": 0.45,
-            }
-        )
-    if balance_sheet_signal in {"positive", "negative"} or _has_any(text, ("资产", "负债", "roe")):
-        preferences.append(
-            {
-                "method": "residual_income",
-                "direction": "neutral",
-                "reason": "balance-sheet and profitability inputs should be cross-checked",
-                "confidence": 0.4,
-            }
-        )
-    return _dedupe_dicts(preferences, ("method", "direction"))
-
-
-def _derive_parameter_impacts(
-    result: dict[str, object],
-    source_refs: dict[str, object],
-) -> list[dict[str, object]]:
-    impacts: list[dict[str, object]] = []
-    for detail in _normalize_valuation_details(result):
-        reason = str(detail.get("reason") or "")
-        refs = _merge_source_refs(detail.get("source_refs"), default_run_id=None)
-        if not refs.get("analyst_run_ids"):
-            refs = source_refs
-        impacts.append(
-            {
-                "parameter": _map_parameter_name(str(detail.get("assumption_type") or "")),
-                "direction": _direction_from_text(reason),
-                "magnitude": "medium" if _has_any(reason, ("核心", "critical", "key")) else "low",
-                "scenario": "all",
-                "reason": reason,
-                "confidence": 0.5,
-                "requires_user_review": True,
-                "source_refs": refs,
-            }
-        )
-    for risk in _normalize_str_list(result.get("risk_flags")):
-        impacts.append(
-            {
-                "parameter": "discount_rate",
-                "direction": "up",
-                "magnitude": "low",
-                "scenario": "conservative",
-                "reason": risk,
-                "confidence": 0.45,
-                "requires_user_review": True,
-                "source_refs": source_refs,
-            }
-        )
-        impacts.append(
-            {
-                "parameter": "scenario_spread",
-                "direction": "widen",
-                "magnitude": "low",
-                "scenario": "all",
-                "reason": risk,
-                "confidence": 0.45,
-                "requires_user_review": True,
-                "source_refs": source_refs,
-            }
-        )
-    for gap in _normalize_str_list(result.get("data_gaps")):
-        impacts.append(
-            {
-                "parameter": "scenario_spread",
-                "direction": "widen",
-                "magnitude": "medium",
-                "scenario": "all",
-                "reason": gap,
-                "confidence": 0.35,
-                "requires_user_review": True,
-                "source_refs": source_refs,
-            }
-        )
-    return _dedupe_dicts(impacts, ("parameter", "direction", "reason"))[:20]
-
-
-def _source_refs_from_result(
-    result: dict[str, object],
-    *,
-    default_run_id: int | None,
-) -> dict[str, object]:
-    refs: dict[str, object] = {}
-    analysis_basis = result.get("analysis_basis")
-    if isinstance(analysis_basis, dict):
-        refs["evidence_ids"] = analysis_basis.get("external_evidence_ids")
-        refs["announcement_ids"] = analysis_basis.get("announcement_ids")
-        refs["financial_periods"] = analysis_basis.get("financial_periods")
-    rule_checks = result.get("rule_checks")
-    if isinstance(rule_checks, list):
-        evidence_ids: list[int] = _normalize_int_list(refs.get("evidence_ids"))
-        announcement_ids: list[int] = _normalize_int_list(refs.get("announcement_ids"))
-        financial_periods: list[str] = _normalize_str_list(refs.get("financial_periods"))
-        for item in rule_checks:
-            if not isinstance(item, dict):
-                continue
-            evidence_ids.extend(_normalize_int_list(item.get("evidence_ids")))
-            announcement_ids.extend(_normalize_int_list(item.get("announcement_ids")))
-            financial_periods.extend(_normalize_str_list(item.get("financial_periods")))
-        refs["evidence_ids"] = evidence_ids
-        refs["announcement_ids"] = announcement_ids
-        refs["financial_periods"] = financial_periods
-    return _merge_source_refs(refs, default_run_id=default_run_id)
-
-
-def _analyst_text(result: dict[str, object]) -> str:
-    keys = (
-        "overview",
-        "key_observations",
-        "rule_checks",
-        "financial_observations",
-        "announcement_observations",
-        "risk_flags",
-        "counter_evidence",
-        "valuation_assumption_suggestions",
-        "valuation_assumption_details",
-        "data_gaps",
-        "follow_up_questions",
-    )
-    payload = {key: result.get(key) for key in keys if key in result}
-    return json.dumps(payload, ensure_ascii=False, default=str).lower()
-
-
-def _signal_from_terms(
-    text: str,
-    *,
-    positive: tuple[str, ...],
-    negative: tuple[str, ...],
-    default: str = "neutral",
-) -> str:
-    if _has_any(text, negative):
-        return "negative"
-    if _has_any(text, positive):
-        return "positive"
-    return default
-
-
-def _direction_from_text(text: str) -> str:
-    lowered = text.lower()
-    if _has_any(lowered, ("down", "lower", "下调", "压低", "下降", "恶化")):
-        return "down"
-    if _has_any(lowered, ("widen", "扩大", "波动", "不确定", "缺口")):
-        return "widen"
-    if _has_any(lowered, ("cap", "上限", "封顶")):
-        return "cap"
-    if _has_any(lowered, ("up", "raise", "提高", "上调", "增长", "改善")):
-        return "up"
-    return "neutral"
-
-
-def _map_parameter_name(value: str) -> str:
-    lowered = value.lower()
-    if _has_any(lowered, ("owner", "earnings", "净利润", "利润")):
-        return "owner_earnings_growth_rate"
-    if _has_any(lowered, ("discount", "折现")):
-        return "discount_rate"
-    if _has_any(lowered, ("terminal", "永续", "终值")):
-        return "terminal_growth_rate"
-    if _has_any(lowered, ("spread", "scenario", "情景")):
-        return "scenario_spread"
-    if _has_any(lowered, ("method", "weight", "方法", "权重")):
-        return "method_weight_adjustment"
-    return "cash_flow_growth_rate" if _has_any(lowered, ("cash", "现金")) else "review_parameter"
-
-
-def _has_any(text: str, terms: tuple[str, ...]) -> bool:
-    lowered = text.lower()
-    return any(term.lower() in lowered for term in terms)
-
-
-def _as_float(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return max(0.0, min(1.0, float(value)))
-    if isinstance(value, str):
-        try:
-            return max(0.0, min(1.0, float(value.strip())))
-        except ValueError:
-            return None
-    return None
-
-
-def _as_number(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return None
-    return None
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return max(lower, min(upper, float(value)))
-
-
-def _dedupe_dicts(
-    values: list[dict[str, object]],
-    keys: tuple[str, ...],
-) -> list[dict[str, object]]:
-    unique: list[dict[str, object]] = []
-    seen: set[tuple[str, ...]] = set()
-    for item in values:
-        key = tuple(str(item.get(field) or "") for field in keys)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
-
-
 def _scrub_price_blind_value(value: object) -> object:
     if isinstance(value, dict):
         scrubbed: dict[str, object] = {}
@@ -1156,21 +623,6 @@ def _sanitize_price_blind_text(value: str) -> str:
     if any(_contains_forbidden_price_term(lowered, term) for term in PRICE_BLIND_FORBIDDEN_TERMS):
         return "anchor_removed_for_010"
     return value
-
-
-def _assert_price_blind_signal_pack(pack: dict[str, object]) -> None:
-    serialized = json.dumps(pack, ensure_ascii=False, sort_keys=True, default=str).lower()
-    for allowed in ("price_blind_compatible", "pricing_power_signal"):
-        serialized = serialized.replace(allowed, "")
-    matched = [
-        term
-        for term in PRICE_BLIND_FORBIDDEN_TERMS
-        if _contains_forbidden_price_term(serialized, term)
-    ]
-    if matched:
-        raise ModelOutputValidationError(
-            f"valuation_signal_pack contains price anchor: {matched[0]}"
-        )
 
 
 def _contains_forbidden_price_term(text: str, term: str) -> bool:
@@ -1252,6 +704,15 @@ def _validate_no_prohibited_actions(output: dict[str, object]) -> None:
                 )
 
 
+def _validate_price_blind_output(output: dict[str, object]) -> None:
+    for key, value in _walk_dict_values(output):
+        if key in {"prohibited_actions_note", "price_decision_status"}:
+            continue
+        match = find_price_anchor(value)
+        if match is not None:
+            raise ModelOutputValidationError(f"009 输出包含禁止的价格锚：{match}")
+
+
 def _walk_dict_values(value: object) -> list[tuple[str, object]]:
     items: list[tuple[str, object]] = []
     if isinstance(value, dict):
@@ -1272,30 +733,6 @@ def _build_memo_markdown(output: dict[str, object]) -> str:
         "",
         str(output.get("executive_summary") or ""),
     ]
-    scorecard = output.get("analyst_scorecard")
-    if isinstance(scorecard, dict):
-        total_score = _as_number(scorecard.get("total_score"))
-        suggested_safety_margin = _as_number(scorecard.get("suggested_safety_margin"))
-        analyst_items = scorecard.get("analyst_items")
-        if total_score is not None and isinstance(analyst_items, list):
-            lines.extend(["", "## 分析师评分", "", f"综合得分：{total_score:+.2f}"])
-            if suggested_safety_margin is not None:
-                lines.append(f"动态安全边际：{suggested_safety_margin:.2%}")
-            for item in analyst_items:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("profile_name") or item.get("profile_id") or "分析师")
-                rule_score = _as_number(item.get("rule_score_total")) or 0.0
-                analyst_weight = _as_number(item.get("analyst_weight")) or 0.0
-                weighted_score = _as_number(item.get("weighted_score")) or 0.0
-                availability_note = (
-                    "（缺失，按未知计分）" if item.get("availability") != "success" else ""
-                )
-                lines.append(
-                    f"- {name}{availability_note}：四指标 {rule_score:+.2f}，"
-                    f"权重 {analyst_weight:.2%}，"
-                    f"等权贡献 {weighted_score:+.2f}"
-                )
     for title, key in (
         ("核心判断", "core_thesis"),
         ("关键风险", "key_risks"),
