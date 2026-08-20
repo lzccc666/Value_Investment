@@ -1386,18 +1386,36 @@ export function CompanyWorkspaceView({
   }
 
   async function handleRunAllAnalystAnalysis() {
+    const successfulProfileIds = new Set(
+      analysisRuns.items
+        .map((run) => run.analyst_profile)
+        .filter((profileId): profileId is string => Boolean(profileId))
+    );
+    const missingProfileIds = analystProfiles.items
+      .map((profile) => profile.id)
+      .filter((profileId) => !successfulProfileIds.has(profileId));
+
+    if (missingProfileIds.length === 0) {
+      setAnalystRunState({
+        status: "success",
+        profileId: null,
+        message: "8 位分析师均已有成功 run，无需生成"
+      });
+      return;
+    }
+
     analystRunAbortControllerRef.current?.abort();
     const controller = new AbortController();
     analystRunAbortControllerRef.current = controller;
     setAnalystRunState({
       status: "running_all",
       profileId: null,
-      message: "正在生成全部分析师视角"
+      message: `正在生成 ${missingProfileIds.length} 位缺失分析师视角`
     });
 
     try {
       const batchResult = await runCompanyAnalysisBatch(company.id, {
-        analyst_profiles: analystProfiles.items.map((profile) => profile.id),
+        analyst_profiles: missingProfileIds,
         signal: controller.signal
       });
       const [refreshedRuns, refreshedFailedRuns] = await loadLatestAnalystRuns(company.id);
@@ -2336,6 +2354,10 @@ function ValuationLabPanel({
   const modelWeighting = readRecordArray(results.model_weighting);
   const dispersionWarning = readPlainRecord(results.dispersion_warning);
   const resultStatus = String(results.status ?? "");
+  const normalizationAudit = readPlainRecord(valuationInputs.normalization_audit);
+  const growthBasis = readPlainRecord(
+    latestValuationRun?.model_suggested_assumptions.growth_basis
+  );
   const matrixSnapshot = readPlainRecord(
     latestValuationRun?.model_suggested_assumptions.analyst_parameter_matrix_snapshot
   );
@@ -2527,8 +2549,14 @@ function ValuationLabPanel({
                 value={formatShareCount(valuationInputs.shares_outstanding)}
               />
               <MetricFact label="数据期间" value={String(valuationInputs.latest_period ?? "待更新")} />
-            </dl>
-          </article>
+              </dl>
+            </article>
+
+          <ValuationNormalizationAudit
+            audit={normalizationAudit}
+            growthBasis={growthBasis}
+            valuationInputs={valuationInputs}
+          />
 
           <article className="valuation-card">
             <div className="valuation-card__heading">
@@ -2784,8 +2812,8 @@ function PriceDecisionPanel({
   const selectedHistoryRun = history.items.find((run) => run.id === selectedHistoryId) ?? null;
   const parsedOverride = overridePercent.trim() === "" ? Number.NaN : Number(overridePercent);
   const overrideError =
-    useOverride && (!Number.isFinite(parsedOverride) || parsedOverride < 0 || parsedOverride > 100)
-      ? "覆盖安全边际必须位于 0%-100%。"
+    useOverride && (!Number.isFinite(parsedOverride) || parsedOverride < 10 || parsedOverride > 50)
+      ? "覆盖安全边际必须位于 10%-50%。"
       : null;
   const missingValuation = calculatedValuation === null;
   const missingPrice = company.current_price === null || company.current_price <= 0;
@@ -2932,8 +2960,8 @@ function PriceDecisionPanel({
                   aria-label="覆盖安全边际（%）"
                   aria-invalid={Boolean(overrideError)}
                   type="number"
-                  min="0"
-                  max="100"
+                  min="10"
+                  max="50"
                   step="0.1"
                   value={overridePercent}
                   onChange={(event) => setOverridePercent(event.currentTarget.value)}
@@ -3331,6 +3359,121 @@ function MetricFact({ label, value }: MetricFactProps) {
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
+  );
+}
+
+function ValuationNormalizationAudit({
+  audit,
+  growthBasis,
+  valuationInputs
+}: {
+  audit: Record<string, unknown>;
+  growthBasis: Record<string, unknown>;
+  valuationInputs: Record<string, unknown>;
+}) {
+  const periods = readRecordArray(audit.periods);
+  const finalValues = readPlainRecord(audit.final_values);
+  const fcfConversion = readPlainRecord(audit.fcf_conversion);
+  const sourcePeriods = normalizeStringList(audit.source_periods);
+  const ownerNormalization = readPlainRecord(valuationInputs.owner_earnings_normalization);
+  const ownerComponents = readRecordArray(ownerNormalization.components);
+
+  return (
+    <article className="valuation-card valuation-normalization-audit">
+      <div className="valuation-card__heading">
+        <Scale aria-hidden="true" size={17} />
+        <strong>财务基准正常化审计</strong>
+      </div>
+      <dl className="valuation-input-grid valuation-input-grid--wide">
+        <MetricFact label="统一口径" value={formatNormalizationMethod(audit.method)} />
+        <MetricFact
+          label="置信度"
+          value={formatNormalizationConfidence(valuationInputs.normalization_confidence)}
+        />
+        <MetricFact
+          label="共同来源期间"
+          value={sourcePeriods.length > 0 ? sourcePeriods.join("、") : "待补充"}
+        />
+        <MetricFact
+          label="年度权重"
+          value={formatWeightList(audit.annual_weights)}
+        />
+        <MetricFact label="正常化净利润" value={formatFinancialSummaryMoney(finalValues.net_profit)} />
+        <MetricFact
+          label="上限前自由现金流"
+          value={formatFinancialSummaryMoney(fcfConversion.normalized_fcf_before_cap)}
+        />
+        <MetricFact
+          label="上限后自由现金流"
+          value={formatFinancialSummaryMoney(finalValues.free_cash_flow)}
+        />
+        <MetricFact label="正常化所有者盈余" value={formatFinancialSummaryMoney(finalValues.owner_earnings)} />
+        <MetricFact
+          label="上限前 FCF/净利润"
+          value={formatRatio(readNumber(fcfConversion.fcf_to_net_profit_before_cap))}
+        />
+        <MetricFact
+          label="上限后 FCF/净利润"
+          value={formatRatio(readNumber(fcfConversion.fcf_to_net_profit_after_cap))}
+        />
+      </dl>
+
+      <div className="valuation-normalization-subsection">
+        <strong>增长基准链路</strong>
+        <dl className="valuation-input-grid">
+          <MetricFact label="原始增长值" value={formatPercent(readNumber(growthBasis.raw_growth_rate))} />
+          <MetricFact label="增长来源" value={formatGrowthSource(growthBasis.growth_source)} />
+          <MetricFact
+            label="财务基准增长"
+            value={formatPercent(readNumber(growthBasis.clamped_financial_base_growth_rate))}
+          />
+          <MetricFact
+            label="现金流分析师增量"
+            value={formatPercent(readNumber(growthBasis.analyst_delta_cash_flow_growth_rate))}
+          />
+          <MetricFact
+            label="最终现金流增长"
+            value={formatPercent(readNumber(growthBasis.final_base_cash_flow_growth_rate))}
+          />
+          <MetricFact
+            label="最终所有者盈余增长"
+            value={formatPercent(readNumber(growthBasis.final_base_owner_earnings_growth_rate))}
+          />
+        </dl>
+      </div>
+
+      {periods.length > 0 ? (
+        <div className="valuation-normalization-subsection">
+          <strong>期间组件</strong>
+          <div className="valuation-normalization-period-list">
+            {periods.map((period, index) => {
+              const components = readPlainRecord(period.components);
+              const owner = readPlainRecord(period.owner_earnings);
+              return (
+                <div className="valuation-normalization-period" key={`${String(period.period)}-${index}`}>
+                  <MetricFact label="期间" value={String(period.period ?? "待补充")} />
+                  <MetricFact label="权重" value={formatNullableWeight(period.weight)} />
+                  <MetricFact label="净利润" value={formatFinancialSummaryMoney(components.net_profit)} />
+                  <MetricFact label="自由现金流" value={formatFinancialSummaryMoney(components.free_cash_flow)} />
+                  <MetricFact label="资本开支" value={formatFinancialSummaryMoney(components.capital_expenditure)} />
+                  <MetricFact
+                    label="所有者盈余"
+                    value={
+                      readNumber(owner.value) === null && audit.method === "ttm_adjusted"
+                        ? "TTM汇总后计算"
+                        : formatFinancialSummaryMoney(owner.value)
+                    }
+                  />
+                </div>
+              );
+            })}
+          </div>
+          {ownerComponents.length > 0 ? (
+            <div className="inline-empty">所有者盈余已按每个共同期间先计算，再按年度权重汇总。</div>
+          ) : null}
+        </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -4300,6 +4443,14 @@ function AnalystPanel({
   const currentFailedRuns = failedRuns.items.filter(
     (run) => typeof run.analyst_profile === "string" && profileIds.has(run.analyst_profile)
   );
+  const successfulProfileIds = new Set(
+    currentRuns
+      .map((run) => run.analyst_profile)
+      .filter((profileId): profileId is string => Boolean(profileId))
+  );
+  const missingProfileCount = profiles.items.filter(
+    (profile) => !successfulProfileIds.has(profile.id)
+  ).length;
   const sharedAccountingEvents = collectSharedAccountingEvents(currentRuns);
 
   return (
@@ -4317,12 +4468,22 @@ function AnalystPanel({
           <button
             className="panel-action"
             type="button"
-            title="生成全部分析师视角"
-            disabled={isRunningAny}
+            title={
+              missingProfileCount > 0
+                ? "生成尚无成功 run 的分析师视角"
+                : "所有分析师均已有成功 run"
+            }
+            disabled={isRunningAny || missingProfileCount === 0}
             onClick={onRunAllProfiles}
           >
             <PlayCircle aria-hidden="true" size={15} />
-            <span>{isRunningAll ? "生成中" : "生成全部"}</span>
+            <span>
+              {isRunningAll
+                ? "生成中"
+                : missingProfileCount > 0
+                  ? `生成缺失 (${missingProfileCount})`
+                  : "均已生成"}
+            </span>
           </button>
           {isRunningAny ? (
             <button
@@ -5736,6 +5897,50 @@ function formatFinancialSummaryMoney(value: unknown): string {
     return "待更新";
   }
   return `${formatLargeNumber(value)} CNY`;
+}
+
+function formatNormalizationMethod(value: unknown): string {
+  const labels: Record<string, string> = {
+    ttm_adjusted: "TTM（同口径滚动年度）",
+    weighted_annual_3y: "完整年度加权（3年）",
+    weighted_annual_available: "完整年度加权（可用年度）",
+    latest_annual_adjusted: "最近完整年度（1年）"
+  };
+  return labels[String(value ?? "")] ?? "待补充";
+}
+
+function formatNormalizationConfidence(value: unknown): string {
+  const labels: Record<string, string> = {
+    high: "高",
+    medium: "中",
+    low: "低"
+  };
+  return labels[String(value ?? "")] ?? "待补充";
+}
+
+function formatGrowthSource(value: unknown): string {
+  const labels: Record<string, string> = {
+    free_cash_flow_cagr_5y: "自由现金流 5 年复合增长率",
+    free_cash_flow_cagr_3y: "自由现金流 3 年复合增长率",
+    net_profit_cagr_5y: "净利润 5 年复合增长率",
+    net_profit_cagr_3y: "净利润 3 年复合增长率",
+    revenue_cagr_5y: "收入 5 年复合增长率",
+    revenue_cagr_3y: "收入 3 年复合增长率",
+    default_growth: "默认增长率"
+  };
+  return labels[String(value ?? "")] ?? "待补充";
+}
+
+function formatWeightList(value: unknown): string {
+  const weights = Array.isArray(value)
+    ? value.map((item) => readNumber(item)).filter((item): item is number => item !== null)
+    : [];
+  return weights.length > 0 ? weights.map((item) => formatPercent(item)).join(" / ") : "不适用";
+}
+
+function formatNullableWeight(value: unknown): string {
+  const weight = readNumber(value);
+  return weight === null ? "TTM组件" : formatPercent(weight);
 }
 
 function formatFinancialSummaryPercent(value: unknown): string {

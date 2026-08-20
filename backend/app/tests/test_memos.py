@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.analysis.model_gateway import ModelOutputValidationError
+from app.analysis.prompts.memo import MEMO_SYSTEM_PROMPT, build_memo_prompt
 from app.db.init_db import init_db
 from app.db.models import AnalysisRun, Company, InvestmentMemo
 from app.db.session import create_sqlalchemy_engine, get_db
@@ -134,7 +135,7 @@ def test_memo_generation_creates_analysis_run_and_historical_versions(
 
     assert first_run.run_type == "investment_memo"
     assert first_run.status == "success"
-    assert first_run.prompt_version == "investment_memo_v2"
+    assert first_run.prompt_version == "investment_memo_v3"
     assert first_memo.editor_type == "model"
     assert first_memo.parent_memo_id is None
     assert first_memo.change_note is None
@@ -173,6 +174,7 @@ def test_memo_generation_contains_narrative_only_without_numeric_score_layers(
 
 def test_memo_output_with_price_anchor_is_rejected(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
+    gateway = FakePriceAnchorMemoGateway()
     with session_factory() as session:
         company = _seed_company_with_analyst_runs(session, profiles=["buffett", "fisher"])
 
@@ -180,8 +182,32 @@ def test_memo_output_with_price_anchor_is_rejected(tmp_path: Path) -> None:
             run_company_investment_memo(
                 session,
                 company,
-                gateway=FakePriceAnchorMemoGateway(),
+                gateway=gateway,
             )
+
+    assert gateway.call_count == 2
+
+
+def test_memo_prompt_does_not_repeat_safety_margin_anchor() -> None:
+    prompt = f"{MEMO_SYSTEM_PROMPT}\n{build_memo_prompt({})}".lower()
+
+    assert "safety_margin" not in prompt
+    assert "safety margin" not in prompt
+    assert "安全边际" not in prompt
+
+
+def test_memo_price_anchor_output_is_regenerated_once(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    gateway = FakeRecoveringSafetyMarginMemoGateway()
+    with session_factory() as session:
+        company = _seed_company_with_analyst_runs(session, profiles=["buffett", "fisher"])
+
+        run, memo = run_company_investment_memo(session, company, gateway=gateway)
+
+    assert gateway.call_count == 2
+    assert run.status == "success"
+    assert run.prompt_version == "investment_memo_v3"
+    assert "safety_margin" not in json.dumps(memo.sections, ensure_ascii=False)
 
 
 def test_delete_latest_memo_recomputes_latest_for_valuation(tmp_path: Path) -> None:
@@ -472,49 +498,33 @@ class FakeTradeActionMemoGateway(FakeMemoGateway):
         return schema.model_validate(payload)
 
 
-class FakePriceAnchorMemoGateway(FakeMemoGateway):
+class FakeRecoveringSafetyMarginMemoGateway(FakeMemoGateway):
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_count = 0
+
     def generate_structured(self, **kwargs):
+        self.call_count += 1
+        output = super().generate_structured(**kwargs)
+        if self.call_count > 1:
+            return output
         schema = kwargs["schema"]
-        snapshot = _snapshot_from_prompt(str(kwargs["user_prompt"]))
-        source_run_ids = snapshot["committee_ledger"]["source_run_ids"]
-        evidence_ids = snapshot["committee_ledger"]["shared_evidence_ids"]
-        announcement_ids = snapshot["committee_ledger"]["shared_announcement_ids"]
-        financial_periods = snapshot["committee_ledger"]["financial_periods"]
-        payload = _memo_payload(
-            summary="price anchors must be removed from valuation signal pack.",
-            source_run_ids=source_run_ids,
-            evidence_ids=evidence_ids,
-            announcement_ids=announcement_ids,
-            financial_periods=financial_periods,
-        )
-        payload["valuation_signal_pack"] = {
-            "price_blind_compatible": True,
-            "source": "latest_successful_analyst_view_runs",
-            "analyst_signals": [],
-            "consensus_parameter_impacts": [
-                {
-                    "parameter": "discount_rate",
-                    "direction": "up",
-                    "magnitude": "low",
-                    "scenario": "all",
-                    "reason": "target_price and market_cap should not pass through",
-                    "confidence": 0.4,
-                    "requires_user_review": True,
-                    "source_refs": {
-                        "analyst_run_ids": source_run_ids,
-                        "evidence_ids": evidence_ids,
-                        "announcement_ids": announcement_ids,
-                        "financial_periods": financial_periods,
-                    },
-                }
-            ],
-            "dissent_parameter_impacts": [],
-            "risk_constraints": ["current_price and market_sentiment are anchors"],
-            "data_gaps_for_valuation": ["目标价 and 市值 should be scrubbed"],
-            "user_confirmation_required": True,
-            "current_price": 1,
-            "market_cap": 2,
-        }
+        payload = output.model_dump(mode="json")
+        payload["valuation_assumption_queue"][0]["assumption_type"] = "safety_margin"
+        return schema.model_validate(payload)
+
+
+class FakePriceAnchorMemoGateway(FakeMemoGateway):
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_count = 0
+
+    def generate_structured(self, **kwargs):
+        self.call_count += 1
+        schema = kwargs["schema"]
+        output = super().generate_structured(**kwargs)
+        payload = output.model_dump(mode="json")
+        payload["valuation_assumption_queue"][0]["assumption_type"] = "safety_margin"
         return schema.model_validate(payload)
 
 

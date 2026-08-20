@@ -223,6 +223,7 @@ def validate_parameter_config(
     _validate_status_policies(config, errors)
     _validate_dynamic_safety_margin(config, errors)
     _validate_tiers(config, errors)
+    _validate_normalization_year_weights(config, errors)
 
     if compare_to_default and config_hash(config) != config_hash(defaults):
         changed = _changed_leaf_paths(defaults, config)
@@ -581,6 +582,22 @@ def _validate_tiers(config: dict[str, object], errors: list[ParameterValidationI
             "等级阈值必须满足 0 <= medium < high <= 1。",
             "tier_order",
         )
+
+
+def _validate_normalization_year_weights(
+    config: dict[str, object], errors: list[ParameterValidationIssue]
+) -> None:
+    path = "valuation_models.normalization_year_weights"
+    raw = _at(config, path)
+    if not isinstance(raw, list) or len(raw) != 3:
+        _issue(errors, path, "正常化年度权重必须恰好包含最近三年三个权重。", "weight_shape")
+        return
+    values = [_number(item) for item in raw]
+    if any(value is None or value < 0 for value in values):
+        _issue(errors, path, "正常化年度权重必须是非负有限数字。", "weight_range")
+        return
+    if abs(sum(value for value in values if value is not None) - 1.0) > 0.000001:
+        _issue(errors, path, "正常化年度权重合计必须等于 100%。", "weight_sum")
 
 
 def _sum_to_one(

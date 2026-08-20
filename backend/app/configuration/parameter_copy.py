@@ -544,7 +544,7 @@ def _rule_matrix_copy(path: tuple[str, ...], config: dict[str, object]) -> Param
         status = STATUS_NAMES[leaf]
         return ParameterCopy(
             f"010 “{status}”安全边际加点",
-            "单条动态安全边际贡献 = 本加点 × 该分析师归一化权重 × 分析师数量缩放值；32 条贡献累加后截断到 0%-100%。",
+            "单条原始贡献 = 本加点 × 该分析师归一化权重 × 分析师数量缩放值；32 条原始贡献累加后，从状态策略的理论最小值到最大值线性投影到动态安全边际上下限。",
         )
     entries = {
         "confidence_weight": (
@@ -581,11 +581,11 @@ def _rule_matrix_copy(path: tuple[str, ...], config: dict[str, object]) -> Param
         ),
         "safety_margin_min": (
             "010 动态安全边际下限",
-            "32 条逐项贡献累加后低于本值时抬高到本值，默认 0%",
+            "状态策略的原始理论最小安全边际线性投影到本值，确保始终保留基础安全缓冲",
         ),
         "safety_margin_max": (
             "010 动态安全边际上限",
-            "32 条逐项贡献累加后高于本值时压低到本值；硬安全范围不得超过 100%",
+            "状态策略的原始理论最大安全边际线性投影到本值，避免原始累计比例直接生成过低买入参考价",
         ),
     }
     if group != "rule_mappings":
@@ -730,12 +730,12 @@ def _valuation_copy(path: tuple[str, ...]) -> ParameterCopy:
     if group in exact:
         label, description = exact[group]
         return ParameterCopy(label, f"{description}；只影响新计算的 010 估值。")
-    if group == "fcf_year_weights":
+    if group == "normalization_year_weights":
         index = int(path[2])
         labels = ["最近年度", "第二近年度", "第三近年度"]
         return ParameterCopy(
-            f"正常化自由现金流的{labels[index]}权重",
-            f"正常化 FCF 对{labels[index]}自由现金流使用的基准权重；缺少某年度时只对可用年度权重重新归一化。",
+            f"现金流与利润正常化的{labels[index]}权重",
+            f"正常化 FCF、正常化净利润和年度所有者盈余对{labels[index]}完整年度使用的基准权重；缺少某年度时只对可用年度权重重新归一化。只影响新生成的 010 估值，不追溯修改历史运行。",
         )
     if group == "growth_source_priority":
         priority = int(path[2]) + 1
@@ -972,7 +972,7 @@ def _price_copy(path: tuple[str, ...]) -> ParameterCopy:
         ),
         "safety_margin_max": (
             "011 可接受安全边际上限",
-            "校验绑定 010 冻结的建议安全边际和用户手工覆盖值时使用的上限，硬范围最高 100%；买入参考价 = 所选情景每股内在价值 × (1 - 生效安全边际)",
+            "校验绑定 010 冻结的建议安全边际和用户手工覆盖值时使用的上限；买入参考价 = 所选情景每股内在价值 × (1 - 生效安全边际)",
         ),
         "buy_price_scenario": (
             "011 建议买入价采用的内在价值情景",

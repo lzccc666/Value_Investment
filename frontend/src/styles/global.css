@@ -2034,6 +2034,46 @@ h2 {
 
 }
 
+.valuation-normalization-subsection {
+
+  display: grid;
+
+  gap: 10px;
+
+  margin-top: 16px;
+
+  padding-top: 14px;
+
+  border-top: 1px solid #e1e7e5;
+
+}
+
+.valuation-normalization-period-list {
+
+  display: grid;
+
+  gap: 8px;
+
+}
+
+.valuation-normalization-period {
+
+  display: grid;
+
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+
+  gap: 10px 14px;
+
+  padding: 10px;
+
+  border: 1px solid #e1e7e5;
+
+  border-radius: 6px;
+
+  background: #fbfcfc;
+
+}
+
 .valuation-input-grid div,
 .valuation-range-grid div {
 
@@ -6086,6 +6126,7 @@ h2 {
   .valuation-input-grid,
   .valuation-input-grid--wide,
   .valuation-range-grid,
+  .valuation-normalization-period,
   .new-company-form,
   .model-config-grid,
   .manual-evidence-form__grid,

@@ -320,14 +320,22 @@ def run_company_investment_memo(
         )
 
         try:
-            output = model_gateway.generate_structured(
-                system_prompt=MEMO_SYSTEM_PROMPT,
-                user_prompt=build_memo_prompt(data_snapshot),
-                schema=InvestmentMemoOutput,
+            output_payload = _generate_memo_output(
+                model_gateway,
+                data_snapshot=data_snapshot,
+                strict_boundary_retry=False,
                 temperature=float(parameter_value("analyst_engine.model_temperatures.memo", 0.2)),
             )
-            output_payload = output.model_dump(mode="json")
-            _validate_price_blind_output(output_payload)
+            try:
+                _validate_price_blind_output(output_payload)
+            except ModelOutputValidationError:
+                output_payload = _generate_memo_output(
+                    model_gateway,
+                    data_snapshot=data_snapshot,
+                    strict_boundary_retry=True,
+                    temperature=0.0,
+                )
+                _validate_price_blind_output(output_payload)
             _apply_source_map_override(output_payload, data_snapshot)
             _validate_output_references(output_payload, data_snapshot)
             _validate_no_prohibited_actions(output_payload)
@@ -345,6 +353,25 @@ def run_company_investment_memo(
         except Exception as exc:
             _fail_memo_run(session, run, exc)
             raise
+
+
+def _generate_memo_output(
+    model_gateway: ModelGateway,
+    *,
+    data_snapshot: dict[str, object],
+    strict_boundary_retry: bool,
+    temperature: float,
+) -> dict[str, object]:
+    output = model_gateway.generate_structured(
+        system_prompt=MEMO_SYSTEM_PROMPT,
+        user_prompt=build_memo_prompt(
+            data_snapshot,
+            strict_boundary_retry=strict_boundary_retry,
+        ),
+        schema=InvestmentMemoOutput,
+        temperature=temperature,
+    )
+    return output.model_dump(mode="json")
 
 
 def list_company_investment_memos(

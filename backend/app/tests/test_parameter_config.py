@@ -21,12 +21,20 @@ def _source_path(tmp_path: Path, monkeypatch) -> Path:
 
 
 def test_default_parameter_config_is_complete_and_valid() -> None:
-    result = validate_parameter_config(default_parameter_config(), compare_to_default=False)
+    config = default_parameter_config()
+    result = validate_parameter_config(config, compare_to_default=False)
 
     assert result.valid is True
     assert result.errors == []
     assert result.actual_parameter_count == 375
     assert result.audit_parameter_count == 0
+    assert config["valuation_models"]["normalization_year_weights"] == [0.50, 0.30, 0.20]
+    assert config["valuation_models"]["analyst_impact_scale"] == 2.0
+    assert config["valuation_rule_matrix"]["safety_margin_min"] == 0.1
+    assert config["valuation_rule_matrix"]["safety_margin_max"] == 0.5
+    assert config["price_decision"]["safety_margin_min"] == 0.1
+    assert config["price_decision"]["safety_margin_max"] == 0.5
+    assert "fcf_year_weights" not in config["valuation_models"]
 
 
 def test_parameter_metadata_keeps_scores_counts_and_multipliers_as_raw_numbers() -> None:
@@ -59,6 +67,12 @@ def test_all_visible_parameter_copy_is_chinese_specific_and_uniquely_named() -> 
     assert all("影响新生成运行的统一配置参数" not in description for description in descriptions)
 
     by_path = {item["path"]: item for item in metadata}
+    assert "现金流与利润正常化" in by_path[
+        "valuation_models.normalization_year_weights.0"
+    ]["label"]
+    assert "所有者盈余" in by_path[
+        "valuation_models.normalization_year_weights.0"
+    ]["description"]
     assert by_path["analyst_engine.feature_adjustments.cash_flow_quality"]["label"] == (
         "存在经营现金流数据的质量视角加分"
     )
@@ -73,7 +87,7 @@ def test_all_visible_parameter_copy_is_chinese_specific_and_uniquely_named() -> 
         "不是增长率上限" in by_path["valuation_models.permanent_loss_optimistic_cap"]["description"]
     )
     assert (
-        "32 条贡献累加"
+        "线性投影"
         in by_path["valuation_rule_matrix.safety_margin_additions.warn"]["description"]
     )
 

@@ -280,7 +280,7 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
     assert payload["run_type"] == "analyst_view"
     assert payload["analyst_profile"] == "buffett"
     assert payload["run_version"] == "008_v1"
-    assert payload["prompt_version"] == "analyst_view_v4"
+    assert payload["prompt_version"] == "analyst_view_v5"
     assert payload["is_latest"] is True
     assert payload["confidence"] == payload["result"]["confidence"]
     assert payload["result"]["overview"] == "现金流质量较好，但证据仍需补充。"
@@ -307,11 +307,11 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
         run = session.get(AnalysisRun, payload["id"])
 
     assert run is not None
+    assert run.input_snapshot["source_boundary"]["allowed_actions"] == ["web_search"]
     assert run.input_snapshot["source_boundary"]["disallowed_actions"] == [
-        "web_search",
-        "data_collection",
-        "third_party_fetch",
+        "persistent_web_collection"
     ]
+    assert "live_web_search" in run.input_snapshot["source_boundary"]["allowed_sources"]
     assert run.input_snapshot["source_boundary"]["source_aliases"]["evidence"] == (
         "external_evidence"
     )

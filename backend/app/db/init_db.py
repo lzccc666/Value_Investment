@@ -79,6 +79,7 @@ ADDITIONAL_A_SHARE_SEEDS: list[CompanySeed] = [
     _a_share_seed("300760.SZ", "SZSE", "迈瑞医疗", "医疗器械", ["医疗", "器械"]),
     _a_share_seed("000538.SZ", "SZSE", "云南白药", "中药", ["医药", "消费"]),
     _a_share_seed("600196.SH", "SSE", "复星医药", "医药", ["医药", "医疗"]),
+    _a_share_seed("002832.SZ", "SZSE", "比音勒芬", "服装", ["服装", "消费", "高端品牌"]),
 ]
 
 REAL_COMPANY_SEEDS: list[CompanySeed] = [

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 DISPLAY_TIME_ZONE = timezone(timedelta(hours=8), "Asia/Shanghai")
 PriceDecisionRunStatus = Literal["active", "deleted"]
@@ -12,13 +12,6 @@ PriceDecisionRunStatus = Literal["active", "deleted"]
 class PriceDecisionCreateRequest(BaseModel):
     valuation_run_id: int | None = Field(default=None, ge=1)
     safety_margin_override: float | None = None
-
-    @field_validator("safety_margin_override")
-    @classmethod
-    def validate_safety_margin_override(cls, value: float | None) -> float | None:
-        if value is not None and not 0.0 <= value <= 1.0:
-            raise ValueError("用户覆盖安全边际必须位于 0%-100%。")
-        return value
 
 
 class PriceDecisionRunRead(BaseModel):

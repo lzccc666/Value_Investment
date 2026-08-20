@@ -84,11 +84,18 @@ def test_company_list_returns_seed_companies(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["total"] >= 61
+    assert payload["total"] >= 62
     assert payload["limit"] == 100
     assert payload["offset"] == 0
     tickers = {item["ticker"] for item in payload["items"]}
-    assert {"600519.SH", "600941.SH", "688981.SH", "00700.HK", "AAPL.US"}.issubset(tickers)
+    assert {
+        "600519.SH",
+        "600941.SH",
+        "688981.SH",
+        "002832.SZ",
+        "00700.HK",
+        "AAPL.US",
+    }.issubset(tickers)
     assert "00941.HK" not in tickers
     assert not {"VI0001", "VI0002", "VI0003"} & tickers
 

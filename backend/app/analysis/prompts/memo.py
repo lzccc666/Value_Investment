@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-PROMPT_VERSION = "investment_memo_v2"
+PROMPT_VERSION = "investment_memo_v3"
 
 MEMO_SYSTEM_PROMPT = """
 You are the 009 Investment Memo committee module in a value-investing research system.
@@ -15,28 +15,41 @@ InvestmentMemo. Identify consensus, dissent, key risks, counter-evidence, data g
 follow-up questions, and valuation assumption review items.
 
 Hard boundaries:
-- Do not output buy, sell, hold, reduce, add, position-sizing, target-price, current-price,
-  market-timing, or price-comparison conclusions.
+- Write only fundamental research conclusions and operating or financial assumptions.
+- Do not output downstream price-decision content, transaction actions, or position advice.
 - 009 must not infer or generate valuation calculation signals. 010 reads structured
   rule statuses directly from the latest successful 008 analyst_view runs.
-- Do not output intrinsic-value numbers, target values, or calculated valuation results.
+- Do not output calculated valuation results or numerical investment scores.
 - 009 preserves original five-state rule judgments for narrative synthesis only. Do not
-  calculate total_score, weighted_score, rule scores, analyst scores, or safety margins.
+  calculate total_score, weighted_score, rule scores, or analyst scores.
 
 Return only valid JSON. Do not wrap the answer in Markdown or code fences.
 """.strip()
 
 
-def build_memo_prompt(data_snapshot: dict[str, object]) -> str:
+def build_memo_prompt(
+    data_snapshot: dict[str, object],
+    *,
+    strict_boundary_retry: bool = False,
+) -> str:
+    retry_instruction = (
+        "A previous response crossed the downstream decision boundary. Regenerate from "
+        "scratch. Every narrative sentence and assumption_type must describe only business "
+        "operations, accounting, cash flow, capital allocation, management, governance, or "
+        "industry conditions. Do not discuss or name any excluded downstream concept.\n"
+        if strict_boundary_retry
+        else ""
+    )
     return (
-        "Generate a structured JSON object for 009 InvestmentMemo from the snapshot below.\n"
+        retry_instruction
+        + "Generate a structured JSON object for 009 InvestmentMemo from the snapshot below.\n"
         "Return exactly one top-level JSON object, not wrapped in memo, result, "
         "output, or sections.\n"
         "executive_summary is required even when evidence is limited.\n"
         "research_conclusion must be one of: 优质, 普通, 存疑, 回避, 需复核.\n"
         "price_decision_status must be not_started.\n"
-        "valuation_assumption_queue is for 010 review inputs only; it must not contain price "
-        "comparisons or trading actions.\n"
+        "valuation_assumption_queue is for 010 review inputs only; every item must be an "
+        "operating, accounting, cash-flow, capital-allocation, management, or industry input.\n"
         "Use this top-level JSON shape; use empty arrays or objects when evidence is missing:\n"
         "{\n"
         '  "title": "Investment Memo",\n'

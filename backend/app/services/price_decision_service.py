@@ -307,10 +307,13 @@ def _read_valuation_safety_margin(valuation_run: ValuationRun) -> float:
         raise PriceDecisionInputError(
             "该 010 估值没有冻结动态安全边际，请使用完整 8 位分析师结果重新生成 010。"
         )
-    minimum = float(parameter_value("price_decision.safety_margin_min", 0.0))
-    maximum = float(parameter_value("price_decision.safety_margin_max", 1.0))
+    minimum = float(parameter_value("price_decision.safety_margin_min", 0.1))
+    maximum = float(parameter_value("price_decision.safety_margin_max", 0.5))
     if not minimum <= suggested_margin <= maximum:
-        raise PriceDecisionInputError("绑定 010 的动态安全边际超出 0%-100%，请重新生成 010。")
+        raise PriceDecisionInputError(
+            f"绑定 010 的动态安全边际超出 {_margin_range_label(minimum, maximum)}，"
+            "请重新生成 010。"
+        )
     return suggested_margin
 
 
@@ -327,11 +330,17 @@ def _validate_margin_override(value: float | None) -> float | None:
     if value is None:
         return None
     normalized = _finite_number(value)
-    minimum = float(parameter_value("price_decision.safety_margin_min", 0.0))
-    maximum = float(parameter_value("price_decision.safety_margin_max", 1.0))
+    minimum = float(parameter_value("price_decision.safety_margin_min", 0.1))
+    maximum = float(parameter_value("price_decision.safety_margin_max", 0.5))
     if normalized is None or not minimum <= normalized <= maximum:
-        raise PriceDecisionInputError("用户覆盖安全边际必须位于 0%-100%。")
+        raise PriceDecisionInputError(
+            f"用户覆盖安全边际必须位于 {_margin_range_label(minimum, maximum)}。"
+        )
     return normalized
+
+
+def _margin_range_label(minimum: float, maximum: float) -> str:
+    return f"{minimum:.0%}-{maximum:.0%}"
 
 
 def _finite_number(value: object) -> float | None:

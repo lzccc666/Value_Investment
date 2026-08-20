@@ -176,8 +176,8 @@ _DEFAULT_CONFIG: dict[str, object] = {
             "fail": 0.030,
         },
         "safety_margin_analyst_scale": 8.0,
-        "safety_margin_min": 0.0,
-        "safety_margin_max": 1.0,
+        "safety_margin_min": 0.1,
+        "safety_margin_max": 0.5,
         "confidence_weight": 0.50,
         "profile_fit_weight": 0.50,
         "weight_exponent": 2.0,
@@ -193,7 +193,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
     },
     "valuation_models": {
         "forecast_years": 5,
-        "fcf_year_weights": [0.50, 0.30, 0.20],
+        "normalization_year_weights": [0.50, 0.30, 0.20],
         "fcf_profit_cap": 1.30,
         "fcf_profit_weak": 0.60,
         "growth_source_priority": [
@@ -215,7 +215,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
         "financial_discount_max": 0.14,
         "base_terminal_growth": 0.02,
         "discount_terminal_gap": 0.01,
-        "analyst_impact_scale": 1.50,
+        "analyst_impact_scale": 2.0,
         "gap_penalties": {"high": 0.25, "medium": 0.12, "low": 0.05, "pack": 0.04},
         "gap_penalty_cap": 1.0,
         "composite_weights": {
@@ -318,8 +318,8 @@ _DEFAULT_CONFIG: dict[str, object] = {
         "sensitivity": {"growth_step": 0.02, "discount_step": 0.01},
     },
     "price_decision": {
-        "safety_margin_min": 0.0,
-        "safety_margin_max": 1.0,
+        "safety_margin_min": 0.1,
+        "safety_margin_max": 0.5,
         "buy_price_scenario": "base",
     },
 }

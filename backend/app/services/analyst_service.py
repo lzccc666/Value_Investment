@@ -537,6 +537,7 @@ def run_company_analyst_view(
                 temperature=float(
                     parameter_value("analyst_engine.model_temperatures.analyst", 0.2)
                 ),
+                enable_web_search=True,
             )
             output = _apply_fact_ledger_overrides(output, data_snapshot)
             output = _apply_financial_unit_corrections(output, data_snapshot)
@@ -749,8 +750,14 @@ def build_company_analysis_snapshot(
                 "external_evidence",
                 "financial_statements",
                 "announcements",
+                "live_web_search",
             ],
-            "disallowed_actions": ["web_search", "data_collection", "third_party_fetch"],
+            "allowed_actions": ["web_search"],
+            "disallowed_actions": ["persistent_web_collection"],
+            "web_search_policy": (
+                "分析师可按需搜索公开基本面信息；结果仅用于本次模型上下文，"
+                "不经过 007、不写入 Evidence，也不要求最终结果展示网址。"
+            ),
             "input_policy": "008-010 保持 price-blind，行情、估值倍数和价格敏感证据不得进入快照。",
             "output_policy": "只输出基本面规则判断，不输出价格、交易动作或仓位建议。",
             "allowed_outputs": [

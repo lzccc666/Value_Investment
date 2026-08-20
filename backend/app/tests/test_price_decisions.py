@@ -94,12 +94,13 @@ def test_override_margin_is_saved_separately_and_changes_price_status(tmp_path: 
     assert item["current_margin"] == pytest.approx(0.05)
     assert item["price_status"] == "低于内在价值但安全边际不足"
 
-    invalid = _make_client(session_factory).post(
-        f"/api/companies/{company.id}/price-decision-runs",
-        json={"safety_margin_override": 1.01},
-    )
-    assert invalid.status_code == 422
-    assert "0%-100%" in invalid.text
+    for invalid_margin in (0.05, 0.51):
+        invalid = _make_client(session_factory).post(
+            f"/api/companies/{company.id}/price-decision-runs",
+            json={"safety_margin_override": invalid_margin},
+        )
+        assert invalid.status_code == 400
+        assert "10%-50%" in invalid.text
 
 
 @pytest.mark.parametrize(

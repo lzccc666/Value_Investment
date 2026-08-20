@@ -15,6 +15,8 @@ from app.main import create_app
 from app.services.valuation_service import (
     ValuationInputError,
     _calculate_owner_earnings,
+    _derive_assumptions,
+    _derive_normalized_financial_bases,
     build_valuation_snapshot,
     create_draft_valuation_run,
     recalculate_valuation_run,
@@ -513,6 +515,124 @@ def test_short_history_uses_available_annual_fcf_average(tmp_path: Path) -> None
     assert "normalized_free_cash_flow_history" in gap_fields
 
 
+def test_shared_annual_normalization_calculates_owner_earnings_per_period() -> None:
+    result = _derive_normalized_financial_bases(
+        _financial_pack_from_series(
+            latest_period="2025A",
+            series={
+                "net_profit": {"2025A": 100.0, "2024A": 80.0, "2023A": 60.0},
+                "free_cash_flow": {"2025A": 80.0, "2024A": 60.0, "2023A": 50.0},
+                "capital_expenditure": {"2025A": 20.0, "2024A": 15.0, "2023A": 10.0},
+                "depreciation_and_amortization": {"2025A": 5.0, "2024A": 4.0, "2023A": 3.0},
+                "working_capital_change": {"2025A": 3.0, "2024A": -2.0, "2023A": 1.0},
+            },
+        )
+    )
+
+    assert result["method"] == "weighted_annual_3y"
+    assert result["year_weights"] == pytest.approx([0.50, 0.30, 0.20])
+    assert result["metrics"]["net_profit"]["value"] == pytest.approx(86.0)
+    assert result["metrics"]["free_cash_flow"]["value"] == pytest.approx(68.0)
+    assert result["metrics"]["owner_earnings"]["value"] == pytest.approx(73.2)
+    period_owners = [
+        item["owner_earnings"]["value"] for item in result["audit"]["periods"]
+    ]
+    assert period_owners == pytest.approx([85.0, 67.0, 53.0])
+
+
+def test_shared_annual_normalization_renormalizes_two_year_history() -> None:
+    result = _derive_normalized_financial_bases(
+        _financial_pack_from_series(
+            latest_period="2025A",
+            series={
+                "net_profit": {"2025A": 100.0, "2024A": 80.0},
+                "free_cash_flow": {"2025A": 80.0, "2024A": 60.0},
+                "capital_expenditure": {"2025A": 20.0, "2024A": 15.0},
+            },
+        )
+    )
+
+    assert result["method"] == "weighted_annual_available"
+    assert result["year_weights"] == pytest.approx([0.625, 0.375])
+    assert result["metrics"]["net_profit"]["value"] == pytest.approx(92.5)
+    assert "62.5%/37.5%" in result["warnings"][-1]
+
+
+def test_shared_annual_normalization_one_year_is_low_confidence() -> None:
+    result = _derive_normalized_financial_bases(
+        _financial_pack_from_series(
+            latest_period="2025A",
+            series={
+                "net_profit": {"2025A": 100.0},
+                "free_cash_flow": {"2025A": 80.0},
+                "capital_expenditure": {"2025A": 20.0},
+            },
+        )
+    )
+
+    assert result["method"] == "latest_annual_adjusted"
+    assert result["confidence"] == "low"
+    assert result["metrics"]["owner_earnings"]["value"] == pytest.approx(80.0)
+
+
+def test_shared_normalization_refuses_unannualized_interim_without_ttm() -> None:
+    result = _derive_normalized_financial_bases(
+        _financial_pack_from_series(
+            latest_period="2026H1",
+            series={
+                "net_profit": {"2026H1": 100.0},
+                "free_cash_flow": {"2026H1": 80.0},
+            },
+        )
+    )
+
+    assert result["method"] is None
+    assert result["values"]["net_profit"] is None
+    assert result["values"]["free_cash_flow"] is None
+    assert "不使用未年度化中报或季报" in result["warnings"][-1]
+
+
+def test_fcf_cap_audits_same_normalized_profit_before_and_after_cap() -> None:
+    result = _derive_normalized_financial_bases(
+        _financial_pack_from_series(
+            latest_period="2025A",
+            series={
+                "net_profit": {"2025A": 100.0, "2024A": 100.0, "2023A": 100.0},
+                "free_cash_flow": {"2025A": 200.0, "2024A": 200.0, "2023A": 200.0},
+                "capital_expenditure": {"2025A": 20.0, "2024A": 20.0, "2023A": 20.0},
+            },
+        )
+    )
+
+    fcf_metric = result["metrics"]["free_cash_flow"]
+    assert fcf_metric["value"] == pytest.approx(130.0)
+    assert fcf_metric["fcf_to_net_profit_before_cap"] == pytest.approx(2.0)
+    assert fcf_metric["fcf_to_net_profit"] == pytest.approx(1.3)
+    conversion = result["audit"]["fcf_conversion"]
+    assert conversion["matched_normalized_net_profit"] == pytest.approx(100.0)
+    assert conversion["normalized_fcf_before_cap"] == pytest.approx(200.0)
+    assert conversion["normalized_fcf_after_cap"] == pytest.approx(130.0)
+    assert conversion["fcf_to_net_profit_after_cap"] == pytest.approx(1.3)
+
+
+def test_growth_basis_exposes_source_clamp_and_analyst_delta() -> None:
+    assumptions = _derive_assumptions(
+        {"financial_trends": {"revenue_cagr_3y": 0.04}},
+        {},
+        [],
+        [],
+    )
+
+    growth_basis = assumptions["growth_basis"]
+    assert growth_basis["raw_growth_rate"] == pytest.approx(0.04)
+    assert growth_basis["growth_source"] == "revenue_cagr_3y"
+    assert growth_basis["clamped_financial_base_growth_rate"] == pytest.approx(0.04)
+    assert growth_basis["final_base_cash_flow_growth_rate"] == pytest.approx(
+        growth_basis["clamped_financial_base_growth_rate"]
+        + growth_basis["analyst_delta_cash_flow_growth_rate"]
+    )
+
+
 def test_010_uses_008_rule_matrix_and_ignores_009_signal_pack(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     with session_factory() as session:
@@ -551,7 +671,7 @@ def test_010_uses_008_rule_matrix_and_ignores_009_signal_pack(tmp_path: Path) ->
     assert adjustment["source"] == "latest_successful_008_analyst_view_runs"
     assert adjustment["dimension_scores"]["permanent_loss_risk"] < 0
     assert adjustment["risk_score"] > 0
-    assert adjustment["analyst_parameter_impact_scale"] == 1.5
+    assert adjustment["analyst_parameter_impact_scale"] == 2.0
     assert "analyst_method_weight_impact_scale" not in adjustment
     assert "method_multipliers" not in adjustment
     unscaled_delta_discount = (
@@ -559,7 +679,9 @@ def test_010_uses_008_rule_matrix_and_ignores_009_signal_pack(tmp_path: Path) ->
         + 0.030 * adjustment["risk_score"]
         + 0.012 * adjustment["dimension_disagreement_avg"]
     )
-    assert adjustment["delta_discount"] == pytest.approx(1.5 * unscaled_delta_discount)
+    assert adjustment["delta_discount"] == pytest.approx(
+        adjustment["analyst_parameter_impact_scale"] * unscaled_delta_discount
+    )
     assert any(
         item["rule_id"] == "permanent_loss_resilience" and item["status_score"] == -2.0
         for item in adjustment["rule_impacts"]
@@ -627,11 +749,11 @@ def test_analyst_weight_uses_confidence_and_profile_fit_only(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("status", "expected_margin"),
     [
-        ("pass", 0.0),
-        ("neutral", 0.288),
-        ("unknown", 0.384),
-        ("warn", 0.512),
-        ("fail", 0.96),
+        ("pass", 0.1),
+        ("neutral", 0.22),
+        ("unknown", 0.26),
+        ("warn", 0.1 + (0.512 / 0.96) * 0.4),
+        ("fail", 0.5),
     ],
 )
 def test_all_32_rules_compute_and_dynamic_margin_hits_policy_endpoints(
@@ -657,6 +779,11 @@ def test_all_32_rules_compute_and_dynamic_margin_hits_policy_endpoints(
     assert len(snapshot["dynamic_safety_margin_contributions"]) == 32
     assert snapshot["dynamic_safety_margin"] == pytest.approx(expected_margin)
     assert run.results["dynamic_safety_margin"] == pytest.approx(expected_margin)
+    policy = snapshot["dynamic_safety_margin_policy"]
+    assert policy["raw_minimum"] == pytest.approx(0.0)
+    assert policy["raw_maximum"] == pytest.approx(0.96)
+    assert policy["minimum"] == pytest.approx(0.1)
+    assert policy["maximum"] == pytest.approx(0.5)
 
 
 def test_010_requires_all_eight_latest_successful_complete_analyst_runs(tmp_path: Path) -> None:
@@ -1029,6 +1156,21 @@ def _seed_financials(
             )
         )
     session.commit()
+
+
+def _financial_pack_from_series(*, latest_period: str, series: dict[str, dict[str, float]]) -> dict:
+    return {
+        "latest_period": latest_period,
+        "financial_facts": {
+            "series": {
+                field: [
+                    {"period": period, "value": value}
+                    for period, value in values.items()
+                ]
+                for field, values in series.items()
+            }
+        },
+    }
 
 
 def _seed_memo(

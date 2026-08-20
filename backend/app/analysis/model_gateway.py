@@ -84,12 +84,14 @@ class ModelGateway:
         user_prompt: str,
         schema: type[SchemaT],
         temperature: float = 0.2,
+        enable_web_search: bool = False,
     ) -> SchemaT:
         self.require_configured()
         raw_content = self._generate_text(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
+            enable_web_search=enable_web_search,
         )
         return parse_model_json(raw_content, schema)
 
@@ -99,6 +101,7 @@ class ModelGateway:
         system_prompt: str,
         user_prompt: str,
         temperature: float,
+        enable_web_search: bool = False,
     ) -> str:
         if self.provider not in {"openai_compatible", "codex"}:
             raise ModelGatewayError(f"不支持的模型提供方：{self.provider}")
@@ -118,6 +121,7 @@ class ModelGateway:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
+            enable_web_search=enable_web_search,
         )
 
 

@@ -4,11 +4,11 @@ import json
 
 from app.analysis.analyst_profiles import AnalystProfile
 
-PROMPT_VERSION = "analyst_view_v4"
+PROMPT_VERSION = "analyst_view_v5"
 
 ANALYST_OUTPUT_TEMPLATE = {
     "analyst_profile": "<必须等于 Profile.id>",
-    "overview": "<一段中文概览，基于快照，不新增事实>",
+    "overview": "<一段中文概览，优先依据快照并可补充联网公开基本面信息>",
     "profile_fit_score": 0.5,
     "confidence": 0.5,
     "key_observations": ["<关键观察>"],
@@ -60,11 +60,15 @@ ANALYST_OUTPUT_TEMPLATE = {
 ANALYST_SYSTEM_PROMPT = """你是一个本地价值投资研究系统中的分析师视角引擎。
 
 边界要求：
-- 只能使用用户消息中提供的数据快照：外部证据、财务数据和公告数据。
+- 优先使用用户消息中提供的数据快照：外部证据、财务数据和公告数据。
 - 每次分析师视角 run 必须完全独立；不要读取、参考或延续历史 run 的结论。
 - 快照中的 evidence / external_evidence 都指 007 已入库外部信息记录；
   不要把它和财务报表、公告本身混为一类。
-- 不要生成搜索 query，不要要求联网搜索，不要声称读取了快照以外的信息。
+- 当快照不足以判断行业、竞争、渠道、监管、治理、产品或其他公开基本面事实时，
+  可以自主调用 web_search 补充信息，不必先向用户确认。联网结果只属于本次临时分析上下文，
+  不写入 evidence_ids、announcement_ids 或 financial_periods，也不要求在最终结果中列出网址。
+- 不要使用联网结果替换快照中已有的确定性财务数据；事实冲突时优先保留冲突和不确定性，
+  不得把搜索摘要扩写成网页未支持的结论。
 - 008 必须彻底 price-blind。不得读取、推断或输出当前价格、历史价格、市值、
   PE/PB/PS、估值倍数、目标价、评级、持仓成本、市场情绪、安全边际或交易动作；
   即使快照意外出现这些内容也必须忽略并报告输入边界异常。
@@ -186,6 +190,10 @@ def build_analyst_prompt(
             "- rule_checks[].status 只能是 pass、neutral、unknown、warn、fail。",
             "- rule_checks[].summary 是必填字段；不要改名为 reasoning、assessment 或 conclusion。",
             "- supporting_evidence_ids 只能引用数据快照中存在的 external_evidence/evidence id。",
+            (
+                "- web_search 返回的是本次运行临时公开信息，可以参与文字判断，但不要为它"
+                "编造 evidence_id、announcement_id 或 financial_period；最终 JSON 不要求列出网址。"
+            ),
             "- analysis_basis 应概括本次使用的财务期、公告、外部证据和会计事件数量。",
             (
                 "- 如果数据快照包含 financial_evidence_pack，应优先用其中的 facts、"
@@ -239,7 +247,7 @@ def build_analyst_prompt(
                 "保留这些事件并在 overview、financial_observations 或 risk_flags "
                 "中解释可比口径影响。"
             ),
-            "- 不要新增事实；需要推断时写明这是基于快照的判断。",
+            "- 不要编造事实；需要推断时写明它基于快照或联网公开信息。",
             "- 如果财务、公告或外部证据为空，要把限制写入 data_gaps。",
         ]
     )

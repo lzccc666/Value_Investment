@@ -232,6 +232,41 @@ const fixedAnalystProfiles = [
   ])
 ];
 
+function makeSuccessfulAnalystRun(profile: (typeof fixedAnalystProfiles)[number], id: number) {
+  return {
+    id,
+    company_id: 1,
+    run_type: "analyst_view" as const,
+    analyst_profile: profile.id,
+    run_version: "008_v1",
+    model_name: "fake-model",
+    prompt_version: "analyst_view_v4",
+    data_snapshot_hash: `hash-${profile.id}`,
+    result: {
+      analyst_profile: profile.id,
+      overview: `${profile.display_name}视角已生成。`,
+      profile_fit_score: 0.7,
+      confidence: 0.75,
+      key_observations: [],
+      rule_checks: [],
+      supporting_evidence_ids: [],
+      financial_observations: [],
+      announcement_observations: [],
+      risk_flags: [],
+      counter_evidence: [],
+      valuation_assumption_suggestions: [],
+      data_gaps: [],
+      follow_up_questions: []
+    },
+    confidence: 0.75,
+    parent_run_id: null,
+    is_latest: true,
+    user_note: null,
+    status: "success" as const,
+    created_at: "2026-08-09T00:30:00Z"
+  };
+}
+
 vi.mock("../services/api", () => ({
   getHealth: mocks.getHealth,
   getCompanies: mocks.getCompanies,
@@ -2117,7 +2152,7 @@ describe("App", () => {
     expect(screen.queryByText(/仓位建议|强制卖出/)).not.toBeInTheDocument();
   });
 
-  it("allows a 0%-100% margin override while keeping the suggested margin visible", async () => {
+  it("allows a 10%-50% margin override while keeping the suggested margin visible", async () => {
     const valuation = makeValuationRun();
     const first = makePriceDecisionRun();
     const overridden = makePriceDecisionRun({
@@ -2145,6 +2180,11 @@ describe("App", () => {
     expect(screen.getByText("系统建议值")).toBeInTheDocument();
     expect(screen.getAllByText("15.50%").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByLabelText("手动覆盖安全边际"));
+    fireEvent.change(screen.getByLabelText("覆盖安全边际（%）"), {
+      target: { value: "5" }
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("覆盖安全边际必须位于 10%-50%。");
+    expect(screen.getByRole("button", { name: "重新计算" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("覆盖安全边际（%）"), {
       target: { value: "20" }
     });
@@ -3457,7 +3497,7 @@ describe("App", () => {
     expect(await screen.findByText("利润和现金流匹配度较好。")).toBeInTheDocument();
   });
 
-  it("generates all analyst views and refreshes latest runs", async () => {
+  it("generates only analyst views without a successful run", async () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
@@ -3542,13 +3582,15 @@ describe("App", () => {
       ]
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "生成全部" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成缺失 (7)" }));
 
     await waitFor(() => {
       expect(mocks.runCompanyAnalysisBatch).toHaveBeenCalledWith(
         1,
         expect.objectContaining({
-          analyst_profiles: fixedAnalystProfiles.map((profile) => profile.id),
+          analyst_profiles: fixedAnalystProfiles
+            .filter((profile) => profile.id !== "buffett")
+            .map((profile) => profile.id),
           signal: expect.any(AbortSignal)
         })
       );
@@ -3556,6 +3598,36 @@ describe("App", () => {
 
     expect(await screen.findByText("已生成 2 个视角，失败 0 个")).toBeInTheDocument();
     expect(await screen.findByText("彼得林奇视角已生成。")).toBeInTheDocument();
+  });
+
+  it("does not send an empty batch when every analyst already has a successful run", async () => {
+    mocks.getLatestCompanyAnalysisRuns.mockImplementation(
+      (_companyId: number, params: { status?: string } = {}) =>
+        Promise.resolve({
+          company_id: 1,
+          run_type: "analyst_view",
+          analyst_profile: null,
+          status: params.status ?? null,
+          items:
+            params.status === "success"
+              ? fixedAnalystProfiles.map((profile, index) =>
+                  makeSuccessfulAnalystRun(profile, 100 + index)
+                )
+              : []
+        })
+    );
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Analyst Views");
+
+    const completedButton = await screen.findByRole("button", { name: "均已生成" });
+    expect(completedButton).toBeDisabled();
+    expect(mocks.runCompanyAnalysisBatch).not.toHaveBeenCalled();
   });
 
   it("shows the latest failed analyst run reason", async () => {
@@ -3650,7 +3722,7 @@ describe("App", () => {
       await screen.findByRole("heading", { name: "分析师视角", level: 3 })
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "生成全部" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成缺失 (7)" }));
 
     expect(
       await screen.findByText(/已生成 1 个视角，失败 1 个；彼得林奇：ModelGatewayError/)

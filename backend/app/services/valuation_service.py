@@ -418,7 +418,7 @@ def _calculate_valuation_payload(
                 "dynamic_safety_margin_policy", {}
             ),
             "analyst_weight_snapshot": analyst_snapshot.get("analyst_weights", []),
-            "dynamic_safety_margin_formula_version": "010_dynamic_safety_margin_v1",
+            "dynamic_safety_margin_formula_version": "010_dynamic_safety_margin_v2",
             "next_step": (
                 "参数已确认，估值结果已生成。" if user_confirmed else "请先确认或调整模型建议参数。"
             ),
@@ -437,46 +437,56 @@ def _derive_valuation_inputs(financial_pack: dict[str, object]) -> dict[str, obj
     latest = _dict(facts.get("latest"))
     metrics = _dict(financial_pack.get("financial_metrics"))
     profitability = _dict(metrics.get("profitability"))
-    cash_quality = _dict(financial_pack.get("cash_flow_quality"))
     balance_sheet = _dict(financial_pack.get("balance_sheet_adjustment"))
     capital_allocation = _dict(financial_pack.get("capital_allocation"))
     trends = _dict(financial_pack.get("financial_trends"))
-    normalized_bases = _derive_normalized_statement_bases(financial_pack)
-    normalized_fcf = _derive_normalized_free_cash_flow(financial_pack)
-    normalized_base_values = _dict(normalized_bases.get("values"))
+    normalized = _derive_normalized_financial_bases(financial_pack)
+    normalized_base_values = _dict(normalized.get("values"))
+    normalized_metrics = _dict(normalized.get("metrics"))
+    normalized_fcf = _dict(normalized_metrics.get("free_cash_flow"))
+    normalized_profit = _dict(normalized_metrics.get("net_profit"))
+    normalized_owner_earnings = _dict(normalized_metrics.get("owner_earnings"))
     return {
-        "base_revenue": _num(normalized_base_values.get("revenue")) or _num(latest.get("revenue")),
-        "base_gross_profit": _num(normalized_base_values.get("gross_profit"))
-        or _num(latest.get("gross_profit")),
-        "base_net_profit": _num(normalized_base_values.get("net_profit"))
-        or _num(latest.get("net_profit")),
-        "base_deducted_net_profit": _num(normalized_base_values.get("deducted_net_profit"))
-        or _num(latest.get("deducted_net_profit")),
-        "base_operating_cash_flow": _num(normalized_base_values.get("operating_cash_flow"))
-        or _num(cash_quality.get("operating_cash_flow"))
-        or _num(latest.get("operating_cash_flow")),
-        "base_free_cash_flow": normalized_fcf["value"],
-        "base_period_method": normalized_bases["method"],
-        "base_period_type": normalized_bases["period_type"],
-        "base_source_periods": normalized_bases["source_periods"],
+        "base_revenue": normalized_base_values.get("revenue"),
+        "base_gross_profit": normalized_base_values.get("gross_profit"),
+        "base_net_profit": normalized_profit.get("value"),
+        "base_deducted_net_profit": normalized_metrics.get("deducted_net_profit", {}).get("value")
+        if isinstance(normalized_metrics.get("deducted_net_profit"), dict)
+        else None,
+        "base_operating_cash_flow": normalized_base_values.get("operating_cash_flow"),
+        "base_free_cash_flow": normalized_fcf.get("value"),
+        "base_period_method": normalized.get("method"),
+        "base_period_type": normalized.get("period_type"),
+        "base_source_periods": normalized.get("source_periods", []),
         "base_free_cash_flow_source": "normalized_free_cash_flow",
-        "normalized_free_cash_flow": normalized_fcf["value"],
-        "normalization_method": normalized_fcf["method"],
-        "normalization_confidence": normalized_fcf["confidence"],
-        "latest_period_type": normalized_fcf["latest_period_type"],
-        "latest_period_used_as_dcf_base": normalized_fcf["latest_period_used_as_dcf_base"],
-        "normalization_adjustments": normalized_fcf["adjustments"],
-        "normalization_warnings": normalized_fcf["warnings"],
-        "normalization_source_periods": normalized_fcf["source_periods"],
-        "normalized_fcf_to_net_profit": normalized_fcf["fcf_to_net_profit"],
-        "capital_expenditure": _num(normalized_base_values.get("capital_expenditure"))
-        or _num(capital_allocation.get("capital_expenditure"))
-        or _num(latest.get("capital_expenditure")),
-        "depreciation_and_amortization": _num(
-            normalized_base_values.get("depreciation_and_amortization")
-        )
-        or _num(latest.get("depreciation_and_amortization")),
-        "working_capital_change": _num(normalized_base_values.get("working_capital_change")),
+        "normalized_free_cash_flow": normalized_fcf.get("value"),
+        "normalization_method": normalized.get("method"),
+        "normalization_confidence": normalized_fcf.get("confidence", "low"),
+        "latest_period_type": normalized.get("latest_period_type"),
+        "latest_period_used_as_dcf_base": normalized.get("latest_period_used_as_dcf_base", False),
+        "normalization_adjustments": normalized_fcf.get("adjustments", []),
+        "normalization_warnings": normalized.get("warnings", []),
+        "normalization_source_periods": normalized_fcf.get("source_periods", []),
+        "normalized_fcf_to_net_profit": normalized_fcf.get("fcf_to_net_profit"),
+        "net_profit_normalization_method": normalized_profit.get("method"),
+        "net_profit_source_periods": normalized_profit.get("source_periods", []),
+        "net_profit_normalization_confidence": normalized_profit.get("confidence", "low"),
+        "owner_earnings_base": normalized_owner_earnings.get("value"),
+        "owner_earnings_normalization_method": normalized_owner_earnings.get("method"),
+        "owner_earnings_source_periods": normalized_owner_earnings.get("source_periods", []),
+        "owner_earnings_normalization_confidence": normalized_owner_earnings.get(
+            "confidence", "low"
+        ),
+        "owner_earnings_normalization": normalized_owner_earnings,
+        "free_cash_flow_normalization": normalized_fcf,
+        "net_profit_normalization": normalized_profit,
+        "normalization_audit": normalized.get("audit", {}),
+        "normalization_year_weights": normalized.get("year_weights", []),
+        "capital_expenditure": normalized_base_values.get("capital_expenditure"),
+        "depreciation_and_amortization": normalized_base_values.get(
+            "depreciation_and_amortization"
+        ),
+        "working_capital_change": normalized_base_values.get("working_capital_change"),
         "cash_and_equivalents": _num(balance_sheet.get("cash_and_equivalents"))
         or _num(latest.get("cash_and_equivalents")),
         "interest_bearing_debt": _num(balance_sheet.get("interest_bearing_debt"))
@@ -485,9 +495,7 @@ def _derive_valuation_inputs(financial_pack: dict[str, object]) -> dict[str, obj
         "shareholders_equity": _num(latest.get("shareholders_equity")),
         "total_assets": _num(latest.get("total_assets")),
         "total_liabilities": _num(latest.get("total_liabilities")),
-        "dividend": _num(normalized_base_values.get("dividend"))
-        or _num(capital_allocation.get("dividend"))
-        or _num(latest.get("dividend")),
+        "dividend": normalized_base_values.get("dividend"),
         "shares_outstanding": _num(capital_allocation.get("shares_outstanding"))
         or _num(latest.get("shares_outstanding")),
         "roe": _num(profitability.get("roe")),
@@ -592,6 +600,7 @@ def _derive_normalized_free_cash_flow(financial_pack: dict[str, object]) -> dict
     latest_period_type = _period_type(latest_period)
     warnings: list[str] = []
     adjustments: list[dict[str, object]] = []
+    normalization_weights = _normalization_year_weights()
 
     fcf_by_period = _series_value_by_period(series, "free_cash_flow")
     profit_by_period = _series_value_by_period(series, "net_profit")
@@ -623,7 +632,7 @@ def _derive_normalized_free_cash_flow(financial_pack: dict[str, object]) -> dict
     elif len(annual_fcf) >= 3:
         value = _weighted_values(
             [item["value"] for item in annual_fcf[:3]],
-            list(parameter_value("valuation_models.fcf_year_weights", [0.50, 0.30, 0.20]))[:3],
+            normalization_weights[:3],
         )
         method = "weighted_annual_3y"
         confidence = "high"
@@ -631,7 +640,7 @@ def _derive_normalized_free_cash_flow(financial_pack: dict[str, object]) -> dict
     elif len(annual_fcf) == 2:
         value = _weighted_values(
             [item["value"] for item in annual_fcf],
-            list(parameter_value("valuation_models.fcf_year_weights", [0.50, 0.30, 0.20]))[:2],
+            normalization_weights[:2],
         )
         method = "weighted_annual_available"
         confidence = "medium"
@@ -708,6 +717,376 @@ def _derive_normalized_free_cash_flow(financial_pack: dict[str, object]) -> dict
         "source_periods": source_periods,
         "fcf_to_net_profit": fcf_to_net_profit,
     }
+
+
+def _derive_normalized_financial_bases(financial_pack: dict[str, object]) -> dict[str, object]:
+    """Build one shared period basis for profit, FCF and owner earnings.
+
+    The selected periods are determined before any aggregation. This prevents an
+    annual-weighted profit from being combined with a single-period capex or
+    working-capital value.
+    """
+    facts = _dict(financial_pack.get("financial_facts"))
+    series = _dict(facts.get("series"))
+    latest_period = _safe_str(financial_pack.get("latest_period"))
+    latest_period_type = _period_type(latest_period)
+    fields = (
+        "revenue",
+        "gross_profit",
+        "net_profit",
+        "deducted_net_profit",
+        "operating_cash_flow",
+        "capital_expenditure",
+        "depreciation_and_amortization",
+        "working_capital_change",
+        "dividend",
+        "free_cash_flow",
+    )
+    values_by_field = {field: _series_value_by_period(series, field) for field in fields}
+    year_weights = _normalization_year_weights()
+    warnings: list[str] = []
+    method: str | None = None
+    period_type = "unknown"
+    source_periods: list[str] = []
+    selected_weights: list[float] = []
+    period_records: list[dict[str, object]] = []
+    normalized_values: dict[str, float | None] = {field: None for field in fields}
+    normalized_values["owner_earnings"] = None
+    metric_confidence = "low"
+
+    ttm_values: dict[str, float | None] = {}
+    if latest_period_type in {"half_year", "quarter"}:
+        ttm_candidates = {
+            field: _derive_ttm_value(values_by_field[field], latest_period, latest_period_type)
+            for field in fields
+        }
+        has_core_ttm = all(
+            ttm_candidates[field] is not None for field in ("net_profit", "free_cash_flow")
+        )
+        if has_core_ttm:
+            method = "ttm_adjusted"
+            period_type = "ttm"
+            metric_confidence = "medium"
+            source_periods = list(ttm_candidates["net_profit"]["source_periods"])
+            ttm_values = {
+                field: (
+                    float(ttm_candidates[field]["value"])
+                    if ttm_candidates[field] is not None
+                    else None
+                )
+                for field in fields
+            }
+            period_records = [
+                {
+                    "period": period,
+                    "weight": None,
+                    "components": {
+                        field: values_by_field[field].get(period) for field in fields
+                    },
+                }
+                for period in source_periods
+            ]
+            normalized_values.update(ttm_values)
+        else:
+            warnings.append("最新中报或季报缺少完整的 FCF 与净利润 TTM 组件，已尝试完整年度口径。")
+
+    if method is None:
+        annual_periods = sorted(
+            set(
+                period
+                for period in values_by_field["net_profit"]
+                if _period_type(period) == "annual"
+            )
+            & {
+                period
+                for period in values_by_field["free_cash_flow"]
+                if _period_type(period) == "annual"
+            },
+            key=lambda period: (_period_year(period) or -1, period),
+            reverse=True,
+        )
+        source_periods = annual_periods[:3]
+        if source_periods:
+            selected_weights = _renormalize_year_weights(year_weights, len(source_periods))
+            method = (
+                "weighted_annual_3y"
+                if len(source_periods) == 3
+                else "latest_annual_adjusted"
+                if len(source_periods) == 1
+                else "weighted_annual_available"
+            )
+            period_type = "annual"
+            metric_confidence = {3: "high", 2: "medium", 1: "low"}[len(source_periods)]
+            period_records = []
+            for period, weight in zip(source_periods, selected_weights, strict=True):
+                components = {field: values_by_field[field].get(period) for field in fields}
+                owner = _owner_earnings_from_components(components)
+                period_records.append(
+                    {
+                        "period": period,
+                        "weight": weight,
+                        "components": components,
+                        "owner_earnings": owner,
+                    }
+                )
+            for field in fields:
+                normalized_values[field] = _weighted_complete_metric(
+                    [record["components"].get(field) for record in period_records],
+                    selected_weights,
+                )
+            owner_values = [record.get("owner_earnings") for record in period_records]
+            normalized_values["owner_earnings"] = _weighted_complete_metric(
+                [
+                    owner.get("value") if isinstance(owner, dict) else None
+                    for owner in owner_values
+                ],
+                selected_weights,
+            )
+            if len(source_periods) == 2:
+                warnings.append("可用完整年度不足三年，已将前两年权重重新归一化为 62.5%/37.5%。")
+            elif len(source_periods) == 1:
+                warnings.append("可用完整年度只有一年，已使用最近完整年度并降低置信度。")
+        else:
+            warnings.append(
+                "没有可用完整年度，且无法构造 TTM；"
+                "不使用未年度化中报或季报作为估值基数。"
+            )
+
+    if method is None:
+        normalized_values = {field: None for field in fields}
+        normalized_values["owner_earnings"] = None
+        metric_confidence = "low"
+
+    owner_components = _owner_earnings_components_for_basis(
+        period_records=period_records,
+        normalized_values=normalized_values,
+        method=method,
+    )
+    normalized_values["owner_earnings"] = owner_components.get("value")
+    if method == "ttm_adjusted":
+        selected_weights = []
+
+    metrics: dict[str, dict[str, object]] = {}
+    for field in fields:
+        metrics[field] = {
+            "value": normalized_values.get(field),
+            "method": method,
+            "source_periods": list(source_periods),
+            "confidence": metric_confidence,
+            "annual_weights": list(selected_weights),
+        }
+    owner_confidence = (
+        metric_confidence if normalized_values.get("owner_earnings") is not None else "low"
+    )
+    metrics["owner_earnings"] = {
+        "value": normalized_values.get("owner_earnings"),
+        "method": method,
+        "source_periods": list(source_periods),
+        "confidence": owner_confidence,
+        "annual_weights": list(selected_weights),
+        "components": owner_components,
+    }
+
+    fcf_value = _num(metrics["free_cash_flow"].get("value"))
+    fcf_value_before_cap = fcf_value
+    profit_value = _num(metrics["net_profit"].get("value"))
+    fcf_adjustments: list[dict[str, object]] = []
+    fcf_to_profit_before_cap: float | None = None
+    fcf_to_profit: float | None = None
+    if fcf_value is not None and profit_value is not None and profit_value > 0:
+        fcf_to_profit_before_cap = fcf_value / profit_value
+        fcf_profit_cap = float(parameter_value("valuation_models.fcf_profit_cap", 1.30))
+        cap = profit_value * fcf_profit_cap
+        if fcf_value > cap:
+            fcf_adjustments.append(
+                {
+                    "type": "cash_conversion_cap",
+                    "from": fcf_value,
+                    "to": cap,
+                    "matched_normalized_net_profit": profit_value,
+                    "fcf_to_net_profit_before_cap": fcf_to_profit_before_cap,
+                    "fcf_to_net_profit_after_cap": fcf_profit_cap,
+                    "source_periods": list(source_periods),
+                    "reason": (
+                        f"正常化 FCF/同口径正常化净利润超过 {fcf_profit_cap:g}，"
+                        "已限制 DCF 基数。"
+                    ),
+                }
+            )
+            fcf_value = cap
+            metrics["free_cash_flow"]["value"] = cap
+            normalized_values["free_cash_flow"] = cap
+            if metric_confidence == "medium":
+                metric_confidence = "low"
+            warnings.append(
+                f"正常化 FCF/同口径正常化净利润超过 {fcf_profit_cap:g}，"
+                "已按同口径净利润设置保守上限。"
+            )
+        fcf_to_profit = fcf_value / profit_value
+        weak_threshold = float(parameter_value("valuation_models.fcf_profit_weak", 0.60))
+        if fcf_to_profit < weak_threshold:
+            warnings.append(
+                f"正常化 FCF/同口径正常化净利润低于 {weak_threshold:g}，"
+                "现金转化偏弱，仅降低置信度。"
+            )
+            metric_confidence = "low"
+    for metric in metrics.values():
+        metric["confidence"] = metric_confidence
+    metrics["free_cash_flow"]["adjustments"] = fcf_adjustments
+    metrics["free_cash_flow"]["value_before_cap"] = fcf_value_before_cap
+    metrics["free_cash_flow"]["value_after_cap"] = fcf_value
+    metrics["free_cash_flow"]["fcf_to_net_profit"] = fcf_to_profit
+    metrics["free_cash_flow"]["fcf_to_net_profit_before_cap"] = (
+        fcf_to_profit_before_cap
+        if fcf_value is not None and profit_value is not None and profit_value > 0
+        else None
+    )
+    metrics["free_cash_flow"]["warnings"] = list(warnings)
+
+    audit = {
+        "policy": {
+            "ttm_formula": "上一完整年度 + 本年最新累计期 - 上年同期累计期",
+            "annual_formula": "最近三个完整年度按配置权重加权；可用年度不足时对可用权重重新归一化",
+            "annual_weights_config": list(year_weights),
+            "capital_expenditure_policy": "全部资本开支作为维持性资本开支保守代理",
+            "unannualized_interim_fallback": False,
+        },
+        "method": method,
+        "period_type": period_type,
+        "source_periods": list(source_periods),
+        "annual_weights": list(selected_weights),
+        "periods": period_records,
+        "final_values": {
+            "net_profit": metrics["net_profit"].get("value"),
+            "free_cash_flow": metrics["free_cash_flow"].get("value"),
+            "owner_earnings": metrics["owner_earnings"].get("value"),
+        },
+        "fcf_conversion": {
+            "matched_normalized_net_profit": profit_value,
+            "normalized_fcf_before_cap": fcf_value_before_cap,
+            "normalized_fcf_after_cap": fcf_value,
+            "fcf_to_net_profit_before_cap": (
+                fcf_to_profit_before_cap
+                if fcf_value is not None and profit_value is not None and profit_value > 0
+                else None
+            ),
+            "fcf_to_net_profit_after_cap": fcf_to_profit,
+            "profit_cap_multiple": parameter_value("valuation_models.fcf_profit_cap", 1.30),
+            "weak_conversion_threshold": parameter_value("valuation_models.fcf_profit_weak", 0.60),
+        },
+        "fcf_cap_adjustments": fcf_adjustments,
+        "warnings": list(warnings),
+    }
+    return {
+        "values": normalized_values,
+        "metrics": metrics,
+        "method": method,
+        "period_type": period_type,
+        "latest_period_type": latest_period_type,
+        "source_periods": list(source_periods),
+        "year_weights": list(selected_weights),
+        "confidence": metric_confidence,
+        "latest_period_used_as_dcf_base": (
+            latest_period_type == "annual" and method == "latest_annual_adjusted"
+        ),
+        "warnings": warnings,
+        "audit": audit,
+    }
+
+
+def _owner_earnings_components_for_basis(
+    *,
+    period_records: list[dict[str, object]],
+    normalized_values: dict[str, float | None],
+    method: str | None,
+) -> dict[str, object]:
+    if method == "ttm_adjusted":
+        components = {
+            "net_profit": normalized_values.get("net_profit"),
+            "depreciation_and_amortization": normalized_values.get(
+                "depreciation_and_amortization"
+            ),
+            "capital_expenditure": normalized_values.get("capital_expenditure"),
+            "working_capital_cash_effect": normalized_values.get("working_capital_change"),
+        }
+        return _owner_earnings_from_components(components)
+    values = [record.get("owner_earnings") for record in period_records]
+    if any(not isinstance(value, dict) or value.get("value") is None for value in values):
+        return {
+            "value": None,
+            "formula": (
+                "net_profit + depreciation_and_amortization - total_capital_expenditure "
+                "- max(-working_capital_cash_effect, 0)"
+            ),
+            "components": [],
+            "reason": "至少一个共同年度缺少净利润或资本开支，无法保持所有者盈余组件期间一致。",
+        }
+    return {
+        "value": normalized_values.get("owner_earnings"),
+        "formula": "先逐年计算所有者盈余，再按统一年度权重加权",
+        "components": values,
+    }
+
+
+def _owner_earnings_from_components(components: dict[str, object]) -> dict[str, object]:
+    net_profit = _num(components.get("net_profit"))
+    capital_expenditure = _num(components.get("capital_expenditure"))
+    working_capital_raw = components.get(
+        "working_capital_cash_effect", components.get("working_capital_change")
+    )
+    if net_profit is None or capital_expenditure is None:
+        return {
+            "value": None,
+            "components": {
+                "net_profit": net_profit,
+                "depreciation_and_amortization": _num(
+                    components.get("depreciation_and_amortization")
+                ),
+                "capital_expenditure": capital_expenditure,
+                "working_capital_cash_effect": _num(
+                    working_capital_raw
+                ),
+            },
+        }
+    depreciation = _num(components.get("depreciation_and_amortization")) or 0.0
+    working_capital = _num(working_capital_raw) or 0.0
+    investment = max(-working_capital, 0.0)
+    return {
+        "value": net_profit + depreciation - capital_expenditure - investment,
+        "components": {
+            "net_profit": net_profit,
+            "depreciation_and_amortization": depreciation,
+            "capital_expenditure": capital_expenditure,
+            "working_capital_cash_effect": working_capital,
+            "working_capital_investment_deducted": investment,
+        },
+    }
+
+
+def _weighted_complete_metric(values: list[object], weights: list[float]) -> float | None:
+    numbers = [_num(value) for value in values]
+    if len(numbers) != len(weights) or any(value is None for value in numbers):
+        return None
+    return _weighted_values([float(value) for value in numbers if value is not None], weights)
+
+
+def _normalization_year_weights() -> list[float]:
+    raw = parameter_value("valuation_models.normalization_year_weights", [0.50, 0.30, 0.20])
+    if not isinstance(raw, list) or len(raw) != 3:
+        return [0.50, 0.30, 0.20]
+    values = [_num(value) for value in raw]
+    if any(value is None or value < 0 for value in values):
+        return [0.50, 0.30, 0.20]
+    total = sum(value for value in values if value is not None)
+    return [float(value) / total for value in values] if total > 0 else [0.50, 0.30, 0.20]
+
+
+def _renormalize_year_weights(weights: list[float], count: int) -> list[float]:
+    selected = weights[:count]
+    total = sum(selected)
+    if total <= 0:
+        return [1.0 / count] * count
+    return [value / total for value in selected]
 
 
 def _derive_ttm_fcf(
@@ -787,12 +1166,12 @@ def _matching_normalized_profit(
     if len(matching) >= 3:
         return _weighted_values(
             matching[:3],
-            list(parameter_value("valuation_models.fcf_year_weights", [0.50, 0.30, 0.20]))[:3],
+            _normalization_year_weights()[:3],
         )
     if len(matching) == 2:
         return _weighted_values(
             matching,
-            list(parameter_value("valuation_models.fcf_year_weights", [0.50, 0.30, 0.20]))[:2],
+            _normalization_year_weights()[:2],
         )
     if len(matching) == 1:
         return matching[0]
@@ -895,6 +1274,7 @@ def _derive_valuation_input_gaps(
     for field, reason in (
         ("base_net_profit", "缺少基准净利润，所有者盈余估值无法运行。"),
         ("base_free_cash_flow", "缺少基准自由现金流，DCF 无法运行。"),
+        ("owner_earnings_base", "缺少正常化所有者盈余，所有者盈余估值无法运行。"),
     ):
         if valuation_inputs.get(field) is None and field not in seen:
             gaps.append(
@@ -907,18 +1287,19 @@ def _derive_valuation_input_gaps(
                 }
             )
             seen.add(field)
-    normalization_warnings = _str_list(valuation_inputs.get("normalization_warnings"))
-    if (
-        valuation_inputs.get("base_free_cash_flow") is not None
-        and valuation_inputs.get("normalization_method")
-        in {"weighted_annual_available", "latest_annual_adjusted"}
-        and "normalized_free_cash_flow_history" not in seen
-    ):
+    shared_history_method = valuation_inputs.get("normalization_method") in {
+        "weighted_annual_available",
+        "latest_annual_adjusted",
+    }
+    if shared_history_method and "normalized_free_cash_flow_history" not in seen:
         gaps.append(
             {
                 "field": "normalized_free_cash_flow_history",
                 "severity": "low",
-                "reason": "可用完整年度自由现金流不足三年，DCF 允许运行但需降低置信度。",
+                "reason": (
+                    "可用完整年度不足三年，已对可用年度重新归一化，"
+                    "估值允许运行但需降低置信度。"
+                ),
                 "replacement_available": True,
                 "source": "valuation_input_derivation",
             }
@@ -934,21 +1315,25 @@ def _derive_valuation_input_gaps(
             {
                 "field": "ttm_free_cash_flow",
                 "severity": "low",
-                "reason": "最新期为季报或中报但无法构造 TTM FCF，已退回完整年度口径。",
+                "reason": "最新期为季报或中报但无法构造共同口径 TTM，已退回完整年度口径。",
                 "replacement_available": True,
                 "source": "valuation_input_derivation",
             }
         )
         seen.add("ttm_free_cash_flow")
     if (
-        any("1.30" in warning for warning in normalization_warnings)
+        any(
+            isinstance(adjustment, dict)
+            and adjustment.get("type") == "cash_conversion_cap"
+            for adjustment in _list(valuation_inputs.get("normalization_adjustments"))
+        )
         and "normalized_fcf_to_net_profit" not in seen
     ):
         gaps.append(
             {
                 "field": "normalized_fcf_to_net_profit",
                 "severity": "medium",
-                "reason": "正常化 FCF/净利润超过 1.30，未确认前已按保守上限处理。",
+                "reason": "正常化 FCF/同口径净利润超过配置上限，已按保守上限处理。",
                 "replacement_available": True,
                 "source": "valuation_input_derivation",
             }
@@ -981,16 +1366,20 @@ def _derive_assumptions(
         if isinstance(growth_priority, list)
         else []
     )
-    base_growth = _first_number(
-        *growth_values,
-        default=float(parameter_value("valuation_models.default_growth", 0.04)),
-    )
-    base_growth = _clamp(
-        base_growth,
-        float(parameter_value("valuation_models.financial_growth_min", -0.05)),
-        float(parameter_value("valuation_models.financial_growth_max", 0.12)),
-    )
-    financial_base_growth = base_growth
+    fallback_growth = float(parameter_value("valuation_models.default_growth", 0.04))
+    raw_growth = fallback_growth
+    growth_source = "default_growth"
+    if isinstance(growth_priority, list):
+        for key, value in zip(growth_priority, growth_values, strict=False):
+            number = _num(value)
+            if number is not None:
+                raw_growth = number
+                growth_source = str(key)
+                break
+    financial_growth_min = float(parameter_value("valuation_models.financial_growth_min", -0.05))
+    financial_growth_max = float(parameter_value("valuation_models.financial_growth_max", 0.12))
+    financial_base_growth = _clamp(raw_growth, financial_growth_min, financial_growth_max)
+    base_growth = financial_base_growth
     risk_penalty = min(
         float(parameter_value("valuation_models.discount_penalty_cap", 0.025)),
         float(parameter_value("valuation_models.flag_discount_penalty", 0.005)) * len(flags)
@@ -1006,12 +1395,14 @@ def _derive_assumptions(
         matrices=analyst_matrices,
         input_gaps=input_gaps,
     )
+    analyst_delta_growth = float(analyst_adjustment["delta_growth"])
+    analyst_delta_owner_growth = float(analyst_adjustment["delta_owner_growth"])
     base_growth = _clamp(
-        base_growth + float(analyst_adjustment["delta_growth"]),
+        financial_base_growth + analyst_delta_growth,
         *_configured_bounds("growth", (-0.08, 0.16)),
     )
     base_owner_growth = _clamp(
-        financial_base_growth + float(analyst_adjustment["delta_owner_growth"]),
+        financial_base_growth + analyst_delta_owner_growth,
         *_configured_bounds("owner_growth", (-0.08, 0.15)),
     )
     base_discount = _clamp(
@@ -1088,8 +1479,23 @@ def _derive_assumptions(
         "forecast_years": int(parameter_value("valuation_models.forecast_years", 5)),
         "scenarios": scenario_inputs,
         "model_weights": dict(parameter_value("valuation_models.model_weights", {})),
+        "growth_basis": {
+            "raw_growth_rate": raw_growth,
+            "growth_source": growth_source,
+            "source_priority": [str(key) for key in growth_priority]
+            if isinstance(growth_priority, list)
+            else [],
+            "fallback_growth_rate": fallback_growth,
+            "financial_growth_min": financial_growth_min,
+            "financial_growth_max": financial_growth_max,
+            "clamped_financial_base_growth_rate": financial_base_growth,
+            "analyst_delta_cash_flow_growth_rate": analyst_delta_growth,
+            "final_base_cash_flow_growth_rate": base_growth,
+            "analyst_delta_owner_earnings_growth_rate": analyst_delta_owner_growth,
+            "final_base_owner_earnings_growth_rate": base_owner_growth,
+        },
         "source": {
-            "growth": "financial_evidence_pack.financial_trends",
+            "growth": f"financial_evidence_pack.financial_trends.{growth_source}",
             "discount_rate": "rule_based_quality_and_gap_adjustment",
             "terminal_growth_rate": "system_default_with_conservative_cap",
         },
@@ -1154,7 +1560,7 @@ def _derive_analyst_matrix_adjustment(
     risk_weights = _dict(composite.get("risk"))
     deltas = parameter_value("valuation_models.parameter_deltas", {})
     deltas = deltas if isinstance(deltas, dict) else {}
-    impact_scale = float(parameter_value("valuation_models.analyst_impact_scale", 1.50))
+    impact_scale = float(parameter_value("valuation_models.analyst_impact_scale", 2.0))
     analyst_rows = []
     for matrix in matrices:
         for item in _list(matrix.get("analyst_items")):
@@ -1371,10 +1777,30 @@ def _derive_analyst_matrix_adjustment(
         float(parameter_value("valuation_models.scenario_spread_min", 0.015)),
         float(parameter_value("valuation_models.scenario_spread_max", 0.080)),
     )
+    raw_safety_margin = sum(
+        float(item["contribution"]) for item in safety_margin_contributions
+    )
+    margin_addition_values = [float(value) for value in safety_margin_additions.values()]
+    raw_safety_margin_minimum = min(margin_addition_values) * 4 * safety_margin_scale
+    raw_safety_margin_maximum = max(margin_addition_values) * 4 * safety_margin_scale
+    safety_margin_minimum = float(
+        parameter_value("valuation_rule_matrix.safety_margin_min", 0.1)
+    )
+    safety_margin_maximum = float(
+        parameter_value("valuation_rule_matrix.safety_margin_max", 0.5)
+    )
+    raw_safety_margin_range = raw_safety_margin_maximum - raw_safety_margin_minimum
+    normalized_safety_margin = (
+        (raw_safety_margin - raw_safety_margin_minimum) / raw_safety_margin_range
+        if raw_safety_margin_range > 0
+        else 0.0
+    )
     dynamic_safety_margin = _clamp(
-        sum(float(item["contribution"]) for item in safety_margin_contributions),
-        float(parameter_value("valuation_rule_matrix.safety_margin_min", 0.0)),
-        float(parameter_value("valuation_rule_matrix.safety_margin_max", 1.0)),
+        safety_margin_minimum
+        + _clamp(normalized_safety_margin, 0.0, 1.0)
+        * (safety_margin_maximum - safety_margin_minimum),
+        safety_margin_minimum,
+        safety_margin_maximum,
     )
     return {
         "source": "latest_successful_008_analyst_view_runs",
@@ -1405,9 +1831,15 @@ def _derive_analyst_matrix_adjustment(
         "dynamic_safety_margin_policy": {
             "status_additions": dict(safety_margin_additions),
             "analyst_scale": safety_margin_scale,
-            "minimum": float(parameter_value("valuation_rule_matrix.safety_margin_min", 0.0)),
-            "maximum": float(parameter_value("valuation_rule_matrix.safety_margin_max", 1.0)),
-            "formula": "sum(status_addition * analyst_weight * analyst_scale)",
+            "raw_margin": raw_safety_margin,
+            "raw_minimum": raw_safety_margin_minimum,
+            "raw_maximum": raw_safety_margin_maximum,
+            "minimum": safety_margin_minimum,
+            "maximum": safety_margin_maximum,
+            "formula": (
+                "minimum + clamp((raw_margin - raw_minimum) / "
+                "(raw_maximum - raw_minimum), 0, 1) * (maximum - minimum)"
+            ),
         },
     }
 
@@ -1475,6 +1907,7 @@ def _calculate_owner_earnings(
 ) -> dict[str, object]:
     net_profit = _num(valuation_inputs.get("base_net_profit"))
     capital_expenditure = _num(valuation_inputs.get("capital_expenditure"))
+    normalized_owner_earnings = _num(valuation_inputs.get("owner_earnings_base"))
     base_period_method = _safe_str(valuation_inputs.get("base_period_method"))
     base_period_type = _safe_str(valuation_inputs.get("base_period_type"))
     if base_period_type in {"half_year", "quarter"} and base_period_method != "ttm_adjusted":
@@ -1484,7 +1917,7 @@ def _calculate_owner_earnings(
             input_gaps,
             required_fields=["owner_earnings_annualized_base"],
         )
-    if net_profit is None or capital_expenditure is None:
+    if normalized_owner_earnings is None and (net_profit is None or capital_expenditure is None):
         required = []
         if net_profit is None:
             required.append("base_net_profit")
@@ -1499,7 +1932,11 @@ def _calculate_owner_earnings(
     depreciation = _num(valuation_inputs.get("depreciation_and_amortization")) or 0.0
     working_capital_change = _num(valuation_inputs.get("working_capital_change")) or 0.0
     working_capital_investment = max(-working_capital_change, 0.0)
-    owner_earnings = net_profit + depreciation - capital_expenditure - working_capital_investment
+    owner_earnings = normalized_owner_earnings
+    if owner_earnings is None:
+        owner_earnings = (
+            net_profit + depreciation - capital_expenditure - working_capital_investment
+        )
     if owner_earnings <= 0:
         return _needs_input_method(
             "owner_earnings",
@@ -1522,9 +1959,12 @@ def _calculate_owner_earnings(
         "period_type": base_period_type,
         "source_periods": _str_list(valuation_inputs.get("base_source_periods")),
         "formula": (
-            "net_profit + depreciation_and_amortization - total_capex "
-            "- max(-working_capital_cash_effect, 0)"
+            "per period: net_profit + depreciation_and_amortization - total_capex "
+            "- max(-working_capital_cash_effect, 0); then aggregate normalized periods"
         ),
+        "normalization_method": valuation_inputs.get("owner_earnings_normalization_method"),
+        "normalization_confidence": valuation_inputs.get("owner_earnings_normalization_confidence"),
+        "normalization_audit": valuation_inputs.get("owner_earnings_normalization", {}),
         "components": {
             "net_profit": net_profit,
             "depreciation_and_amortization": depreciation,
@@ -2174,14 +2614,6 @@ def _deep_merge(base: dict[str, object], updates: dict[str, object]) -> dict[str
         else:
             merged[key] = value
     return merged
-
-
-def _first_number(*values: object, default: float) -> float:
-    for value in values:
-        number = _num(value)
-        if number is not None:
-            return number
-    return default
 
 
 def _forecast_years() -> int:
