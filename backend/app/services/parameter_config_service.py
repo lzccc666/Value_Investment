@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 CONFIG_DOMAINS = (
     "data_sampling",
     "financial_flags",
+    "market_data",
     "analyst_engine",
     "valuation_rule_matrix",
     "memo_decision",
@@ -224,6 +225,7 @@ def validate_parameter_config(
     _validate_dynamic_safety_margin(config, errors)
     _validate_tiers(config, errors)
     _validate_normalization_year_weights(config, errors)
+    _validate_market_data(config, errors)
 
     if compare_to_default and config_hash(config) != config_hash(defaults):
         changed = _changed_leaf_paths(defaults, config)
@@ -268,6 +270,7 @@ def count_parameter_values(config: dict[str, object]) -> tuple[int, int]:
 LABELS = {
     "data_sampling": "数据采样",
     "financial_flags": "财务预警",
+    "market_data": "市场数据",
     "analyst_engine": "分析师引擎",
     "valuation_rule_matrix": "估值规则矩阵",
     "memo_decision": "备忘录决策",
@@ -310,6 +313,7 @@ def build_parameter_metadata(config: dict[str, object]) -> list[dict[str, object
         percent = unit == "%"
         label_key = path[-1]
         copy = parameter_copy(tuple(path), config)
+        minimum, maximum = _parameter_bounds(dotted, percent, label_key)
         items.append(
             {
                 "path": dotted,
@@ -320,8 +324,8 @@ def build_parameter_metadata(config: dict[str, object]) -> list[dict[str, object
                 "unit": unit,
                 "default_value": default,
                 "current_value": value,
-                "minimum": 0.0 if percent and "min" not in label_key else None,
-                "maximum": 1.0 if percent else None,
+                "minimum": minimum,
+                "maximum": maximum,
                 "editable": True,
                 "expert": expert,
                 "audit_only": audit_only,
@@ -359,6 +363,23 @@ def _validate_shape(
             _issue(errors, path, "应为有限数字。", "type")
     elif isinstance(default, str) and not isinstance(value, str):
         _issue(errors, path, "应为字符串。", "type")
+
+
+def _validate_market_data(
+    config: dict[str, object], errors: list[ParameterValidationIssue]
+) -> None:
+    for path, minimum, maximum in (
+        ("market_data.quote_max_age_hours", 1, 720),
+        ("market_data.fx_max_age_days", 1, 90),
+    ):
+        value = _number(_at(config, path))
+        if value is None or not value.is_integer() or not minimum <= value <= maximum:
+            _issue(
+                errors,
+                path,
+                f"必须是 {minimum}-{maximum} 之间的整数。",
+                "market_data_range",
+            )
 
 
 def _validate_finite(value: object, errors: list[ParameterValidationIssue], path: str = "") -> None:
@@ -749,6 +770,8 @@ def _parameter_unit(path: list[str]) -> str:
         "analyst_engine.data_confidence.announcement_target_count": "条公告",
         "memo_decision.min_successful_analysts": "位分析师",
         "price_decision.buy_price_scenario": "选项",
+        "market_data.quote_max_age_hours": "小时",
+        "market_data.fx_max_age_days": "天",
     }
     if dotted in explicit_units:
         return explicit_units[dotted]
@@ -773,3 +796,15 @@ def _parameter_unit(path: list[str]) -> str:
     if "years" in label_key:
         return "年"
     return "%" if _looks_like_percent_path(path) else "数值"
+
+
+def _parameter_bounds(
+    dotted: str, percent: bool, label_key: str
+) -> tuple[float | None, float | None]:
+    explicit = {
+        "market_data.quote_max_age_hours": (1.0, 720.0),
+        "market_data.fx_max_age_days": (1.0, 90.0),
+    }
+    if dotted in explicit:
+        return explicit[dotted]
+    return (0.0 if percent and "min" not in label_key else None, 1.0 if percent else None)

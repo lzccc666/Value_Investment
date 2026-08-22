@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -23,6 +23,12 @@ class FetchedAnnouncement:
     source: str
     source_url: str
     raw_url: str | None = None
+    source_document_id: str | None = None
+    document_type: str | None = None
+    filing_form: str | None = None
+    language: str | None = None
+    period_end: date | None = None
+    content_type: str | None = None
 
 
 class EastmoneyAnnouncementClient:
@@ -180,6 +186,10 @@ def _map_eastmoney_announcement(
         source=source_name,
         source_url=source_url,
         raw_url=raw_url,
+        source_document_id=art_code,
+        document_type=category,
+        language="zh-CN",
+        content_type="application/pdf",
     )
 
 

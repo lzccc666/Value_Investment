@@ -10,6 +10,7 @@ class ParameterConfigPayload(BaseModel):
 
     data_sampling: dict[str, object]
     financial_flags: dict[str, object]
+    market_data: dict[str, object]
     analyst_engine: dict[str, object]
     valuation_rule_matrix: dict[str, object]
     memo_decision: dict[str, object]

@@ -19,6 +19,12 @@ class FetchedCompanyProfile:
     listed_date: date | None
     description: str | None
     source_url: str
+    legal_name: str | None = None
+    aliases: tuple[str, ...] = ()
+    domicile_country: str | None = None
+    reporting_currency: str | None = None
+    fiscal_year_end: str | None = None
+    external_ids: dict[str, object] | None = None
 
 
 class EastmoneyCompanyProfileClient:

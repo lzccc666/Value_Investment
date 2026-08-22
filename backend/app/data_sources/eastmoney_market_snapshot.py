@@ -69,8 +69,13 @@ class EastmoneyMarketSnapshotClient:
         self._api_urls = api_urls or self.api_urls
         self._now_factory = now_factory or shanghai_now
 
-    def fetch_market_snapshot(self, secucode: str) -> FetchedMarketSnapshot:
-        eastmoney_secid = _to_eastmoney_secid(secucode)
+    def fetch_market_snapshot(
+        self,
+        secucode: str,
+        *,
+        exchange: str | None = None,
+    ) -> FetchedMarketSnapshot:
+        eastmoney_secid = _to_eastmoney_secid(secucode, exchange=exchange)
         if eastmoney_secid is None:
             raise UnsupportedMarketSnapshotSourceError(
                 f"东方财富行情快照暂不支持证券代码：{secucode}"
@@ -189,16 +194,24 @@ def _read_payload_data(payload: object) -> dict[str, Any]:
     return data
 
 
-def _to_eastmoney_secid(secucode: str) -> str | None:
+def _to_eastmoney_secid(secucode: str, *, exchange: str | None = None) -> str | None:
     normalized = secucode.strip().upper()
     if normalized.endswith(".SH"):
         return f"1.{normalized[:-3]}"
     if normalized.endswith(".SZ"):
         return f"0.{normalized[:-3]}"
+    if normalized.endswith(".BJ"):
+        return f"0.{normalized[:-3]}"
     if normalized.endswith(".HK"):
         return f"116.{normalized[:-3]}"
     if normalized.endswith(".US"):
-        return f"105.{normalized[:-3]}"
+        market_id = {
+            "NASDAQ": "105",
+            "NYSE": "106",
+            "AMEX": "107",
+        }.get((exchange or "NASDAQ").strip().upper())
+        symbol = normalized[:-3].replace(".", "_").replace("-", "_")
+        return f"{market_id}.{symbol}" if market_id else None
     return None
 
 

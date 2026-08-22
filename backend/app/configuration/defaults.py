@@ -75,6 +75,10 @@ _DEFAULT_CONFIG: dict[str, object] = {
         "period_expense_rise": 0.05,
         "finance_expense_rise": 0.03,
     },
+    "market_data": {
+        "quote_max_age_hours": 168,
+        "fx_max_age_days": 7,
+    },
     "analyst_engine": {
         "model_temperatures": {
             "announcement": 0.10,

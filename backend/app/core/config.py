@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "value_investment.db"
 DEFAULT_BACKUP_DIRECTORY = PROJECT_ROOT / "data" / "backups"
+DEFAULT_PROVIDER_CACHE_DIRECTORY = PROJECT_ROOT / "data" / "provider_cache"
 
 
 class Settings(BaseSettings):
@@ -16,6 +17,16 @@ class Settings(BaseSettings):
     api_prefix: str = "/api"
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     backup_directory: Path = DEFAULT_BACKUP_DIRECTORY
+    provider_cache_directory: Path = DEFAULT_PROVIDER_CACHE_DIRECTORY
+    provider_timeout_seconds: float = 20.0
+    sec_user_agent: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SEC_USER_AGENT", "VALUE_INVESTMENT_SEC_USER_AGENT"),
+    )
+    sec_max_requests_per_second: float = Field(default=8.0, ge=0.1, le=10.0)
+    sec_cache_ttl_seconds: int = Field(default=21600, ge=0)
+    hkex_cache_ttl_seconds: int = Field(default=21600, ge=0)
+    ecb_cache_ttl_seconds: int = Field(default=21600, ge=0)
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"]
     )

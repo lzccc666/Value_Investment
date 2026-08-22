@@ -8,6 +8,7 @@ from app.analysis.model_gateway import (
     ModelNotConfiguredError,
     ModelOutputValidationError,
 )
+from app.api.errors import market_data_http_exception
 from app.configuration.runtime import parameter_config_context
 from app.data_sources.announcement_content import AnnouncementContentFetchError
 from app.data_sources.eastmoney_announcements import (
@@ -22,6 +23,8 @@ from app.data_sources.eastmoney_market_snapshot import (
 )
 from app.db.models import Company
 from app.db.session import get_db
+from app.market_data.contracts import MarketDataError, MarketDataValidationError
+from app.market_data.registry import default_registry
 from app.schemas.announcement_summary import (
     AnnouncementSummaryBatchResponse,
     AnnouncementSummaryResponse,
@@ -37,6 +40,10 @@ from app.schemas.company import (
     FinancialStatementDeleteResponse,
     FinancialStatementListResponse,
     FinancialStatementSyncResponse,
+    MarketCapabilitiesResponse,
+    SecurityListingCreate,
+    SecurityListingListResponse,
+    SecurityListingRead,
 )
 from app.services.announcement_summary_service import (
     summarize_company_announcement,
@@ -46,18 +53,21 @@ from app.services.announcement_summary_service import (
 from app.services.companies import (
     ANNOUNCEMENT_RETENTION_LIMIT,
     create_company,
+    create_company_listing,
     delete_company_announcement,
     delete_company_financial_statement,
     get_company,
     get_company_announcement,
     get_company_by_identity,
     get_company_financial_statement,
+    get_primary_listing,
     list_companies,
     list_company_announcements,
     list_company_announcements_for_deep_summary,
     list_company_announcements_for_summary,
     list_company_financials,
     list_company_financials_by_periods,
+    list_company_listings,
     refresh_company_market_snapshot,
     refresh_company_profile,
     sync_company_announcements,
@@ -110,7 +120,7 @@ def get_company_detail(company_id: int, db: Annotated[Session, Depends(get_db)])
     if company.listed_date is None or _should_refresh_company_description(company):
         try:
             company, _ = refresh_company_profile(db, company)
-        except CompanyProfileDataSourceError:
+        except (CompanyProfileDataSourceError, MarketDataError):
             pass
     return company
 
@@ -123,7 +133,7 @@ def refresh_company_profile_data(
     if company.listed_date is None or _should_refresh_company_description(company):
         try:
             company, _ = refresh_company_profile(db, company)
-        except CompanyProfileDataSourceError:
+        except (CompanyProfileDataSourceError, MarketDataError):
             pass
 
     try:
@@ -138,6 +148,80 @@ def refresh_company_profile_data(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
+    except MarketDataValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/{company_id}/listings", response_model=SecurityListingListResponse)
+def get_company_listings(
+    company_id: int, db: Annotated[Session, Depends(get_db)]
+) -> SecurityListingListResponse:
+    _get_company_or_404(db, company_id)
+    return SecurityListingListResponse(
+        company_id=company_id,
+        items=list_company_listings(db, company_id),
+    )
+
+
+@router.post(
+    "/{company_id}/listings",
+    response_model=SecurityListingRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_company_listing_record(
+    company_id: int,
+    payload: SecurityListingCreate,
+    db: Annotated[Session, Depends(get_db)],
+) -> SecurityListingRead:
+    company = _get_company_or_404(db, company_id)
+    try:
+        return create_company_listing(db, company, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/{company_id}/market-capabilities", response_model=MarketCapabilitiesResponse)
+def get_company_market_capabilities(
+    company_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    listing_id: Annotated[int | None, Query(ge=1)] = None,
+) -> MarketCapabilitiesResponse:
+    company = _get_company_or_404(db, company_id)
+    listings = list_company_listings(db, company.id)
+    listing = next((item for item in listings if item.id == listing_id), None)
+    if listing_id is None:
+        listing = get_primary_listing(db, company.id)
+    if listing is None or listing.company_id != company.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Listing not found")
+    try:
+        capabilities = default_registry.capabilities(listing.market)
+    except MarketDataError as exc:
+        raise market_data_http_exception(exc) from exc
+    capability_payload = capabilities.as_dict()
+    if listing.market == "US":
+        recent_financials, _ = list_company_financials_by_periods(
+            db,
+            company_id=company.id,
+            period_limit=60,
+        )
+        has_sec_dividend = any(
+            isinstance(item.fields, dict)
+            and isinstance(item.fields.get("dividend"), int | float)
+            and not isinstance(item.fields.get("dividend"), bool)
+            for item in recent_financials
+        )
+        if has_sec_dividend:
+            capability_payload["dividend"] = {
+                "status": "available",
+                "provider": "sec_companyfacts",
+                "reason": "已读取该发行人的 SEC 标准 XBRL 现金分红事实",
+            }
+    return MarketCapabilitiesResponse(
+        company_id=company.id,
+        listing_id=listing.id,
+        market=listing.market,
+        capabilities=capability_payload,
+    )
 
 
 @router.get("/{company_id}/financials", response_model=FinancialStatementListResponse)
@@ -215,10 +299,18 @@ def sync_company_financial_data(
     company_id: int,
     db: Annotated[Session, Depends(get_db)],
     limit: Annotated[int, Query(ge=1, le=60)] = 60,
+    listing_id: Annotated[int | None, Query(ge=1)] = None,
 ) -> FinancialStatementSyncResponse:
     company = _get_company_or_404(db, company_id)
     try:
-        items, fetched, created, updated = sync_company_financials(db, company, limit=limit)
+        if listing_id is None:
+            items, fetched, created, updated = sync_company_financials(db, company, limit=limit)
+        else:
+            items, fetched, created, updated = sync_company_financials(
+                db, company, limit=limit, listing_id=listing_id
+            )
+    except MarketDataError as exc:
+        raise market_data_http_exception(exc) from exc
     except FinancialDataSourceError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -227,7 +319,7 @@ def sync_company_financial_data(
 
     return FinancialStatementSyncResponse(
         company_id=company.id,
-        source="eastmoney_f10_main_finance",
+        source=_provider_source(items, "eastmoney_f10_main_finance"),
         fetched=fetched,
         created=created,
         updated=updated,
@@ -412,6 +504,7 @@ def sync_company_announcement_data(
     company_id: int,
     db: Annotated[Session, Depends(get_db)],
     years: Annotated[int | None, Query(ge=1, le=10, description="同步最近多少年的公告")] = None,
+    listing_id: Annotated[int | None, Query(ge=1)] = None,
 ) -> AnnouncementSyncResponse:
     company = _get_company_or_404(db, company_id)
     try:
@@ -420,14 +513,20 @@ def sync_company_announcement_data(
             effective_years = years or int(
                 runtime.snapshot["data_sampling"]["announcement_lookback_years"]
             )
-            items, fetched, created, updated, skipped, pruned, errors = sync_company_announcements(
-                db, company, years=effective_years
-            )
+            if listing_id is None:
+                result = sync_company_announcements(db, company, years=effective_years)
+            else:
+                result = sync_company_announcements(
+                    db, company, years=effective_years, listing_id=listing_id
+                )
+            items, fetched, created, updated, skipped, pruned, errors = result
     except UnsupportedAnnouncementSourceError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except MarketDataError as exc:
+        raise market_data_http_exception(exc) from exc
     except AnnouncementDataSourceError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -436,7 +535,7 @@ def sync_company_announcement_data(
 
     return AnnouncementSyncResponse(
         company_id=company.id,
-        source="eastmoney_announcements",
+        source=_provider_source(items, "eastmoney_announcements"),
         fetched=fetched,
         created=created,
         updated=updated,
@@ -453,6 +552,11 @@ def _batch_summary_status(total: int, succeeded: int, failed: int) -> str:
     if failed == total:
         return "failed"
     return "partial"
+
+
+def _provider_source(items: list[object], fallback: str) -> str:
+    sources = sorted({str(source) for item in items if (source := getattr(item, "source", None))})
+    return sources[0] if len(sources) == 1 else fallback
 
 
 def _get_company_or_404(db: Session, company_id: int) -> Company:

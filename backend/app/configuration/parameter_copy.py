@@ -115,6 +115,18 @@ DATA_SAMPLING_COPY = {
 }
 
 
+MARKET_DATA_COPY = {
+    "quote_max_age_hours": ParameterCopy(
+        "价格决策允许的行情最大时效",
+        "011 创建新价格决策时，所选 Listing 行情的价格时点距当前时间不得超过该小时数；超期会明确阻断，修改只影响新决策。",
+    ),
+    "fx_max_age_days": ParameterCopy(
+        "价格决策允许的汇率最大时效",
+        "011 跨币种换算时，冻结汇率的日期距当前日期不得超过该天数；同币种不创建汇率快照，超期会明确阻断。",
+    ),
+}
+
+
 FINANCIAL_FLAG_COPY = {
     "stability_periods": ParameterCopy(
         "财务稳定性观察期数",
@@ -247,6 +259,9 @@ def parameter_copy(path: tuple[str, ...], config: dict[str, object]) -> Paramete
                 f"计算收入、净利润和自由现金流的{horizon} CAGR：若有 n 年完整数据，则使用 (期末值 / 期初值)^(1/n) - 1；年限越长越平滑。",
             )
         return FINANCIAL_FLAG_COPY[path[1]]
+
+    if domain == "market_data" and len(path) == 2:
+        return MARKET_DATA_COPY[path[1]]
 
     if domain == "analyst_engine":
         return _analyst_engine_copy(path)

@@ -11,6 +11,13 @@ export type Company = {
   ticker: string;
   exchange: string;
   name: string;
+  canonical_key?: string | null;
+  legal_name?: string | null;
+  aliases?: string[];
+  domicile_country?: string | null;
+  reporting_currency?: string | null;
+  fiscal_year_end?: string | null;
+  external_ids?: Record<string, unknown>;
   industry: string | null;
   description: string | null;
   listed_date: string | null;
@@ -30,6 +37,66 @@ export type Company = {
   market_data_updated_at: string | null;
   created_at: string;
   updated_at: string;
+  primary_listing?: SecurityListing | null;
+};
+
+export type SecurityListing = {
+  id: number;
+  company_id: number;
+  ticker: string;
+  symbol: string;
+  exchange: string;
+  market: string;
+  trading_currency: string;
+  security_type: string;
+  listed_date: string | null;
+  is_primary: boolean;
+  is_active: boolean;
+  underlying_shares_per_listing_unit: number | null;
+  provider_identifiers: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SecurityListingListResponse = {
+  company_id: number;
+  items: SecurityListing[];
+};
+
+export type MarketSnapshot = {
+  id: number;
+  listing_id: number;
+  price: number;
+  currency: string;
+  market_cap: number | null;
+  pe_ttm: number | null;
+  pe_dynamic: number | null;
+  pe_static: number | null;
+  pb_ratio: number | null;
+  ps_ratio: number | null;
+  dividend_yield_ttm: number | null;
+  dividend_yield_static: number | null;
+  price_as_of: string;
+  fetched_at: string;
+  source: string;
+  source_url: string | null;
+  raw_snapshot_hash: string | null;
+};
+
+export type CapabilityStatus = "available" | "partial" | "unavailable" | "stale" | "blocked";
+
+export type ProviderCapability = {
+  status: CapabilityStatus;
+  provider?: string | null;
+  reason?: string | null;
+  remediation?: string | null;
+};
+
+export type MarketCapabilitiesResponse = {
+  company_id: number;
+  listing_id: number;
+  market: string;
+  capabilities: Record<string, ProviderCapability>;
 };
 
 export type CompanyListResponse = {
@@ -59,6 +126,18 @@ export type FinancialStatement = {
   fields: Record<string, unknown>;
   source: string | null;
   source_url: string | null;
+  source_record_id?: string | null;
+  filing_type?: string | null;
+  taxonomy?: string | null;
+  period_start?: string | null;
+  period_end?: string | null;
+  period_type?: string | null;
+  fiscal_year?: number | null;
+  fiscal_period?: string | null;
+  filed_at?: string | null;
+  unit_scale?: number;
+  is_amendment?: boolean;
+  raw_snapshot_hash?: string | null;
   created_at: string;
 };
 
@@ -70,6 +149,10 @@ export type FinancialStatementListResponse = {
 };
 
 export type FinancialEvidencePack = {
+  reporting_currency?: string | null;
+  accounting_standard?: string | null;
+  source_coverage?: Record<string, unknown>;
+  mapping_diagnostics?: Array<Record<string, unknown>>;
   latest_period: string | null;
   periods: string[];
   financial_facts: Record<string, unknown>;
@@ -105,6 +188,7 @@ export type FinancialStatementDeleteResponse = {
 export type Announcement = {
   id: number;
   company_id: number;
+  listing_id?: number | null;
   title: string;
   published_at: string;
   category: string;
@@ -114,6 +198,15 @@ export type Announcement = {
   source: string | null;
   source_url: string | null;
   raw_url: string | null;
+  source_document_id?: string | null;
+  document_type?: string | null;
+  filing_form?: string | null;
+  language?: string | null;
+  period_end?: string | null;
+  content_type?: string | null;
+  content_source?: string | null;
+  content_fetched_at?: string | null;
+  raw_content_hash?: string | null;
   key_facts: string[];
   impact_direction: string | null;
   sentiment: string | null;
@@ -502,6 +595,8 @@ export type ValuationRun = {
   confidence: number | null;
   confidence_summary: Record<string, unknown>;
   source_map: Record<string, unknown>;
+  valuation_currency?: string | null;
+  share_basis_snapshot?: Record<string, unknown>;
   user_note: string | null;
   created_at: string;
   updated_at: string;
@@ -529,6 +624,9 @@ export type PriceDecisionRun = {
   company_id: number;
   valuation_run_id: number;
   memo_id: number;
+  listing_id?: number | null;
+  market_snapshot_id?: number | null;
+  fx_rate_snapshot_id?: number | null;
   version_no: number;
   run_version: string;
   formula_version: string;
@@ -539,6 +637,11 @@ export type PriceDecisionRun = {
   config_hash: string | null;
   config_snapshot: Record<string, unknown>;
   intrinsic_values_per_share: Record<string, number>;
+  issuer_intrinsic_values_per_share?: Record<string, number>;
+  valuation_currency?: string | null;
+  trading_currency?: string | null;
+  underlying_shares_per_listing_unit?: number | null;
+  fx_rate?: number | null;
   current_price: number;
   market_data_updated_at: string;
   suggested_safety_margin: number;
@@ -717,6 +820,248 @@ export type BackupVerifyResponse = {
   integrity_check: string;
 };
 
+export type PortfolioOwnerType = "self" | "investor";
+export type PortfolioCurrency = "CNY" | "HKD" | "USD";
+
+export type PortfolioOwner = {
+  id: number;
+  name: string;
+  owner_type: PortfolioOwnerType;
+  notes: string | null;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioOwnerListResponse = {
+  items: PortfolioOwner[];
+  total: number;
+};
+
+export type PortfolioSnapshot = {
+  id: number;
+  owner_id: number;
+  title: string;
+  as_of_date: string;
+  base_currency: PortfolioCurrency;
+  notes: string | null;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioSnapshotListResponse = {
+  owner_id: number;
+  items: PortfolioSnapshot[];
+  total: number;
+};
+
+export type PortfolioHolding = {
+  id: number;
+  snapshot_id: number;
+  listing_id: number;
+  company_id: number;
+  company_name: string;
+  ticker: string;
+  exchange: string;
+  market: string;
+  trading_currency: string;
+  security_type: string;
+  quantity: string;
+  notes: string | null;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioHoldingListResponse = {
+  snapshot_id: number;
+  items: PortfolioHolding[];
+  total: number;
+};
+
+export type PortfolioListingSearchItem = {
+  id: number;
+  company_id: number;
+  company_name: string;
+  ticker: string;
+  symbol: string;
+  exchange: string;
+  market: string;
+  trading_currency: string;
+  security_type: string;
+  is_primary: boolean;
+};
+
+export type PortfolioListingSearchResponse = {
+  items: PortfolioListingSearchItem[];
+  total: number;
+};
+
+export type SecUsListingCatalogItem = {
+  cik: string;
+  company_name: string;
+  symbol: string;
+  ticker: string;
+  exchange: "NASDAQ" | "NYSE";
+};
+
+export type SecUsListingCatalogResponse = {
+  items: SecUsListingCatalogItem[];
+  total: number;
+  source: string;
+};
+
+export type AhListingCatalogItem = {
+  quote_id: string;
+  company_name: string;
+  symbol: string;
+  ticker: string;
+  exchange: "SSE" | "SZSE" | "BSE" | "HKEX";
+  market: "A_SHARE" | "HK";
+  trading_currency: "CNY" | "HKD";
+  security_type: "common_stock";
+};
+
+export type AhListingCatalogResponse = {
+  items: AhListingCatalogItem[];
+  total: number;
+  source: string;
+};
+
+export type BuyMemoCompanyCandidate = {
+  company_id: number;
+  company_name: string;
+  primary_ticker: string;
+  decision_count: number;
+};
+
+export type BuyMemoDecisionCandidate = {
+  price_decision_run_id: number;
+  version_no: number;
+  run_version: string;
+  listing_ticker: string;
+  exchange: string | null;
+  trading_currency: string | null;
+  base_intrinsic_value: string;
+  suggested_buy_price: string;
+  designed_safety_margin: string;
+  latest_report_period: string | null;
+  created_at: string;
+  already_imported: boolean;
+};
+
+export type BuyMemoEntry = {
+  id: number;
+  company_id: number;
+  source_price_decision_run_id: number | null;
+  company_name: string;
+  listing_ticker: string;
+  exchange: string | null;
+  trading_currency: string | null;
+  base_intrinsic_value: string;
+  suggested_buy_price: string;
+  designed_safety_margin: string;
+  latest_report_period: string | null;
+  price_decision_version_no: number;
+  price_decision_run_version: string;
+  price_decision_created_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PortfolioValuationItem = {
+  holding_id: number;
+  listing_id: number;
+  company_id: number;
+  company_name: string;
+  ticker: string;
+  exchange: string;
+  market: string;
+  trading_currency: string;
+  security_type: string;
+  quantity: string;
+  latest_price: string | null;
+  quote_currency: string | null;
+  quote_as_of: string | null;
+  quote_source: string | null;
+  quote_source_url: string | null;
+  local_market_value: string | null;
+  fx_rate: string | null;
+  fx_rate_date: string | null;
+  fx_source: string | null;
+  base_market_value: string | null;
+  weight: string | null;
+  data_status:
+    | "priced"
+    | "missing_price"
+    | "missing_fx"
+    | "currency_mismatch"
+    | "inactive_listing";
+  status_reason: string;
+};
+
+export type PortfolioValuation = {
+  snapshot: PortfolioSnapshot;
+  owner: PortfolioOwner;
+  priced_total: string | null;
+  base_currency: PortfolioCurrency;
+  holding_count: number;
+  priced_count: number;
+  unpriced_count: number;
+  valuation_status: "empty" | "complete" | "incomplete";
+  items: PortfolioValuationItem[];
+};
+
+export type PortfolioRefreshResult = {
+  snapshot_id: number;
+  status: "success" | "partial" | "failed";
+  succeeded: number;
+  failed: number;
+  quote_results: Array<{
+    listing_id: number;
+    ticker: string;
+    status: "success" | "failed";
+    market_snapshot_id: number | null;
+    error: string | null;
+  }>;
+  fx_results: Array<{
+    base_currency: string;
+    quote_currency: string;
+    status: "identity" | "success" | "failed";
+    fx_rate_snapshot_id: number | null;
+    error: string | null;
+  }>;
+  valuation: PortfolioValuation;
+};
+
+export type MarketFearIndicator = {
+  market: "A_SHARE" | "HK" | "US";
+  indicator_code: string;
+  indicator_name: string;
+  value: string | null;
+  data_date: string | null;
+  daily_change: string | null;
+  moving_average_20: string | null;
+  percentile_3y: string | null;
+  temperature_score: string | null;
+  temperature_level: string | null;
+  source: string | null;
+  source_url: string | null;
+  fetched_at: string | null;
+  observation_count: number | null;
+  freshness: "fresh" | "stale" | "unavailable";
+  refresh_error: string | null;
+  is_proxy: boolean;
+  proxy_notice: string | null;
+};
+
+export type MarketFearResponse = {
+  status: "success" | "partial" | "failed";
+  items: MarketFearIndicator[];
+  notice: string;
+};
+
 type RequestJsonOptions = {
   signal?: AbortSignal;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -816,6 +1161,64 @@ export async function getCompany(companyId: number, signal?: AbortSignal): Promi
   return fetchJson<Company>(`/companies/${companyId}`, { signal });
 }
 
+export async function getCompanyListings(
+  companyId: number,
+  signal?: AbortSignal
+): Promise<SecurityListingListResponse> {
+  return fetchJson<SecurityListingListResponse>(`/companies/${companyId}/listings`, { signal });
+}
+
+export async function getCompanyMarketCapabilities(
+  companyId: number,
+  listingId?: number | null,
+  signal?: AbortSignal
+): Promise<MarketCapabilitiesResponse> {
+  const query = listingId ? `?listing_id=${listingId}` : "";
+  return fetchJson<MarketCapabilitiesResponse>(
+    `/companies/${companyId}/market-capabilities${query}`,
+    { signal }
+  );
+}
+
+export async function getLatestListingMarketSnapshot(
+  listingId: number,
+  signal?: AbortSignal
+): Promise<MarketSnapshot | null> {
+  const response = await fetchJson<{ listing_id: number; item: MarketSnapshot | null }>(
+    `/listings/${listingId}/market-snapshots/latest`,
+    { signal }
+  );
+  return response.item;
+}
+
+export async function refreshListingProfile(listingId: number): Promise<Company> {
+  return fetchJson<Company>(`/listings/${listingId}/profile/refresh`, { method: "POST" });
+}
+
+export async function refreshListingMarketSnapshot(listingId: number): Promise<MarketSnapshot> {
+  return fetchJson<MarketSnapshot>(`/listings/${listingId}/market-snapshots/refresh`, {
+    method: "POST"
+  });
+}
+
+export async function refreshFxRate(
+  baseCurrency: string,
+  quoteCurrency: string
+): Promise<{
+  id: number;
+  base_currency: string;
+  quote_currency: string;
+  rate: number;
+  rate_date: string;
+  calculation_audit: Record<string, unknown> | null;
+}> {
+  const query = new URLSearchParams({
+    base_currency: baseCurrency,
+    quote_currency: quoteCurrency
+  });
+  return fetchJson(`/fx-rates/refresh?${query.toString()}`, { method: "POST" });
+}
+
 export async function createCompany(payload: NewCompanyPayload): Promise<Company> {
   return fetchJson<Company>("/companies", {
     method: "POST",
@@ -859,12 +1262,15 @@ export async function getCompanyFinancialEvidencePack(
 
 export async function syncCompanyFinancials(
   companyId: number,
-  params: { limit?: number; signal?: AbortSignal } = {}
+  params: { limit?: number; listing_id?: number | null; signal?: AbortSignal } = {}
 ): Promise<FinancialStatementSyncResponse> {
   const searchParams = new URLSearchParams();
 
   if (typeof params.limit === "number") {
     searchParams.set("limit", String(params.limit));
+  }
+  if (typeof params.listing_id === "number") {
+    searchParams.set("listing_id", String(params.listing_id));
   }
 
   const queryString = searchParams.toString();
@@ -906,12 +1312,15 @@ export async function getCompanyAnnouncements(
 
 export async function syncCompanyAnnouncements(
   companyId: number,
-  params: { years?: number; signal?: AbortSignal } = {}
+  params: { years?: number; listing_id?: number | null; signal?: AbortSignal } = {}
 ): Promise<AnnouncementSyncResponse> {
   const searchParams = new URLSearchParams();
 
   if (typeof params.years === "number") {
     searchParams.set("years", String(params.years));
+  }
+  if (typeof params.listing_id === "number") {
+    searchParams.set("listing_id", String(params.listing_id));
   }
 
   const queryString = searchParams.toString();
@@ -1357,6 +1766,7 @@ export async function createPriceDecisionRun(
   params: {
     valuation_run_id?: number | null;
     safety_margin_override?: number | null;
+    listing_id?: number | null;
     signal?: AbortSignal;
   } = {}
 ): Promise<PriceDecisionMutationResponse> {
@@ -1366,7 +1776,8 @@ export async function createPriceDecisionRun(
       method: "POST",
       body: {
         valuation_run_id: params.valuation_run_id ?? null,
-        safety_margin_override: params.safety_margin_override ?? null
+        safety_margin_override: params.safety_margin_override ?? null,
+        listing_id: params.listing_id ?? null
       },
       signal: params.signal
     }
@@ -1508,6 +1919,306 @@ export async function updateAutomaticBackupSettings(
   return fetchJson<AutomaticBackupSettings>("/data-management/settings", {
     method: "PUT",
     body: settings,
+    signal
+  });
+}
+
+export async function getPortfolioOwners(signal?: AbortSignal): Promise<PortfolioOwnerListResponse> {
+  return fetchJson<PortfolioOwnerListResponse>("/investment-tools/portfolio-owners", { signal });
+}
+
+export async function createPortfolioOwner(
+  payload: { name: string; owner_type: PortfolioOwnerType; notes?: string | null },
+  signal?: AbortSignal
+): Promise<PortfolioOwner> {
+  return fetchJson<PortfolioOwner>("/investment-tools/portfolio-owners", {
+    method: "POST",
+    body: payload,
+    signal
+  });
+}
+
+export async function updatePortfolioOwner(
+  ownerId: number,
+  payload: Partial<{ name: string; owner_type: PortfolioOwnerType; notes: string | null }>,
+  signal?: AbortSignal
+): Promise<PortfolioOwner> {
+  return fetchJson<PortfolioOwner>(`/investment-tools/portfolio-owners/${ownerId}`, {
+    method: "PATCH",
+    body: payload,
+    signal
+  });
+}
+
+export async function deletePortfolioOwner(
+  ownerId: number,
+  signal?: AbortSignal
+): Promise<{ id: number; deleted: boolean }> {
+  return fetchJson(`/investment-tools/portfolio-owners/${ownerId}`, {
+    method: "DELETE",
+    signal
+  });
+}
+
+export async function reorderPortfolioOwners(
+  orderedIds: number[],
+  signal?: AbortSignal
+): Promise<PortfolioOwnerListResponse> {
+  return fetchJson<PortfolioOwnerListResponse>("/investment-tools/portfolio-owners/reorder", {
+    method: "PUT",
+    body: { ordered_ids: orderedIds },
+    signal
+  });
+}
+
+export async function getPortfolioSnapshots(
+  ownerId: number,
+  signal?: AbortSignal
+): Promise<PortfolioSnapshotListResponse> {
+  return fetchJson<PortfolioSnapshotListResponse>(
+    `/investment-tools/portfolio-owners/${ownerId}/snapshots`,
+    { signal }
+  );
+}
+
+export async function createPortfolioSnapshot(
+  ownerId: number,
+  payload: {
+    title: string;
+    as_of_date: string;
+    base_currency: PortfolioCurrency;
+    notes?: string | null;
+    copy_from_snapshot_id?: number | null;
+  },
+  signal?: AbortSignal
+): Promise<PortfolioSnapshot> {
+  return fetchJson<PortfolioSnapshot>(
+    `/investment-tools/portfolio-owners/${ownerId}/snapshots`,
+    { method: "POST", body: payload, signal }
+  );
+}
+
+export async function updatePortfolioSnapshot(
+  snapshotId: number,
+  payload: Partial<{
+    title: string;
+    as_of_date: string;
+    base_currency: PortfolioCurrency;
+    notes: string | null;
+  }>,
+  signal?: AbortSignal
+): Promise<PortfolioSnapshot> {
+  return fetchJson<PortfolioSnapshot>(`/investment-tools/portfolio-snapshots/${snapshotId}`, {
+    method: "PATCH",
+    body: payload,
+    signal
+  });
+}
+
+export async function deletePortfolioSnapshot(
+  snapshotId: number,
+  signal?: AbortSignal
+): Promise<{ id: number; deleted: boolean }> {
+  return fetchJson(`/investment-tools/portfolio-snapshots/${snapshotId}`, {
+    method: "DELETE",
+    signal
+  });
+}
+
+export async function reorderPortfolioSnapshots(
+  ownerId: number,
+  orderedIds: number[],
+  signal?: AbortSignal
+): Promise<PortfolioSnapshotListResponse> {
+  return fetchJson<PortfolioSnapshotListResponse>(
+    `/investment-tools/portfolio-owners/${ownerId}/snapshots/reorder`,
+    { method: "PUT", body: { ordered_ids: orderedIds }, signal }
+  );
+}
+
+export async function searchPortfolioListings(
+  query: string,
+  signal?: AbortSignal
+): Promise<PortfolioListingSearchResponse> {
+  const searchParams = new URLSearchParams({ q: query, limit: "20" });
+  return fetchJson<PortfolioListingSearchResponse>(
+    `/investment-tools/portfolio-listings/search?${searchParams.toString()}`,
+    { signal }
+  );
+}
+
+export async function searchSecUsListingCatalog(
+  query: string,
+  signal?: AbortSignal
+): Promise<SecUsListingCatalogResponse> {
+  const searchParams = new URLSearchParams({ q: query, limit: "20" });
+  return fetchJson<SecUsListingCatalogResponse>(
+    `/investment-tools/portfolio-listings/us-catalog/search?${searchParams.toString()}`,
+    { signal }
+  );
+}
+
+export async function searchAhListingCatalog(
+  query: string,
+  signal?: AbortSignal
+): Promise<AhListingCatalogResponse> {
+  const searchParams = new URLSearchParams({ q: query, limit: "20" });
+  return fetchJson<AhListingCatalogResponse>(
+    `/investment-tools/portfolio-listings/ah-catalog/search?${searchParams.toString()}`,
+    { signal }
+  );
+}
+
+export async function importAhListing(
+  payload: { quote_id: string },
+  signal?: AbortSignal
+): Promise<PortfolioListingSearchItem> {
+  return fetchJson<PortfolioListingSearchItem>(
+    "/investment-tools/portfolio-listings/ah-catalog/import",
+    { method: "POST", body: payload, signal }
+  );
+}
+
+export async function importSecUsListing(
+  payload: { cik: string; symbol: string },
+  signal?: AbortSignal
+): Promise<PortfolioListingSearchItem> {
+  return fetchJson<PortfolioListingSearchItem>(
+    "/investment-tools/portfolio-listings/us-catalog/import",
+    { method: "POST", body: payload, signal }
+  );
+}
+
+export async function getBuyMemoEntries(
+  signal?: AbortSignal
+): Promise<{ items: BuyMemoEntry[]; total: number }> {
+  return fetchJson<{ items: BuyMemoEntry[]; total: number }>(
+    "/investment-tools/buy-memo-entries",
+    { signal }
+  );
+}
+
+export async function searchBuyMemoCompanies(
+  query = "",
+  signal?: AbortSignal
+): Promise<{ items: BuyMemoCompanyCandidate[]; total: number }> {
+  const searchParams = new URLSearchParams({ q: query, limit: "100" });
+  return fetchJson<{ items: BuyMemoCompanyCandidate[]; total: number }>(
+    `/investment-tools/buy-memo-companies?${searchParams.toString()}`,
+    { signal }
+  );
+}
+
+export async function getBuyMemoDecisions(
+  companyId: number,
+  signal?: AbortSignal
+): Promise<{ company_id: number; items: BuyMemoDecisionCandidate[]; total: number }> {
+  return fetchJson<{ company_id: number; items: BuyMemoDecisionCandidate[]; total: number }>(
+    `/investment-tools/buy-memo-companies/${companyId}/price-decisions`,
+    { signal }
+  );
+}
+
+export async function createBuyMemoEntry(
+  priceDecisionRunId: number,
+  signal?: AbortSignal
+): Promise<BuyMemoEntry> {
+  return fetchJson<BuyMemoEntry>("/investment-tools/buy-memo-entries", {
+    method: "POST",
+    body: { price_decision_run_id: priceDecisionRunId },
+    signal
+  });
+}
+
+export async function deleteBuyMemoEntry(
+  entryId: number,
+  signal?: AbortSignal
+): Promise<{ id: number; deleted: boolean }> {
+  return fetchJson<{ id: number; deleted: boolean }>(`/investment-tools/buy-memo-entries/${entryId}`, {
+    method: "DELETE",
+    signal
+  });
+}
+
+export async function getPortfolioHoldings(
+  snapshotId: number,
+  signal?: AbortSignal
+): Promise<PortfolioHoldingListResponse> {
+  return fetchJson<PortfolioHoldingListResponse>(
+    `/investment-tools/portfolio-snapshots/${snapshotId}/holdings`,
+    { signal }
+  );
+}
+
+export async function createPortfolioHolding(
+  snapshotId: number,
+  payload: { listing_id: number; quantity: string; notes?: string | null; display_order?: number },
+  signal?: AbortSignal
+): Promise<PortfolioHolding> {
+  return fetchJson<PortfolioHolding>(
+    `/investment-tools/portfolio-snapshots/${snapshotId}/holdings`,
+    { method: "POST", body: payload, signal }
+  );
+}
+
+export async function updatePortfolioHolding(
+  holdingId: number,
+  payload: Partial<{
+    listing_id: number;
+    quantity: string;
+    notes: string | null;
+    display_order: number;
+  }>,
+  signal?: AbortSignal
+): Promise<PortfolioHolding> {
+  return fetchJson<PortfolioHolding>(`/investment-tools/portfolio-holdings/${holdingId}`, {
+    method: "PATCH",
+    body: payload,
+    signal
+  });
+}
+
+export async function deletePortfolioHolding(
+  holdingId: number,
+  signal?: AbortSignal
+): Promise<{ id: number; deleted: boolean }> {
+  return fetchJson(`/investment-tools/portfolio-holdings/${holdingId}`, {
+    method: "DELETE",
+    signal
+  });
+}
+
+export async function getPortfolioValuation(
+  snapshotId: number,
+  signal?: AbortSignal
+): Promise<PortfolioValuation> {
+  return fetchJson<PortfolioValuation>(
+    `/investment-tools/portfolio-snapshots/${snapshotId}/valuation`,
+    { signal }
+  );
+}
+
+export async function refreshPortfolioQuotes(
+  snapshotId: number,
+  signal?: AbortSignal
+): Promise<PortfolioRefreshResult> {
+  return fetchJson<PortfolioRefreshResult>(
+    `/investment-tools/portfolio-snapshots/${snapshotId}/refresh-quotes`,
+    { method: "POST", signal }
+  );
+}
+
+export async function getMarketFear(signal?: AbortSignal): Promise<MarketFearResponse> {
+  return fetchJson<MarketFearResponse>("/investment-tools/market-fear", { signal });
+}
+
+export async function refreshMarketFear(
+  market?: MarketFearIndicator["market"],
+  signal?: AbortSignal
+): Promise<MarketFearResponse> {
+  const query = market ? `?market=${market}` : "";
+  return fetchJson<MarketFearResponse>(`/investment-tools/market-fear/refresh${query}`, {
+    method: "POST",
     signal
   });
 }

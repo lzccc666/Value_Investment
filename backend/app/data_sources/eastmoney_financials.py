@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import date, datetime
 from typing import Any
 
 import httpx
@@ -19,6 +22,19 @@ class FetchedFinancialStatement:
     fields: dict[str, object]
     source: str
     source_url: str
+    source_record_id: str | None = None
+    filing_type: str | None = None
+    taxonomy: str | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    period_type: str | None = None
+    fiscal_year: int | None = None
+    fiscal_period: str | None = None
+    filed_at: datetime | None = None
+    unit_scale: float = 1.0
+    is_amendment: bool = False
+    raw_snapshot_hash: str | None = None
+    mapping_diagnostics: tuple[dict[str, object], ...] = ()
 
 
 class EastmoneyFinancialClient:
@@ -123,10 +139,59 @@ class EastmoneyFinancialClient:
             raise FinancialDataSourceError("东方财富财务数据结构异常")
 
         return [
-            mapper(row, source_name, str(response.url))
+            _with_explicit_period_contract(
+                mapper(row, source_name, str(response.url)),
+                raw_row=row,
+            )
             for row in raw_items
             if isinstance(row, dict)
         ]
+
+
+def _with_explicit_period_contract(
+    statement: FetchedFinancialStatement, *, raw_row: dict[str, Any]
+) -> FetchedFinancialStatement:
+    report_date = _date_or_none(statement.fields.get("report_date"))
+    if report_date is None:
+        return statement
+    report_type = str(statement.fields.get("report_type") or statement.period)
+    if report_date.month == 12 and report_date.day == 31 or "年报" in report_type:
+        period_type = "annual"
+        fiscal_period = "FY"
+    elif report_date.month == 6 and report_date.day == 30 or "中报" in report_type:
+        period_type = "interim_ytd"
+        fiscal_period = "H1"
+    else:
+        period_type = "quarterly_ytd"
+        fiscal_period = {3: "Q1", 9: "Q3"}.get(report_date.month, "Q")
+    source_record_id = ":".join(
+        [statement.source, statement.statement_type, report_date.isoformat()]
+    )
+    raw_hash = hashlib.sha256(
+        json.dumps(raw_row, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    return replace(
+        statement,
+        source_record_id=source_record_id,
+        filing_type=report_type,
+        taxonomy="eastmoney_f10",
+        period_start=date(report_date.year, 1, 1),
+        period_end=report_date,
+        period_type=period_type,
+        fiscal_year=report_date.year,
+        fiscal_period=fiscal_period,
+        raw_snapshot_hash=raw_hash,
+    )
+
+
+def _date_or_none(value: object) -> date | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()[:10]
+    try:
+        return date.fromisoformat(normalized)
+    except ValueError:
+        return None
 
 
 def _map_eastmoney_main_finance_row(

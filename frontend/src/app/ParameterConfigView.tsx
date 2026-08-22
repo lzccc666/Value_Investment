@@ -31,6 +31,7 @@ type ParameterConfigViewProps = { refreshToken: number };
 const DOMAIN_LABELS: Record<string, string> = {
   data_sampling: "数据采样",
   financial_flags: "财务预警",
+  market_data: "市场数据",
   analyst_engine: "分析师引擎",
   valuation_rule_matrix: "规则矩阵",
   memo_decision: "备忘录决策",

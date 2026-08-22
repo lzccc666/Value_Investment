@@ -29,6 +29,7 @@ from app.data_sources.web_search_provider import (
     AShareCompanyDisclosureSearchProvider,
     CompositeWebSearchProvider,
     HttpWebPageSnapshotFetcher,
+    KnownOfficialDisclosureSearchProvider,
     PageSnapshot,
     WebPageSnapshotFetcher,
     WebSearchError,
@@ -468,6 +469,7 @@ def search_company_evidence(
         AnnouncementContentFetcher() if search_provider is None else None
     )
     fallback_provider = fallback_search_provider or _default_fallback_search_provider(
+        company=company,
         provider=provider,
         search_provider_was_injected=search_provider is not None,
     )
@@ -967,6 +969,7 @@ def _manual_import_analysis_note(
 
 def _default_fallback_search_provider(
     *,
+    company: Company,
     provider: WebSearchProvider,
     search_provider_was_injected: bool,
 ) -> WebSearchProvider | None:
@@ -974,7 +977,9 @@ def _default_fallback_search_provider(
         return None
 
     providers: list[WebSearchProvider] = []
-    providers.append(AShareCompanyDisclosureSearchProvider(years=3))
+    if _company_market(company) == "A_SHARE":
+        providers.append(AShareCompanyDisclosureSearchProvider(years=3))
+    providers.append(KnownOfficialDisclosureSearchProvider())
     if isinstance(provider, CompositeWebSearchProvider):
         providers.extend(provider.providers)
     else:
@@ -1041,6 +1046,50 @@ def _build_fallback_queries(company: Company, keywords: list[str]) -> list[str]:
     ticker_code = company.ticker.split(".", maxsplit=1)[0] if company.ticker else ""
     company_terms = [company.name, ticker_code or company.ticker]
     company_query_prefix = " ".join(term for term in company_terms if term)
+    market = _company_market(company)
+
+    if market == "HK":
+        if company_query_prefix:
+            _append_unique(
+                queries,
+                f"{company_query_prefix} 公告 年报 中期业绩 site:hkexnews.hk",
+            )
+            _append_unique(queries, f"{company_query_prefix} 监管 处罚 site:sfc.hk")
+            _append_unique(queries, f"{company_query_prefix} investor relations")
+            _append_unique(queries, f"{company_query_prefix} 监管 合规 诉讼 香港")
+        if company.industry:
+            _append_unique(
+                queries,
+                f"{company.industry} 统计 公开数据 site:censtatd.gov.hk",
+            )
+            _append_unique(queries, f"{company.industry} 政策 监管 site:gov.hk")
+        for keyword in keywords:
+            if keyword.strip() and company_query_prefix:
+                _append_unique(
+                    queries,
+                    f"{company_query_prefix} {keyword} HKEX SFC 公开数据",
+                )
+        return queries
+
+    if market == "US":
+        if company_query_prefix:
+            _append_unique(
+                queries,
+                f"{company_query_prefix} 10-K 10-Q 8-K site:sec.gov",
+            )
+            _append_unique(queries, f"{company_query_prefix} investor relations")
+            _append_unique(queries, f"{company_query_prefix} regulator enforcement")
+        if company.industry:
+            _append_unique(queries, f"{company.industry} industry data site:bea.gov")
+            _append_unique(queries, f"{company.industry} employment data site:bls.gov")
+            _append_unique(queries, f"{company.industry} public data site:census.gov")
+        for keyword in keywords:
+            if keyword.strip() and company_query_prefix:
+                _append_unique(
+                    queries,
+                    f"{company_query_prefix} {keyword} SEC government public data",
+                )
+        return queries
 
     if company_query_prefix:
         _append_unique(queries, f"{company_query_prefix} 监管函 问询函 site:sse.com.cn")
@@ -1070,6 +1119,12 @@ def _build_official_fallback_leads(
     )
     if not company_query_prefix:
         return []
+
+    market = _company_market(company)
+    if market == "HK":
+        return _build_hk_official_fallback_leads(company, company_query_prefix, keywords)
+    if market == "US":
+        return _build_us_official_fallback_leads(company, company_query_prefix, keywords)
 
     note = (
         "通用搜索和 A 股定向外部事实 fallback 均未形成可送模型候选；"
@@ -1135,6 +1190,110 @@ def _build_official_fallback_leads(
                     "url": "https://www.gov.cn/",
                     "source": "www.gov.cn",
                     "snippet": f"用于追溯 {keyword} 相关政策、监管、政府公开数据和行业公开信息。",
+                    "analysis_note": note,
+                }
+            )
+    return leads[:5]
+
+
+def _build_hk_official_fallback_leads(
+    company: Company, company_query_prefix: str, keywords: list[str]
+) -> list[dict[str, object]]:
+    note = (
+        "港股定向 fallback 未形成可送模型候选；本条只保留 HKEX、SFC 或香港政府"
+        "官方追溯路径，需要人工检索原始文件。"
+    )
+    leads = [
+        {
+            "query": f"{company_query_prefix} 公告 年报 中期业绩",
+            "title": f"{company.name} HKEXnews 官方披露追溯线索",
+            "url": "https://www1.hkexnews.hk/search/titlesearch.xhtml",
+            "source": "www1.hkexnews.hk",
+            "snippet": "用于按股份代号复核年报、中报、业绩公告、重大事项和治理披露。",
+            "analysis_note": note,
+        },
+        {
+            "query": f"{company_query_prefix} 监管 处罚",
+            "title": f"{company.name} 香港证监会监管公开信息线索",
+            "url": "https://www.sfc.hk/",
+            "source": "www.sfc.hk",
+            "snippet": "用于复核市场纪律、监管措施、处罚和公开监管资料。",
+            "analysis_note": note,
+        },
+        {
+            "query": f"{company.industry or company.name} 香港行业统计 公开数据",
+            "title": f"{company.industry or company.name} 香港政府统计追溯线索",
+            "url": "https://www.censtatd.gov.hk/",
+            "source": "www.censtatd.gov.hk",
+            "snippet": "用于复核香港行业、贸易、消费和宏观统计公开数据。",
+            "analysis_note": note,
+        },
+    ]
+    for keyword in keywords:
+        if keyword.strip():
+            leads.append(
+                {
+                    "query": f"{company_query_prefix} {keyword} 香港政府 监管 公开数据",
+                    "title": f"{company.name} {keyword} 香港官方资料线索",
+                    "url": "https://www.gov.hk/",
+                    "source": "www.gov.hk",
+                    "snippet": f"用于复核 {keyword} 相关香港政策、监管和政府公开资料。",
+                    "analysis_note": note,
+                }
+            )
+    return leads[:5]
+
+
+def _build_us_official_fallback_leads(
+    company: Company, company_query_prefix: str, keywords: list[str]
+) -> list[dict[str, object]]:
+    note = (
+        "美股定向 fallback 未形成可送模型候选；本条只保留 SEC、BEA、BLS 或 Census"
+        "官方追溯路径，需要人工检索原始文件。"
+    )
+    leads = [
+        {
+            "query": f"{company_query_prefix} 10-K 10-Q 8-K",
+            "title": f"{company.name} SEC EDGAR 官方披露追溯线索",
+            "url": "https://www.sec.gov/edgar/search/",
+            "source": "www.sec.gov",
+            "snippet": "用于复核 10-K、10-Q、8-K、20-F、6-K 和 proxy statement。",
+            "analysis_note": note,
+        },
+        {
+            "query": f"{company.industry or company.name} US industry public data",
+            "title": f"{company.industry or company.name} BEA 行业数据追溯线索",
+            "url": "https://www.bea.gov/data",
+            "source": "www.bea.gov",
+            "snippet": "用于复核美国宏观、行业、收入和消费公开数据。",
+            "analysis_note": note,
+        },
+        {
+            "query": f"{company.industry or company.name} employment public data",
+            "title": f"{company.industry or company.name} BLS 劳动统计追溯线索",
+            "url": "https://www.bls.gov/data/",
+            "source": "www.bls.gov",
+            "snippet": "用于复核就业、工资、通胀和行业劳动统计。",
+            "analysis_note": note,
+        },
+        {
+            "query": f"{company.industry or company.name} Census public data",
+            "title": f"{company.industry or company.name} Census 公开数据追溯线索",
+            "url": "https://www.census.gov/data.html",
+            "source": "www.census.gov",
+            "snippet": "用于复核美国人口、商业、贸易和行业普查数据。",
+            "analysis_note": note,
+        },
+    ]
+    for keyword in keywords:
+        if keyword.strip():
+            leads.append(
+                {
+                    "query": f"{company_query_prefix} {keyword} SEC government data",
+                    "title": f"{company.name} {keyword} 美国官方资料线索",
+                    "url": "https://www.usa.gov/",
+                    "source": "www.usa.gov",
+                    "snippet": f"用于复核 {keyword} 相关美国政府和监管公开资料。",
                     "analysis_note": note,
                 }
             )
@@ -1341,6 +1500,9 @@ def _build_seed_source_leads(
     company: Company,
     keywords: list[str],
 ) -> list[dict[str, object]]:
+    market = _company_market(company)
+    if market in {"HK", "US"}:
+        return _build_official_fallback_leads(company, keywords)
     aliases = _company_semantic_aliases(company)
     industry_terms = _industry_semantic_terms(company)
     query_prefix = " ".join(
@@ -1455,6 +1617,20 @@ def _industry_semantic_terms(company: Company) -> list[str]:
         for term in ("食品安全", "市场监管", "渠道库存", "产量 消费 税收"):
             _append_unique(terms, term)
     return terms
+
+
+def _company_market(company: Company) -> str:
+    primary = company.primary_listing
+    if primary is not None and primary.market:
+        return primary.market.strip().upper()
+    exchange = (company.exchange or "").strip().upper()
+    if exchange in {"SSE", "SZSE", "BSE"}:
+        return "A_SHARE"
+    if exchange == "HKEX":
+        return "HK"
+    if exchange in {"NASDAQ", "NYSE", "AMEX"}:
+        return "US"
+    return "OTHER"
 
 
 def _dedupe_leads(leads: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -2261,14 +2437,32 @@ def _try_repair_evidence_output(
 
 
 def _company_snapshot(company: Company) -> dict[str, Any]:
+    primary_listing = company.primary_listing
     return {
         "id": company.id,
         "ticker": company.ticker,
         "exchange": company.exchange,
         "name": company.name,
+        "canonical_key": company.canonical_key,
+        "legal_name": company.legal_name,
+        "aliases": list(company.aliases or []),
+        "domicile_country": company.domicile_country,
+        "reporting_currency": company.reporting_currency,
+        "fiscal_year_end": company.fiscal_year_end,
         "industry": company.industry,
         "description": company.description,
         "tags": company.tags,
+        "primary_listing": (
+            {
+                "ticker": primary_listing.ticker,
+                "exchange": primary_listing.exchange,
+                "market": primary_listing.market,
+                "trading_currency": primary_listing.trading_currency,
+                "security_type": primary_listing.security_type,
+            }
+            if primary_listing is not None
+            else None
+        ),
     }
 
 

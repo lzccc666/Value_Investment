@@ -91,8 +91,20 @@ PRICE_ANCHOR_TEXT_PATTERNS = (
     ("rating", re.compile(r"(?:券商|机构|市场|投资|分析师)(?:的)?评级")),
     ("target_price", re.compile(r"目标价")),
     ("market_sentiment", re.compile(r"市场情绪")),
-    ("safety_margin", re.compile(r"安全边际")),
-    ("trade_action", re.compile(r"(?:买入|卖出|持有|加仓|减仓|建仓|清仓)(?:建议|动作|信号)?")),
+    (
+        "safety_margin",
+        re.compile(r"(?<!财务)(?<!偿债)(?<!现金流)(?<!资本结构)(?<!流动性)(?<!经营)安全边际"),
+    ),
+    (
+        "trade_action",
+        re.compile(
+            r"(?:加仓|减仓|建仓|清仓)"
+            r"|(?:买入|卖出)(?:建议|动作|信号|时机|区间|价格|股票|股份)"
+            r"|(?:建议|考虑|适合|应当|可以|可|不宜|无需|不能|不建议).{0,6}"
+            r"(?:买入|卖出|持有)"
+            r"|持有(?:建议|动作|信号|评级|逻辑|理由)"
+        ),
+    ),
 )
 
 

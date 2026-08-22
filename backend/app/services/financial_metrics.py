@@ -156,7 +156,31 @@ def order_financial_statement_query(
 def build_financial_evidence_pack(
     statements: Iterable[FinancialStatement],
 ) -> dict[str, object]:
-    statement_snapshots = [_statement_snapshot(item) for item in statements]
+    statement_rows = list(statements)
+    statement_snapshots = [_statement_snapshot(item) for item in statement_rows]
+    currencies = sorted({item.currency.strip().upper() for item in statement_rows if item.currency})
+    taxonomies = sorted({item.taxonomy for item in statement_rows if item.taxonomy})
+    mapping_diagnostics = [
+        diagnostic
+        for item in statement_rows
+        for diagnostic in (
+            item.fields.get("mapping_diagnostics", [])
+            if isinstance(item.fields, dict)
+            and isinstance(item.fields.get("mapping_diagnostics"), list)
+            else []
+        )
+        if isinstance(diagnostic, dict)
+    ]
+    if len(currencies) > 1:
+        mapping_diagnostics.insert(
+            0,
+            {
+                "code": "mixed_financial_currencies",
+                "severity": "high",
+                "currencies": currencies,
+                "message": "同一财务证据包包含多种币种，估值已阻断。",
+            },
+        )
     snapshots = _merge_snapshots_by_period(statement_snapshots)
     latest = snapshots[0] if snapshots else None
     data_gaps = _build_structured_data_gaps(snapshots)
@@ -173,6 +197,17 @@ def build_financial_evidence_pack(
     data_quality = _build_data_quality(snapshots, data_gaps, cash_flow_coverage)
 
     return {
+        "reporting_currency": currencies[0] if len(currencies) == 1 else None,
+        "accounting_standard": taxonomies[0] if len(taxonomies) == 1 else None,
+        "source_coverage": {
+            "statement_count": len(statement_rows),
+            "statement_types": sorted({item.statement_type for item in statement_rows}),
+            "sources": sorted({item.source for item in statement_rows if item.source}),
+            "currencies": currencies,
+            "taxonomies": taxonomies,
+            "currency_consistent": len(currencies) <= 1,
+        },
+        "mapping_diagnostics": mapping_diagnostics,
         "latest_period": latest["period"] if latest else None,
         "periods": [item["period"] for item in snapshots],
         "financial_facts": facts,
@@ -217,6 +252,16 @@ def _statement_snapshot(statement: FinancialStatement) -> dict[str, object]:
         "id": statement.id,
         "period": statement.period,
         "statement_type": statement.statement_type,
+        "currency": statement.currency,
+        "source": statement.source,
+        "source_record_id": statement.source_record_id,
+        "filing_type": statement.filing_type,
+        "taxonomy": statement.taxonomy,
+        "period_start": statement.period_start.isoformat() if statement.period_start else None,
+        "period_end": statement.period_end.isoformat() if statement.period_end else None,
+        "period_type": statement.period_type,
+        "fiscal_year": statement.fiscal_year,
+        "fiscal_period": statement.fiscal_period,
         "fields": dict(fields),
     }
 
@@ -235,6 +280,12 @@ def _merge_snapshots_by_period(
                 "statement_types": [],
                 "fields": {},
                 "source_statement_ids": [],
+                "source": statement.get("source"),
+                "period_start": statement.get("period_start"),
+                "period_end": statement.get("period_end"),
+                "period_type": statement.get("period_type"),
+                "fiscal_year": statement.get("fiscal_year"),
+                "fiscal_period": statement.get("fiscal_period"),
             },
         )
         snapshot["source_statement_ids"].append(statement["id"])
@@ -271,6 +322,13 @@ def _derive_period_fields(snapshot: dict[str, object]) -> None:
 
     cash = _number_or_none(fields.get("cash_and_equivalents"))
     debt = _number_or_none(fields.get("interest_bearing_debt"))
+    if debt is None:
+        debt = _sum_known_numbers(
+            fields.get("short_term_interest_bearing_debt"),
+            fields.get("long_term_interest_bearing_debt"),
+        )
+        if debt is not None:
+            fields["interest_bearing_debt"] = debt
     if _number_or_none(fields.get("net_cash")) is None and cash is not None and debt is not None:
         fields["net_cash"] = cash - debt
 
@@ -288,11 +346,11 @@ def _derive_period_fields(snapshot: dict[str, object]) -> None:
     revenue = _number_or_none(fields.get("revenue"))
     free_cash_flow = _number_or_none(fields.get("free_cash_flow"))
     operating_cost = _number_or_none(fields.get("operating_cost"))
-    if (
-        _number_or_none(fields.get("gross_profit")) is None
-        and revenue is not None
-        and operating_cost is not None
-    ):
+    gross_profit = _number_or_none(fields.get("gross_profit"))
+    if operating_cost is None and revenue is not None and gross_profit is not None:
+        operating_cost = revenue - gross_profit
+        fields["operating_cost"] = operating_cost
+    if gross_profit is None and revenue is not None and operating_cost is not None:
         fields["gross_profit"] = revenue - operating_cost
     gross_profit = _number_or_none(fields.get("gross_profit"))
     if _number_or_none(fields.get("gross_margin")) is None and gross_profit is not None and revenue:
@@ -953,6 +1011,7 @@ def _build_flags(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
 def _build_structured_data_gaps(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
     data_gaps: list[dict[str, object]] = []
     available_fields = _available_numeric_fields(snapshots)
+    latest_available_fields = _available_numeric_fields(snapshots[:1])
     if "operating_cash_flow" not in available_fields:
         has_proxy = any(field in available_fields for field in OPERATING_CASH_FLOW_PROXY_FIELDS)
         _append_gap(
@@ -1016,17 +1075,23 @@ def _build_structured_data_gaps(snapshots: list[dict[str, object]]) -> list[dict
                 )
             continue
         if field == "impairment_losses":
-            if not any(item in available_fields for item in IMPAIRMENT_FIELDS):
+            if not any(item in latest_available_fields for item in IMPAIRMENT_FIELDS):
+                reason = str(definition["reason"])
+                if snapshots and snapshots[0].get("source") == "sec_companyfacts":
+                    reason = (
+                        "SEC Company Facts 未提供最新期间可映射的减值损失标准事实；"
+                        "发行人可能未单独披露或该项不重大，不能按 0 处理。"
+                    )
                 _append_gap(
                     data_gaps,
                     field=field,
                     severity=str(definition["severity"]),
-                    reason=str(definition["reason"]),
+                    reason=reason,
                     needed_by=list(definition["needed_by"]),
                 )
             continue
         if field == "non_operating_items":
-            if not any(item in available_fields for item in NON_OPERATING_FIELDS):
+            if not any(item in latest_available_fields for item in NON_OPERATING_FIELDS):
                 _append_gap(
                     data_gaps,
                     field=field,
@@ -1268,6 +1333,15 @@ def _trend_direction(snapshots: list[dict[str, object]], field: str) -> str:
 
 def _looks_like_annual_report(snapshot: dict[str, object]) -> bool:
     period = str(snapshot.get("period") or "")
+    period_type = str(snapshot.get("period_type") or "").lower()
+    fiscal_period = str(snapshot.get("fiscal_period") or "").upper()
+    filing_type = str(snapshot.get("filing_type") or "").removesuffix("/A")
+    if period_type:
+        return period_type == "annual"
+    if fiscal_period:
+        return fiscal_period == "FY"
+    if filing_type:
+        return filing_type in {"10-K", "20-F"}
     fields = _fields(snapshot)
     report_type = str(fields.get("report_type") or "")
     report_date = str(fields.get("report_date") or "")

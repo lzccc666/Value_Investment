@@ -6,6 +6,7 @@ import {
   ClipboardList,
   DatabaseZap,
   FileText,
+  Gauge,
   Newspaper,
   Scale,
   Search,
@@ -33,6 +34,7 @@ export type NavItemId =
   | "memo"
   | "valuation-lab"
   | "price-decision"
+  | "investment-tools"
   | "parameter-config"
   | "data-management";
 
@@ -63,6 +65,7 @@ export const navigationItems: NavItem[] = [
   { id: "memo", label: "投资备忘录", icon: FileText },
   { id: "valuation-lab", label: "估值实验室", icon: Calculator },
   { id: "price-decision", label: "价格决策", icon: Scale },
+  { id: "investment-tools", label: "投资小工具", icon: Gauge },
   { id: "parameter-config", label: "参数配置", icon: SlidersHorizontal },
   { id: "data-management", label: "数据管理", icon: DatabaseZap }
 ];

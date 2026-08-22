@@ -4,13 +4,28 @@ import hashlib
 import json
 import math
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.configuration.runtime import parameter_config_context, parameter_value
-from app.db.models import Company, InvestmentMemo, PriceDecisionRun, ValuationRun, utc_now
+from app.db.models import (
+    Company,
+    FxRateSnapshot,
+    InvestmentMemo,
+    MarketSnapshot,
+    PriceDecisionRun,
+    SecurityListing,
+    ValuationRun,
+    utc_now,
+)
+from app.services.companies import (
+    get_latest_market_snapshot,
+    get_listing,
+    get_primary_listing,
+    listing_defaults,
+)
 from app.services.parameter_config_service import get_runtime_parameter_config
 
 RUN_VERSION = "011_v1"
@@ -39,6 +54,7 @@ def create_price_decision_run(
     *,
     valuation_run_id: int | None = None,
     safety_margin_override: float | None = None,
+    listing_id: int | None = None,
 ) -> PriceDecisionRun:
     runtime = get_runtime_parameter_config(session)
     with parameter_config_context(runtime.snapshot):
@@ -47,6 +63,7 @@ def create_price_decision_run(
             company,
             valuation_run_id=valuation_run_id,
             safety_margin_override=safety_margin_override,
+            listing_id=listing_id,
             config_version=runtime.version,
             config_hash=runtime.config_hash,
             config_snapshot=runtime.snapshot,
@@ -59,6 +76,7 @@ def _create_price_decision_run_with_config(
     *,
     valuation_run_id: int | None,
     safety_margin_override: float | None,
+    listing_id: int | None,
     config_version: int | None,
     config_hash: str,
     config_snapshot: dict[str, object],
@@ -71,28 +89,74 @@ def _create_price_decision_run_with_config(
     memo = _resolve_bound_memo(session, company_id=company.id, valuation_run=valuation_run)
     intrinsic_values = _read_intrinsic_values(valuation_run)
     suggested_margin = _read_valuation_safety_margin(valuation_run)
-    current_price, market_data_updated_at = _read_market_price(company)
+    listing, market_snapshot = _resolve_listing_market_snapshot(
+        session, company, listing_id=listing_id
+    )
+    valuation_currency = _resolve_valuation_currency(valuation_run, company, listing)
+    ratio = _validate_listing_ratio(listing)
+    fx_rate, fx_snapshot = _resolve_fx_rate(
+        session,
+        valuation_currency=valuation_currency,
+        trading_currency=listing.trading_currency,
+    )
+    listing_intrinsic_values = {
+        scenario: value * ratio * fx_rate for scenario, value in intrinsic_values.items()
+    }
+    current_price = market_snapshot.price
+    market_data_updated_at = market_snapshot.price_as_of
     override = _validate_margin_override(safety_margin_override)
     effective_margin = suggested_margin if override is None else override
 
     scenario_buy_prices = {
-        scenario: value * (1.0 - effective_margin) for scenario, value in intrinsic_values.items()
+        scenario: value * (1.0 - effective_margin)
+        for scenario, value in listing_intrinsic_values.items()
     }
     buy_price_scenario = str(parameter_value("price_decision.buy_price_scenario", "base"))
     suggested_buy_price = scenario_buy_prices[buy_price_scenario]
-    current_margin = 1.0 - current_price / intrinsic_values["base"]
+    current_margin = 1.0 - current_price / listing_intrinsic_values["base"]
     price_status = determine_price_status(
         current_price=current_price,
         suggested_buy_price=suggested_buy_price,
-        base_intrinsic_value=intrinsic_values["base"],
-        optimistic_intrinsic_value=intrinsic_values["optimistic"],
+        base_intrinsic_value=listing_intrinsic_values["base"],
+        optimistic_intrinsic_value=listing_intrinsic_values["optimistic"],
     )
 
     input_snapshot = {
-        "company": {
+        "issuer": {
             "id": company.id,
+            "canonical_key": company.canonical_key,
+            "valuation_currency": valuation_currency,
+        },
+        "listing": {
+            "id": listing.id,
+            "ticker": listing.ticker,
+            "exchange": listing.exchange,
+            "market": listing.market,
+            "trading_currency": listing.trading_currency,
+            "security_type": listing.security_type,
+            "underlying_shares_per_listing_unit": ratio,
+        },
+        "market_snapshot": {
+            "id": market_snapshot.id,
             "current_price": current_price,
-            "market_data_updated_at": _datetime_to_iso(market_data_updated_at),
+            "currency": market_snapshot.currency,
+            "price_as_of": _datetime_to_iso(market_snapshot.price_as_of),
+            "fetched_at": _datetime_to_iso(market_snapshot.fetched_at),
+            "source": market_snapshot.source,
+            "source_url": market_snapshot.source_url,
+        },
+        "fx_conversion": {
+            "base_currency": valuation_currency,
+            "quote_currency": listing.trading_currency,
+            "rate": fx_rate,
+            "snapshot_id": fx_snapshot.id if fx_snapshot else None,
+            "rate_date": fx_snapshot.rate_date.isoformat() if fx_snapshot else None,
+            "source": fx_snapshot.source if fx_snapshot else "identity",
+            "calculation_audit": (
+                deepcopy(fx_snapshot.calculation_audit) if fx_snapshot else None
+            ),
+            "formula": "issuer_per_share * listing_ratio * fx_rate",
+            "formula_version": "011_listing_fx_v1",
         },
         "valuation_run": {
             "id": valuation_run.id,
@@ -102,7 +166,8 @@ def _create_price_decision_run_with_config(
             "status": valuation_run.status,
             "results_status": valuation_run.results.get("status"),
             "input_snapshot_hash": valuation_run.input_snapshot_hash,
-            "intrinsic_values_per_share": intrinsic_values,
+            "issuer_intrinsic_values_per_share": intrinsic_values,
+            "listing_intrinsic_values_per_share": listing_intrinsic_values,
         },
         "memo": {
             "id": memo.id,
@@ -129,7 +194,8 @@ def _create_price_decision_run_with_config(
     version_no = (
         session.scalar(
             select(func.max(PriceDecisionRun.version_no)).where(
-                PriceDecisionRun.company_id == company.id
+                PriceDecisionRun.company_id == company.id,
+                PriceDecisionRun.listing_id == listing.id,
             )
         )
         or 0
@@ -139,6 +205,9 @@ def _create_price_decision_run_with_config(
         company_id=company.id,
         valuation_run_id=valuation_run.id,
         memo_id=memo.id,
+        listing_id=listing.id,
+        market_snapshot_id=market_snapshot.id,
+        fx_rate_snapshot_id=fx_snapshot.id if fx_snapshot else None,
         version_no=version_no,
         run_version=RUN_VERSION,
         formula_version=FORMULA_VERSION,
@@ -148,7 +217,12 @@ def _create_price_decision_run_with_config(
         config_version=config_version,
         config_hash=config_hash,
         config_snapshot=deepcopy(config_snapshot),
-        intrinsic_values_per_share=intrinsic_values,
+        intrinsic_values_per_share=listing_intrinsic_values,
+        issuer_intrinsic_values_per_share=intrinsic_values,
+        valuation_currency=valuation_currency,
+        trading_currency=listing.trading_currency,
+        underlying_shares_per_listing_unit=ratio,
+        fx_rate=fx_rate,
         current_price=current_price,
         market_data_updated_at=market_data_updated_at,
         analyst_score_total=None,
@@ -317,13 +391,159 @@ def _read_valuation_safety_margin(valuation_run: ValuationRun) -> float:
     return suggested_margin
 
 
-def _read_market_price(company: Company) -> tuple[float, datetime]:
+def _resolve_listing_market_snapshot(
+    session: Session,
+    company: Company,
+    *,
+    listing_id: int | None,
+) -> tuple[SecurityListing, MarketSnapshot]:
+    listing = get_listing(session, listing_id) if listing_id is not None else get_primary_listing(
+        session, company.id
+    )
+    if listing is None and listing_id is None:
+        listing = _materialize_legacy_listing(session, company)
+    if listing is None:
+        raise PriceDecisionInputError("指定的 Listing 不存在。")
+    if listing.company_id != company.id:
+        raise PriceDecisionInputError("指定的 Listing 不属于当前公司。")
+    if not listing.is_active or listing.security_type not in {"common_stock", "ads"}:
+        raise PriceDecisionInputError("指定的 Listing 不在当前普通股/ADS 支持范围内。")
+    snapshot = get_latest_market_snapshot(session, listing.id)
+    if snapshot is None and listing.is_primary:
+        snapshot = _materialize_legacy_market_snapshot(session, company, listing)
+    if snapshot is None:
+        raise PriceDecisionInputError("目标 Listing 缺少行情快照，请先刷新该 Listing 行情。")
+    if snapshot.currency != listing.trading_currency:
+        raise PriceDecisionInputError("行情快照币种与 Listing 交易币种不一致。")
+    if snapshot.price <= 0:
+        raise PriceDecisionInputError("行情快照缺少有效的正数价格。")
+    maximum_age = timedelta(
+        hours=float(parameter_value("market_data.quote_max_age_hours", 168))
+    )
+    if utc_now() - _as_utc(snapshot.fetched_at) > maximum_age:
+        raise PriceDecisionInputError("目标 Listing 行情快照已过期，请先刷新行情。")
+    return listing, snapshot
+
+
+def _materialize_legacy_listing(session: Session, company: Company) -> SecurityListing:
+    market, currency, _ = listing_defaults(company.exchange)
+    listing = SecurityListing(
+        company_id=company.id,
+        ticker=company.ticker,
+        symbol=company.ticker.rsplit(".", 1)[0],
+        exchange=company.exchange,
+        market=market,
+        trading_currency=currency,
+        security_type="common_stock",
+        listed_date=company.listed_date,
+        is_primary=True,
+        is_active=True,
+        underlying_shares_per_listing_unit=1.0,
+        provider_identifiers={},
+    )
+    session.add(listing)
+    session.flush()
+    return listing
+
+
+def _materialize_legacy_market_snapshot(
+    session: Session, company: Company, listing: SecurityListing
+) -> MarketSnapshot:
     current_price = _finite_number(company.current_price)
     if current_price is None or current_price <= 0:
         raise PriceDecisionInputError("缺少有效的当前价格，请先更新公司基本信息和行情数据。")
     if company.market_data_updated_at is None:
         raise PriceDecisionInputError("缺少当前价格的更新时间，请先更新公司基本信息和行情数据。")
-    return current_price, company.market_data_updated_at
+    payload = {
+        "company_id": company.id,
+        "listing_id": listing.id,
+        "price": current_price,
+        "currency": listing.trading_currency,
+        "fetched_at": company.market_data_updated_at.isoformat(),
+    }
+    snapshot = MarketSnapshot(
+        listing_id=listing.id,
+        price=current_price,
+        currency=listing.trading_currency,
+        market_cap=company.market_cap,
+        pe_ttm=company.pe_ttm,
+        pe_dynamic=company.pe_dynamic,
+        pe_static=company.pe_static,
+        pb_ratio=company.pb_ratio,
+        ps_ratio=company.ps_ratio,
+        dividend_yield_ttm=company.dividend_yield_ttm,
+        dividend_yield_static=company.dividend_yield_static,
+        price_as_of=company.market_data_updated_at,
+        fetched_at=company.market_data_updated_at,
+        source=company.market_data_source or "legacy_company_snapshot",
+        source_url=company.market_data_source_url,
+        raw_snapshot_hash=_hash_snapshot(payload),
+    )
+    session.add(snapshot)
+    session.flush()
+    return snapshot
+
+
+def _resolve_valuation_currency(
+    valuation_run: ValuationRun,
+    company: Company,
+    listing: SecurityListing,
+) -> str:
+    intrinsic_range = valuation_run.results.get("intrinsic_value_range")
+    range_currency = None
+    if isinstance(intrinsic_range, dict):
+        range_currency = intrinsic_range.get("currency") or intrinsic_range.get("unit")
+    currency = str(
+        valuation_run.valuation_currency
+        or range_currency
+        or company.reporting_currency
+        or listing.trading_currency
+    ).strip().upper()
+    if len(currency) != 3:
+        raise PriceDecisionInputError("010 估值缺少有效的 valuation currency。")
+    return currency
+
+
+def _validate_listing_ratio(listing: SecurityListing) -> float:
+    ratio = _finite_number(listing.underlying_shares_per_listing_unit)
+    if ratio is None or ratio <= 0:
+        raise PriceDecisionInputError("Listing 缺少经过复核的正数证券单位换算比例。")
+    return ratio
+
+
+def _resolve_fx_rate(
+    session: Session,
+    *,
+    valuation_currency: str,
+    trading_currency: str,
+) -> tuple[float, FxRateSnapshot | None]:
+    if valuation_currency == trading_currency:
+        return 1.0, None
+    snapshot = session.scalar(
+        select(FxRateSnapshot)
+        .where(
+            FxRateSnapshot.base_currency == valuation_currency,
+            FxRateSnapshot.quote_currency == trading_currency,
+        )
+        .order_by(FxRateSnapshot.rate_date.desc(), FxRateSnapshot.id.desc())
+        .limit(1)
+    )
+    if snapshot is None:
+        raise PriceDecisionInputError(
+            f"缺少 {valuation_currency}->{trading_currency} 汇率快照，请先刷新汇率。"
+        )
+    maximum_age_days = int(parameter_value("market_data.fx_max_age_days", 7))
+    if utc_now().date() - snapshot.rate_date > timedelta(days=maximum_age_days):
+        raise PriceDecisionInputError("汇率快照已过期，请先刷新汇率。")
+    if snapshot.rate <= 0:
+        raise PriceDecisionInputError("汇率快照不是有效正数。")
+    return snapshot.rate, snapshot
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _validate_margin_override(value: float | None) -> float | None:

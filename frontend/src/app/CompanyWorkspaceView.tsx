@@ -30,6 +30,9 @@ import {
 
 import {
   getCompany,
+  getCompanyListings,
+  getCompanyMarketCapabilities,
+  getLatestListingMarketSnapshot,
   getAnalystProfiles,
   getLatestCompanyAnalysisRuns,
   getCompanyAnnouncements,
@@ -49,6 +52,9 @@ import {
   createValuationDraft,
   generateInvestmentMemo,
   refreshCompanyProfile,
+  refreshFxRate,
+  refreshListingMarketSnapshot,
+  refreshListingProfile,
   getInvestmentMemos,
   getLatestInvestmentMemo,
   getLatestValuationRun,
@@ -84,10 +90,15 @@ import {
   type InvestmentMemo,
   type InvestmentMemoLatestResponse,
   type InvestmentMemoListResponse,
+  type MarketCapabilitiesResponse,
+  type MarketSnapshot,
   type ModelConfigStatus,
   type PriceDecisionListResponse,
   type PriceDecisionRun,
   type PriceDecisionLatestResponse,
+  type ProviderCapability,
+  type SecurityListing,
+  type SecurityListingListResponse,
   type ValuationRun,
   type ValuationRunLatestResponse,
   type ValuationRunListResponse
@@ -115,6 +126,7 @@ export type CompanyWorkspaceSection =
 
 type CompanyWorkspaceData = {
   company: Company;
+  listings: SecurityListingListResponse;
   financials: FinancialStatementListResponse;
   financialEvidencePack: FinancialEvidencePack;
   announcements: AnnouncementListResponse;
@@ -206,6 +218,13 @@ type ProfileRefreshState =
   | { status: "success"; message: string }
   | { status: "error"; message: string };
 
+type ListingContextState = {
+  status: "idle" | "loading" | "ready" | "error";
+  capabilities: MarketCapabilitiesResponse | null;
+  marketSnapshot: MarketSnapshot | null;
+  message: string | null;
+};
+
 const statementTypeLabels: Record<string, string> = {
   income_statement: "利润表",
   balance_sheet: "资产负债表",
@@ -296,6 +315,18 @@ const fieldLabels: Record<string, string> = {
   total_shareholder_return: "股东回报总额",
   total_assets_turnover: "总资产周转率",
   inventory_turnover_days: "存货周转天数",
+  income_statement: "利润表明细",
+  expense_breakdown: "期间费用明细",
+  impairment_losses: "减值损失明细",
+  non_operating_items: "营业外收支明细",
+  revenue_cagr_3y: "收入三年复合增长率",
+  net_profit_cagr_3y: "净利润三年复合增长率",
+  free_cash_flow_cagr_3y: "自由现金流三年复合增长率",
+  revenue_cagr_5y: "收入五年复合增长率",
+  net_profit_cagr_5y: "净利润五年复合增长率",
+  free_cash_flow_cagr_5y: "自由现金流五年复合增长率",
+  annual_report_series: "完整年报序列",
+  financial_statements: "财务报表",
   raw_secucode: "数据源代码",
   raw_security_name: "数据源名称"
 };
@@ -305,7 +336,22 @@ const sourceLabels: Record<string, string> = {
   eastmoney_f10_income_statement: "东方财富 F10 利润表",
   eastmoney_f10_cash_flow: "东方财富 F10 现金流量表",
   eastmoney_f10_balance_sheet: "东方财富 F10 资产负债表",
+  sec_companyfacts: "SEC Company Facts",
+  sec_edgar: "SEC EDGAR",
+  akshare_hk_financials: "AKShare 港股财务",
+  hkexnews: "港交所披露易",
   fake_financial_source: "测试财务数据"
+};
+
+const financialMetadataFields = new Set(["mapping_diagnostics", "source_tags"]);
+
+const disclosureTypeLabels: Record<string, string> = {
+  annual_report: "年度报告",
+  quarterly_report: "季度报告",
+  foreign_issuer_report: "境外发行人临时报告",
+  material_event: "重大事项报告",
+  governance: "公司治理文件",
+  other: "其他披露"
 };
 
 const financialFieldDisplayOrder = [
@@ -518,6 +564,13 @@ export function CompanyWorkspaceView({
     status: "idle",
     message: null
   });
+  const [selectedListingId, setSelectedListingId] = useState<number | null>(null);
+  const [listingContextState, setListingContextState] = useState<ListingContextState>({
+    status: "idle",
+    capabilities: null,
+    marketSnapshot: null,
+    message: null
+  });
   const analystRunAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -552,11 +605,22 @@ export function CompanyWorkspaceView({
     setPriceDecisionActionState({ status: "idle", message: null });
     setPriceDecisionDeleteState({ status: "idle", runId: null, message: null });
     setProfileRefreshState({ status: "idle", message: null });
+    setSelectedListingId(null);
+    setListingContextState({
+      status: "idle",
+      capabilities: null,
+      marketSnapshot: null,
+      message: null
+    });
     analystRunAbortControllerRef.current?.abort();
     analystRunAbortControllerRef.current = null;
 
     Promise.all([
       getCompany(companyId, controller.signal),
+      withOptionalWorkspaceData(getCompanyListings(companyId, controller.signal), {
+        company_id: companyId,
+        items: []
+      }),
       withOptionalWorkspaceData(
         getCompanyFinancials(companyId, {
           period_offset: 0,
@@ -662,6 +726,7 @@ export function CompanyWorkspaceView({
       .then(
         ([
           company,
+          listings,
           financials,
           financialEvidencePack,
           announcements,
@@ -685,6 +750,7 @@ export function CompanyWorkspaceView({
           status: "ready",
           data: {
             company,
+            listings,
             financials,
             financialEvidencePack,
             announcements,
@@ -702,6 +768,12 @@ export function CompanyWorkspaceView({
           },
           error: null
         });
+        setSelectedListingId(
+          company.primary_listing?.id ??
+            listings.items.find((item) => item.is_primary && item.is_active)?.id ??
+            listings.items.find((item) => item.is_active)?.id ??
+            null
+        );
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) {
@@ -725,6 +797,41 @@ export function CompanyWorkspaceView({
       controller.abort();
     };
   }, [companyId, onCompanyUnavailable, refreshToken]);
+
+  useEffect(() => {
+    if (companyId === null || selectedListingId === null) {
+      setListingContextState({
+        status: "idle",
+        capabilities: null,
+        marketSnapshot: null,
+        message: null
+      });
+      return;
+    }
+    const controller = new AbortController();
+    setListingContextState((current) => ({ ...current, status: "loading", message: null }));
+    Promise.allSettled([
+      getCompanyMarketCapabilities(companyId, selectedListingId, controller.signal),
+      getLatestListingMarketSnapshot(selectedListingId, controller.signal)
+    ]).then(([capabilitiesResult, marketResult]) => {
+      if (controller.signal.aborted) return;
+      const messages: string[] = [];
+      if (capabilitiesResult.status === "rejected") {
+        messages.push(getUnknownErrorMessage(capabilitiesResult.reason, "能力状态读取失败"));
+      }
+      if (marketResult.status === "rejected") {
+        messages.push(getUnknownErrorMessage(marketResult.reason, "行情快照读取失败"));
+      }
+      setListingContextState({
+        status: messages.length === 2 ? "error" : "ready",
+        capabilities:
+          capabilitiesResult.status === "fulfilled" ? capabilitiesResult.value : null,
+        marketSnapshot: marketResult.status === "fulfilled" ? marketResult.value : null,
+        message: messages.length > 0 ? messages.join("；") : null
+      });
+    });
+    return () => controller.abort();
+  }, [companyId, selectedListingId]);
 
   if (companyId === null || detailState.status === "idle") {
     return (
@@ -757,6 +864,7 @@ export function CompanyWorkspaceView({
 
   const {
     company,
+    listings,
     financials,
     financialEvidencePack,
     announcements,
@@ -772,6 +880,37 @@ export function CompanyWorkspaceView({
     latestPriceDecision,
     priceDecisionHistory
   } = detailState.data;
+  const selectedListing =
+    listings.items.find((item) => item.id === selectedListingId) ??
+    (company.primary_listing?.id === selectedListingId ? company.primary_listing : null) ??
+    company.primary_listing ??
+    null;
+  const capabilities = listingContextState.capabilities?.capabilities ?? {};
+  const marketSnapshot = listingContextState.marketSnapshot;
+  const companyMarketMirrorAllowed = selectedListing === null || selectedListing.is_primary;
+  const visibleCapabilityKeys = [
+    "profile",
+    "quote",
+    "financials",
+    "disclosures",
+    "dividend",
+    "fx"
+  ] as const;
+  const selectedPriceHistoryItems = priceDecisionHistory.items.filter(
+    (run) => selectedListingId === null || run.listing_id == null || run.listing_id === selectedListingId
+  );
+  const selectedPriceHistory: PriceDecisionListResponse = {
+    ...priceDecisionHistory,
+    items: selectedPriceHistoryItems,
+    total: selectedPriceHistoryItems.length
+  };
+  const selectedLatestPriceDecision =
+    [latestPriceDecision.item, ...selectedPriceHistoryItems].find(
+      (run, index, items) =>
+        run !== null &&
+        items.findIndex((candidate) => candidate?.id === run.id) === index &&
+        (selectedListingId === null || run.listing_id == null || run.listing_id === selectedListingId)
+    ) ?? null;
   const readiness = buildResearchReadiness({
     financials,
     financialEvidencePack,
@@ -787,7 +926,9 @@ export function CompanyWorkspaceView({
     setProfileRefreshState({ status: "refreshing", message: "正在更新基本信息" });
 
     try {
-      const refreshedCompany = await refreshCompanyProfile(company.id);
+      const refreshedCompany = selectedListing
+        ? await refreshListingProfile(selectedListing.id)
+        : await refreshCompanyProfile(company.id);
       setDetailState((currentState) => {
         if (currentState.status !== "ready") {
           return currentState;
@@ -811,12 +952,64 @@ export function CompanyWorkspaceView({
     }
   }
 
+  async function handleRefreshListingQuote() {
+    if (!selectedListing) return;
+    setProfileRefreshState({ status: "refreshing", message: "正在刷新所选 Listing 行情" });
+    try {
+      const refreshedSnapshot = await refreshListingMarketSnapshot(selectedListing.id);
+      setListingContextState((current) => ({
+        ...current,
+        status: "ready",
+        marketSnapshot: refreshedSnapshot,
+        message: null
+      }));
+      if (selectedListing.is_primary) {
+        const refreshedCompany = await getCompany(company.id);
+        setDetailState((currentState) =>
+          currentState.status === "ready"
+            ? {
+                status: "ready",
+                data: { ...currentState.data, company: refreshedCompany },
+                error: null
+              }
+            : currentState
+        );
+      }
+      setProfileRefreshState({ status: "success", message: "所选 Listing 行情已刷新" });
+    } catch (error: unknown) {
+      setProfileRefreshState({
+        status: "error",
+        message: getUnknownErrorMessage(error, "Listing 行情刷新失败")
+      });
+    }
+  }
+
+  async function handleRefreshFxRate(baseCurrency: string, quoteCurrency: string) {
+    setPriceDecisionActionState({
+      status: "saving",
+      message: `正在刷新 ${baseCurrency}->${quoteCurrency} 汇率`
+    });
+    try {
+      const snapshot = await refreshFxRate(baseCurrency, quoteCurrency);
+      setPriceDecisionActionState({
+        status: "success",
+        message: `汇率已刷新：${snapshot.rate.toFixed(6)}（${snapshot.rate_date}）`
+      });
+    } catch (error: unknown) {
+      setPriceDecisionActionState({
+        status: "error",
+        message: getUnknownErrorMessage(error, "汇率刷新失败")
+      });
+    }
+  }
+
   async function handleSyncFinancials() {
     setFinancialSyncState({ status: "syncing", message: "正在搜索财务数据" });
 
     try {
       const syncResult = await syncCompanyFinancials(company.id, {
-        limit: FINANCIAL_STATEMENT_SYNC_LIMIT
+        limit: FINANCIAL_STATEMENT_SYNC_LIMIT,
+        ...(selectedListing ? { listing_id: selectedListing.id } : {})
       });
       const refreshedFinancials = await getCompanyFinancials(company.id, {
         period_offset: 0
@@ -1071,7 +1264,8 @@ export function CompanyWorkspaceView({
 
     try {
       const syncResult = await syncCompanyAnnouncements(company.id, {
-        years: ANNOUNCEMENT_LOOKBACK_YEARS
+        years: ANNOUNCEMENT_LOOKBACK_YEARS,
+        ...(selectedListing ? { listing_id: selectedListing.id } : {})
       });
       const refreshedAnnouncements = await getCompanyAnnouncements(company.id, {
         limit: ANNOUNCEMENT_LIST_LIMIT,
@@ -1767,7 +1961,8 @@ export function CompanyWorkspaceView({
     try {
       const result = await createPriceDecisionRun(company.id, {
         valuation_run_id: valuationRunId,
-        safety_margin_override: safetyMarginOverride
+        safety_margin_override: safetyMarginOverride,
+        ...(selectedListing ? { listing_id: selectedListing.id } : {})
       });
       const [refreshedLatest, refreshedHistory] = await loadPriceDecisions(company.id);
       setDetailState((currentState) => {
@@ -1848,9 +2043,14 @@ export function CompanyWorkspaceView({
           <div>
             <span className="eyebrow">Company Workspace</span>
             <h2 id="company-workspace-heading">{company.name}</h2>
+            {company.legal_name && company.legal_name !== company.name ? (
+              <p className="company-legal-name">{company.legal_name}</p>
+            ) : null}
             <div className="company-meta company-meta--hero">
-              <span>{company.exchange}</span>
-              <span>{company.ticker}</span>
+              <span>{selectedListing?.exchange ?? company.exchange}</span>
+              <span>{selectedListing?.ticker ?? company.ticker}</span>
+              {selectedListing ? <span>{selectedListing.market}</span> : null}
+              {selectedListing ? <span>{selectedListing.trading_currency}</span> : null}
               <span>{company.industry ?? "未分类行业"}</span>
             </div>
           </div>
@@ -1864,6 +2064,85 @@ export function CompanyWorkspaceView({
           )}
         </div>
       </div>
+
+      <section className="listing-context-panel" aria-label="上市证券与数据能力">
+        <div className="listing-context-panel__selector">
+          <label htmlFor="company-listing-selector">当前 Listing</label>
+          <select
+            id="company-listing-selector"
+            value={selectedListingId ?? ""}
+            disabled={listings.items.length === 0}
+            onChange={(event) => {
+              const nextId = Number(event.currentTarget.value);
+              setSelectedListingId(Number.isFinite(nextId) && nextId > 0 ? nextId : null);
+              setProfileRefreshState({ status: "idle", message: null });
+              setFinancialSyncState({ status: "idle", message: null });
+              setAnnouncementSyncState({ status: "idle", message: null });
+              setPriceDecisionActionState({ status: "idle", message: null });
+            }}
+          >
+            {listings.items.length === 0 ? (
+              <option value="">主 Listing 兼容模式</option>
+            ) : (
+              listings.items.map((listing) => (
+                <option key={listing.id} value={listing.id}>
+                  {listing.ticker} · {listing.exchange} · {listing.trading_currency}
+                  {listing.is_primary ? " · 主" : ""}
+                </option>
+              ))
+            )}
+          </select>
+          <span>
+            {selectedListing
+              ? `${formatSecurityType(selectedListing.security_type)} · 1 单位对应 ${
+                  selectedListing.underlying_shares_per_listing_unit ?? "待确认"
+                } 股发行人普通股`
+              : "旧接口使用 Company 主 Listing 兼容镜像"}
+          </span>
+        </div>
+        <div className="listing-capability-list" aria-label="数据能力状态">
+          {visibleCapabilityKeys.map((key) => (
+            <span
+              className={`listing-capability listing-capability--${capabilities[key]?.status ?? "unknown"}`}
+              key={key}
+              title={capabilityDetail(capabilities[key])}
+            >
+              {capabilityLabel(key)}：{capabilityStatusLabel(capabilities[key]?.status)}
+            </span>
+          ))}
+        </div>
+        <div className="listing-context-panel__actions">
+          <button
+            className="panel-action"
+            type="button"
+            disabled={
+              !selectedListing ||
+              !capabilityAllowsAction(capabilities.profile) ||
+              profileRefreshState.status === "refreshing"
+            }
+            onClick={handleRefreshCompanyProfile}
+          >
+            <RefreshCw aria-hidden="true" size={15} />
+            <span>刷新档案</span>
+          </button>
+          <button
+            className="panel-action"
+            type="button"
+            disabled={
+              !selectedListing ||
+              !capabilityAllowsAction(capabilities.quote) ||
+              profileRefreshState.status === "refreshing"
+            }
+            onClick={handleRefreshListingQuote}
+          >
+            <RefreshCw aria-hidden="true" size={15} />
+            <span>刷新行情</span>
+          </button>
+        </div>
+        {listingContextState.message ? (
+          <div className="sync-message sync-message--error">{listingContextState.message}</div>
+        ) : null}
+      </section>
 
       <section className="profile-summary" aria-label="公司简介">
         <div className="profile-summary__heading">
@@ -1894,7 +2173,7 @@ export function CompanyWorkspaceView({
         <dl className="profile-facts">
           <div>
             <dt>上市日期</dt>
-            <dd>{company.listed_date ?? "待补充"}</dd>
+            <dd>{selectedListing?.listed_date ?? company.listed_date ?? "待补充"}</dd>
           </div>
           <div>
             <dt>档案更新时间</dt>
@@ -1903,22 +2182,70 @@ export function CompanyWorkspaceView({
           <div>
             <dt>行情更新时间</dt>
             <dd>
-              {company.market_data_updated_at
-                ? formatDateTime(company.market_data_updated_at)
+              {marketSnapshot?.price_as_of ?? company.market_data_updated_at
+                ? formatDateTime(marketSnapshot?.price_as_of ?? company.market_data_updated_at ?? "")
                 : "待更新"}
             </dd>
           </div>
         </dl>
+        <dl className="profile-facts profile-facts--issuer">
+          <MetricFact label="注册地" value={company.domicile_country ?? "待补充"} />
+          <MetricFact label="报告币种" value={company.reporting_currency ?? "待补充"} />
+          <MetricFact label="财政年结" value={company.fiscal_year_end ?? "待补充"} />
+        </dl>
         <h4>基本信息</h4>
         <dl className="market-facts">
-          <MetricFact label="市值" value={formatMoney(company.market_cap)} />
-          <MetricFact label="价格" value={formatPrice(company.current_price)} />
-          <MetricFact label="TTM市盈率" value={formatRatio(company.pe_ttm)} />
-          <MetricFact label="动态市盈率" value={formatRatio(company.pe_dynamic)} />
-          <MetricFact label="静态市盈率" value={formatRatio(company.pe_static)} />
-          <MetricFact label="市净率" value={formatRatio(company.pb_ratio)} />
-          <MetricFact label="市销率" value={formatRatio(company.ps_ratio)} />
-          <MetricFact label="TTM股息率" value={formatPercent(company.dividend_yield_ttm)} />
+          <MetricFact
+            label="市值"
+            value={formatMoney(
+              marketSnapshot?.market_cap ?? (companyMarketMirrorAllowed ? company.market_cap : null),
+              selectedListing?.trading_currency
+            )}
+          />
+          <MetricFact
+            label="价格"
+            value={formatPrice(
+              marketSnapshot?.price ?? (companyMarketMirrorAllowed ? company.current_price : null),
+              selectedListing?.trading_currency
+            )}
+          />
+          <MetricFact
+            label="TTM市盈率"
+            value={formatRatio(
+              marketSnapshot?.pe_ttm ?? (companyMarketMirrorAllowed ? company.pe_ttm : null)
+            )}
+          />
+          <MetricFact
+            label="动态市盈率"
+            value={formatRatio(
+              marketSnapshot?.pe_dynamic ?? (companyMarketMirrorAllowed ? company.pe_dynamic : null)
+            )}
+          />
+          <MetricFact
+            label="静态市盈率"
+            value={formatRatio(
+              marketSnapshot?.pe_static ?? (companyMarketMirrorAllowed ? company.pe_static : null)
+            )}
+          />
+          <MetricFact
+            label="市净率"
+            value={formatRatio(
+              marketSnapshot?.pb_ratio ?? (companyMarketMirrorAllowed ? company.pb_ratio : null)
+            )}
+          />
+          <MetricFact
+            label="市销率"
+            value={formatRatio(
+              marketSnapshot?.ps_ratio ?? (companyMarketMirrorAllowed ? company.ps_ratio : null)
+            )}
+          />
+          <MetricFact
+            label="TTM股息率"
+            value={formatPercent(
+              marketSnapshot?.dividend_yield_ttm ??
+                (companyMarketMirrorAllowed ? company.dividend_yield_ttm : null)
+            )}
+          />
         </dl>
       </section>
 
@@ -1934,6 +2261,7 @@ export function CompanyWorkspaceView({
           financialEvidencePack={financialEvidencePack}
           syncState={financialSyncState}
           deleteState={financialDeleteState}
+          capability={capabilities.financials}
           onSyncFinancials={handleSyncFinancials}
           onDeleteFinancialStatement={handleDeleteFinancialStatement}
         />
@@ -1945,6 +2273,7 @@ export function CompanyWorkspaceView({
           syncState={announcementSyncState}
           deleteState={announcementDeleteState}
           summaryState={announcementSummaryState}
+          capability={capabilities.disclosures}
           onSyncAnnouncements={handleSyncAnnouncements}
           onDeleteAnnouncement={handleDeleteAnnouncement}
           onSummarizeAnnouncement={handleSummarizeAllAnnouncements}
@@ -1999,16 +2328,21 @@ export function CompanyWorkspaceView({
       {activeSection === "price-decision" ? (
         <PriceDecisionPanel
           company={company}
+          listing={selectedListing}
+          marketSnapshot={marketSnapshot}
+          quoteCapability={capabilities.quote}
+          fxCapability={capabilities.fx}
           latestValuationRun={latestValuationRun.item}
           valuationHistory={valuationHistory}
-          latestRun={latestPriceDecision.item}
-          history={priceDecisionHistory}
+          latestRun={selectedLatestPriceDecision}
+          history={selectedPriceHistory}
           actionState={priceDecisionActionState}
           deleteState={priceDecisionDeleteState}
           onGenerate={handleCreatePriceDecision}
           onDelete={handleDeletePriceDecision}
           onOpenValuation={() => onSectionChange("valuation-lab")}
-          onRefreshCompany={handleRefreshCompanyProfile}
+          onRefreshQuote={handleRefreshListingQuote}
+          onRefreshFx={handleRefreshFxRate}
         />
       ) : null}
 
@@ -2034,6 +2368,7 @@ type FinancialsPanelProps = {
   financialEvidencePack: FinancialEvidencePack;
   syncState: FinancialSyncState;
   deleteState: FinancialDeleteState;
+  capability?: ProviderCapability;
   onSyncFinancials: () => void;
   onDeleteFinancialStatement: (statementId: number) => void;
 };
@@ -2354,6 +2689,9 @@ function ValuationLabPanel({
   const modelWeighting = readRecordArray(results.model_weighting);
   const dispersionWarning = readPlainRecord(results.dispersion_warning);
   const resultStatus = String(results.status ?? "");
+  const valuationCurrency =
+    latestValuationRun?.valuation_currency ?? financialEvidencePack.reporting_currency ?? "CNY";
+  const shareBasis = readPlainRecord(latestValuationRun?.share_basis_snapshot);
   const normalizationAudit = readPlainRecord(valuationInputs.normalization_audit);
   const growthBasis = readPlainRecord(
     latestValuationRun?.model_suggested_assumptions.growth_basis
@@ -2507,6 +2845,11 @@ function ValuationLabPanel({
                   : formatPercent(latestValuationRun.confidence)
               }
             />
+            <MetricFact label="估值币种" value={valuationCurrency} />
+            <MetricFact
+              label="每股口径"
+              value={formatShareBasisStatus(shareBasis.status, shareBasis.basis)}
+            />
           </dl>
           <ValuationGapList gaps={inputGaps} />
         </article>
@@ -2522,27 +2865,27 @@ function ValuationLabPanel({
             <dl className="valuation-input-grid valuation-input-grid--wide">
               <MetricFact
                 label="收入基准"
-                value={formatFinancialSummaryMoney(valuationInputs.base_revenue)}
+                value={formatFinancialSummaryMoney(valuationInputs.base_revenue, valuationCurrency)}
               />
               <MetricFact
                 label="净利润基准"
-                value={formatFinancialSummaryMoney(valuationInputs.base_net_profit)}
+                value={formatFinancialSummaryMoney(valuationInputs.base_net_profit, valuationCurrency)}
               />
               <MetricFact
                 label="自由现金流基准"
-                value={formatFinancialSummaryMoney(valuationInputs.base_free_cash_flow)}
+                value={formatFinancialSummaryMoney(valuationInputs.base_free_cash_flow, valuationCurrency)}
               />
               <MetricFact
                 label="资本开支"
-                value={formatFinancialSummaryMoney(valuationInputs.capital_expenditure)}
+                value={formatFinancialSummaryMoney(valuationInputs.capital_expenditure, valuationCurrency)}
               />
               <MetricFact
                 label="货币资金"
-                value={formatFinancialSummaryMoney(valuationInputs.cash_and_equivalents)}
+                value={formatFinancialSummaryMoney(valuationInputs.cash_and_equivalents, valuationCurrency)}
               />
               <MetricFact
                 label="有息负债"
-                value={formatFinancialSummaryMoney(valuationInputs.interest_bearing_debt)}
+                value={formatFinancialSummaryMoney(valuationInputs.interest_bearing_debt, valuationCurrency)}
               />
               <MetricFact
                 label="股份数"
@@ -2556,6 +2899,7 @@ function ValuationLabPanel({
             audit={normalizationAudit}
             growthBasis={growthBasis}
             valuationInputs={valuationInputs}
+            currency={valuationCurrency}
           />
 
           <article className="valuation-card">
@@ -2702,7 +3046,8 @@ function ValuationLabPanel({
                     label={valuationScenarioLabels[scenarioName]}
                     value={formatValuationRangeItem(
                       readNumber(totalEquityValue[scenarioName]),
-                      readNumber(perShareValue[scenarioName])
+                      readNumber(perShareValue[scenarioName]),
+                      valuationCurrency
                     )}
                   />
                 ))}
@@ -2728,7 +3073,11 @@ function ValuationLabPanel({
               </div>
               <div className="valuation-method-list">
                 {methodResults.map((methodResult) => (
-                  <ValuationMethodResult key={String(methodResult.method)} methodResult={methodResult} />
+                  <ValuationMethodResult
+                    key={String(methodResult.method)}
+                    methodResult={methodResult}
+                    currency={valuationCurrency}
+                  />
                 ))}
               </div>
             </article>
@@ -2762,6 +3111,10 @@ function ValuationLabPanel({
 
 type PriceDecisionPanelProps = {
   company: Company;
+  listing: SecurityListing | null;
+  marketSnapshot: MarketSnapshot | null;
+  quoteCapability?: ProviderCapability;
+  fxCapability?: ProviderCapability;
   latestValuationRun: ValuationRun | null;
   valuationHistory: ValuationRunListResponse;
   latestRun: PriceDecisionRun | null;
@@ -2771,11 +3124,16 @@ type PriceDecisionPanelProps = {
   onGenerate: (valuationRunId: number, safetyMarginOverride: number | null) => void;
   onDelete: (runId: number) => void;
   onOpenValuation: () => void;
-  onRefreshCompany: () => void;
+  onRefreshQuote: () => void;
+  onRefreshFx: (baseCurrency: string, quoteCurrency: string) => void;
 };
 
 function PriceDecisionPanel({
   company,
+  listing,
+  marketSnapshot,
+  quoteCapability,
+  fxCapability,
   latestValuationRun,
   valuationHistory,
   latestRun,
@@ -2785,7 +3143,8 @@ function PriceDecisionPanel({
   onGenerate,
   onDelete,
   onOpenValuation,
-  onRefreshCompany
+  onRefreshQuote,
+  onRefreshFx
 }: PriceDecisionPanelProps) {
   const [useOverride, setUseOverride] = useState(
     latestRun?.safety_margin_override !== null && latestRun?.safety_margin_override !== undefined
@@ -2816,8 +3175,18 @@ function PriceDecisionPanel({
       ? "覆盖安全边际必须位于 10%-50%。"
       : null;
   const missingValuation = calculatedValuation === null;
-  const missingPrice = company.current_price === null || company.current_price <= 0;
-  const missingPriceTime = company.market_data_updated_at === null;
+  const currentPrice =
+    marketSnapshot?.price ?? (listing === null || listing.is_primary ? company.current_price : null);
+  const currentPriceTime =
+    marketSnapshot?.price_as_of ??
+    (listing === null || listing.is_primary ? company.market_data_updated_at : null);
+  const missingPrice = currentPrice === null || currentPrice === undefined || currentPrice <= 0;
+  const missingPriceTime = currentPriceTime === null;
+  const missingRatio = Boolean(listing && !listing.underlying_shares_per_listing_unit);
+  const valuationCurrency = calculatedValuation?.valuation_currency ?? company.reporting_currency ?? null;
+  const needsFx = Boolean(
+    valuationCurrency && listing?.trading_currency && valuationCurrency !== listing.trading_currency
+  );
   const isSaving = actionState.status === "saving";
 
   return (
@@ -2832,7 +3201,15 @@ function PriceDecisionPanel({
           <button
             className="panel-action"
             type="button"
-            disabled={missingValuation || missingPrice || missingPriceTime || isSaving || Boolean(overrideError)}
+            disabled={
+              missingValuation ||
+              missingPrice ||
+              missingPriceTime ||
+              missingRatio ||
+              !capabilityAllowsAction(quoteCapability) ||
+              isSaving ||
+              Boolean(overrideError)
+            }
             onClick={() => {
               if (calculatedValuation) {
                 onGenerate(
@@ -2879,13 +3256,39 @@ function PriceDecisionPanel({
           </button>
         </div>
       ) : null}
-      {missingPrice || missingPriceTime ? (
+      {missingPrice || missingPriceTime || missingRatio ? (
         <div className="price-decision-guidance" role="status">
-          <strong>{missingPrice ? "缺少当前价格" : "缺少价格更新时间"}</strong>
-          <p>先更新公司基本信息和行情数据，再生成价格决策。</p>
-          <button className="panel-action" type="button" onClick={onRefreshCompany}>
+          <strong>
+            {missingRatio ? "缺少证券单位换算比例" : missingPrice ? "缺少当前价格" : "缺少价格更新时间"}
+          </strong>
+          <p>
+            {missingRatio
+              ? "ADS/ADR 或复杂证券必须明确复核每个 Listing 单位对应的发行人普通股数。"
+              : "先刷新所选 Listing 行情，再生成价格决策。"}
+          </p>
+          <button
+            className="panel-action"
+            type="button"
+            disabled={missingRatio || !capabilityAllowsAction(quoteCapability)}
+            onClick={onRefreshQuote}
+          >
             <RefreshCw aria-hidden="true" size={15} />
-            <span>更新公司行情</span>
+            <span>刷新 Listing 行情</span>
+          </button>
+        </div>
+      ) : null}
+      {needsFx && valuationCurrency && listing ? (
+        <div className="price-decision-guidance" role="status">
+          <strong>{`${valuationCurrency}->${listing.trading_currency} 汇率`}</strong>
+          <p>011 将绑定符合时效要求的不可变汇率快照；缺失或过期时会由后端明确阻断。</p>
+          <button
+            className="panel-action"
+            type="button"
+            disabled={!capabilityAllowsAction(fxCapability) || isSaving}
+            onClick={() => onRefreshFx(valuationCurrency, listing.trading_currency)}
+          >
+            <RefreshCw aria-hidden="true" size={15} />
+            <span>刷新汇率</span>
           </button>
         </div>
       ) : null}
@@ -2913,10 +3316,15 @@ function PriceDecisionPanel({
                   : "待完成"
               }
             />
-            <MetricFact label="当前价格" value={formatPrice(company.current_price)} />
+            <MetricFact
+              label="目标 Listing"
+              value={listing ? `${listing.ticker} · ${listing.exchange}` : "主 Listing 兼容模式"}
+            />
+            <MetricFact label="交易币种" value={listing?.trading_currency ?? "待补充"} />
+            <MetricFact label="当前价格" value={formatPrice(currentPrice ?? null, listing?.trading_currency)} />
             <MetricFact
               label="价格时间"
-              value={company.market_data_updated_at ? formatDateTime(company.market_data_updated_at) : "待更新"}
+              value={currentPriceTime ? formatDateTime(currentPriceTime) : "待更新"}
             />
           </dl>
         </article>
@@ -3028,6 +3436,11 @@ function PriceDecisionPanel({
 
 function PriceDecisionResult({ run, compact = false }: { run: PriceDecisionRun; compact?: boolean }) {
   const memoSnapshot = readPlainRecord(run.input_snapshot.memo);
+  const listingSnapshot = readPlainRecord(run.input_snapshot.listing);
+  const fxConversion = readPlainRecord(run.input_snapshot.fx_conversion);
+  const fxAudit = readPlainRecord(fxConversion.calculation_audit);
+  const tradingCurrency = run.trading_currency ?? String(listingSnapshot.trading_currency ?? "");
+  const valuationCurrency = run.valuation_currency ?? String(fxConversion.base_currency ?? "");
   return (
     <article className={compact ? "price-decision-result price-decision-result--compact" : "price-decision-result"}>
       <div className="price-decision-result__heading">
@@ -3040,8 +3453,8 @@ function PriceDecisionResult({ run, compact = false }: { run: PriceDecisionRun; 
         </span>
       </div>
       <dl className="price-decision-key-metrics">
-        <MetricFact label="当前价格" value={formatPrice(run.current_price)} />
-        <MetricFact label="建议买入上限" value={formatPrice(run.suggested_buy_price)} />
+        <MetricFact label="当前价格" value={formatPrice(run.current_price, tradingCurrency)} />
+        <MetricFact label="建议买入上限" value={formatPrice(run.suggested_buy_price, tradingCurrency)} />
         <MetricFact label="当前安全边际" value={formatSignedPercent(run.current_margin)} />
         <MetricFact label="最终安全边际" value={formatPercent(run.effective_safety_margin)} />
       </dl>
@@ -3049,15 +3462,44 @@ function PriceDecisionResult({ run, compact = false }: { run: PriceDecisionRun; 
         {valuationScenarioNames.map((scenario) => (
           <div key={scenario}>
             <strong>{valuationScenarioLabels[scenario]}</strong>
-            <span>内在价值 {formatPrice(run.intrinsic_values_per_share[scenario])}</span>
-            <span>买入价 {formatPrice(run.scenario_buy_prices[scenario])}</span>
+            <span>内在价值 {formatPrice(run.intrinsic_values_per_share[scenario], tradingCurrency)}</span>
+            <span>买入价 {formatPrice(run.scenario_buy_prices[scenario], tradingCurrency)}</span>
           </div>
         ))}
       </div>
       <dl className="valuation-input-grid">
+        <MetricFact
+          label="Listing"
+          value={`${String(listingSnapshot.ticker ?? `#${run.listing_id ?? "历史"}`)} · ${String(
+            listingSnapshot.exchange ?? ""
+          )}`}
+        />
+        <MetricFact label="估值/交易币种" value={`${valuationCurrency || "待补充"} -> ${tradingCurrency || "待补充"}`} />
+        <MetricFact
+          label="证券单位"
+          value={`1 Listing 单位 = ${run.underlying_shares_per_listing_unit ?? listingSnapshot.underlying_shares_per_listing_unit ?? "待确认"} 股普通股`}
+        />
+        <MetricFact
+          label="冻结汇率"
+          value={`${run.fx_rate ?? fxConversion.rate ?? "待补充"} · ${String(fxConversion.source ?? "历史记录")}`}
+        />
+        <MetricFact
+          label="行情快照"
+          value={run.market_snapshot_id ? `#${run.market_snapshot_id}` : "历史兼容记录"}
+        />
+        <MetricFact
+          label="汇率快照"
+          value={run.fx_rate_snapshot_id ? `#${run.fx_rate_snapshot_id}` : "同币种 identity"}
+        />
         <MetricFact label="价格时间" value={formatDateTime(run.market_data_updated_at)} />
         <MetricFact label="生成时间" value={formatDateTime(run.created_at)} />
       </dl>
+      {Object.keys(fxAudit).length > 0 ? (
+        <div className="price-decision-fx-audit">
+          <strong>FX 计算审计</strong>
+          <span>{formatFxAudit(fxAudit)}</span>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -3365,11 +3807,13 @@ function MetricFact({ label, value }: MetricFactProps) {
 function ValuationNormalizationAudit({
   audit,
   growthBasis,
-  valuationInputs
+  valuationInputs,
+  currency
 }: {
   audit: Record<string, unknown>;
   growthBasis: Record<string, unknown>;
   valuationInputs: Record<string, unknown>;
+  currency: string;
 }) {
   const periods = readRecordArray(audit.periods);
   const finalValues = readPlainRecord(audit.final_values);
@@ -3398,16 +3842,16 @@ function ValuationNormalizationAudit({
           label="年度权重"
           value={formatWeightList(audit.annual_weights)}
         />
-        <MetricFact label="正常化净利润" value={formatFinancialSummaryMoney(finalValues.net_profit)} />
+        <MetricFact label="正常化净利润" value={formatFinancialSummaryMoney(finalValues.net_profit, currency)} />
         <MetricFact
           label="上限前自由现金流"
-          value={formatFinancialSummaryMoney(fcfConversion.normalized_fcf_before_cap)}
+          value={formatFinancialSummaryMoney(fcfConversion.normalized_fcf_before_cap, currency)}
         />
         <MetricFact
           label="上限后自由现金流"
-          value={formatFinancialSummaryMoney(finalValues.free_cash_flow)}
+          value={formatFinancialSummaryMoney(finalValues.free_cash_flow, currency)}
         />
-        <MetricFact label="正常化所有者盈余" value={formatFinancialSummaryMoney(finalValues.owner_earnings)} />
+        <MetricFact label="正常化所有者盈余" value={formatFinancialSummaryMoney(finalValues.owner_earnings, currency)} />
         <MetricFact
           label="上限前 FCF/净利润"
           value={formatRatio(readNumber(fcfConversion.fcf_to_net_profit_before_cap))}
@@ -3453,15 +3897,15 @@ function ValuationNormalizationAudit({
                 <div className="valuation-normalization-period" key={`${String(period.period)}-${index}`}>
                   <MetricFact label="期间" value={String(period.period ?? "待补充")} />
                   <MetricFact label="权重" value={formatNullableWeight(period.weight)} />
-                  <MetricFact label="净利润" value={formatFinancialSummaryMoney(components.net_profit)} />
-                  <MetricFact label="自由现金流" value={formatFinancialSummaryMoney(components.free_cash_flow)} />
-                  <MetricFact label="资本开支" value={formatFinancialSummaryMoney(components.capital_expenditure)} />
+                  <MetricFact label="净利润" value={formatFinancialSummaryMoney(components.net_profit, currency)} />
+                  <MetricFact label="自由现金流" value={formatFinancialSummaryMoney(components.free_cash_flow, currency)} />
+                  <MetricFact label="资本开支" value={formatFinancialSummaryMoney(components.capital_expenditure, currency)} />
                   <MetricFact
                     label="所有者盈余"
                     value={
                       readNumber(owner.value) === null && audit.method === "ttm_adjusted"
                         ? "TTM汇总后计算"
-                        : formatFinancialSummaryMoney(owner.value)
+                        : formatFinancialSummaryMoney(owner.value, currency)
                     }
                   />
                 </div>
@@ -3502,7 +3946,13 @@ function ValuationGapList({ gaps }: { gaps: Array<Record<string, unknown>> }) {
   );
 }
 
-function ValuationMethodResult({ methodResult }: { methodResult: Record<string, unknown> }) {
+function ValuationMethodResult({
+  methodResult,
+  currency
+}: {
+  methodResult: Record<string, unknown>;
+  currency: string;
+}) {
   const method = formatMethodName(methodResult.method);
   const status = String(methodResult.status ?? "needs_input");
   const scenarioValues = readPlainRecord(methodResult.scenario_values);
@@ -3524,7 +3974,8 @@ function ValuationMethodResult({ methodResult }: { methodResult: Record<string, 
               label={valuationScenarioLabels[scenarioName]}
               value={formatValuationRangeItem(
                 readNumber(scenarioValues[scenarioName]),
-                readNumber(perShareValues[scenarioName])
+                readNumber(perShareValues[scenarioName]),
+                currency
               )}
             />
           ))}
@@ -3540,6 +3991,7 @@ function FinancialsPanel({
   financialEvidencePack,
   syncState,
   deleteState,
+  capability,
   onSyncFinancials,
   onDeleteFinancialStatement
 }: FinancialsPanelProps) {
@@ -3589,7 +4041,7 @@ function FinancialsPanel({
             className="panel-action"
             type="button"
             title="搜索并同步财务数据"
-            disabled={isSyncing}
+            disabled={isSyncing || !capabilityAllowsAction(capability)}
             onClick={onSyncFinancials}
           >
             <Search aria-hidden="true" size={15} />
@@ -3597,6 +4049,10 @@ function FinancialsPanel({
           </button>
         </div>
       </div>
+
+      {!capabilityAllowsAction(capability) ? (
+        <div className="sync-message sync-message--error">{capabilityDetail(capability)}</div>
+      ) : null}
 
       {syncState.message ? (
         <div
@@ -3623,6 +4079,15 @@ function FinancialsPanel({
       ) : null}
 
       <FinancialEvidenceSummary financialEvidencePack={financialEvidencePack} />
+
+      <dl className="financial-evidence-summary financial-evidence-summary--audit">
+        <MetricFact label="报告币种" value={financialEvidencePack.reporting_currency ?? "待补充"} />
+        <MetricFact label="会计准则" value={financialEvidencePack.accounting_standard ?? "待补充"} />
+        <MetricFact
+          label="映射诊断"
+          value={`${financialEvidencePack.mapping_diagnostics?.length ?? 0} 项`}
+        />
+      </dl>
 
       {financials.items.length === 0 ? (
         <div className="inline-empty">暂无财务数据</div>
@@ -3662,6 +4127,12 @@ function FinancialsPanel({
                     {group.statements.map((statement) => {
                       const isDeletingStatement =
                         isDeleting && deleteState.statementId === statement.id;
+                      const sourceTagCount = countRecordEntries(statement.fields.source_tags);
+                      const statementMappingDiagnosticCount = Array.isArray(
+                        statement.fields.mapping_diagnostics
+                      )
+                        ? statement.fields.mapping_diagnostics.length
+                        : 0;
                       return (
                         <div className="financial-statement" key={statement.id}>
                           <div className="statement-heading">
@@ -3671,6 +4142,8 @@ function FinancialsPanel({
                                 statement.statement_type}
                             </span>
                             <span>{statement.currency}</span>
+                            {statement.filing_type ? <span>{statement.filing_type}</span> : null}
+                            {statement.is_amendment ? <span>修订</span> : null}
                             <button
                               className="icon-action icon-action--danger"
                               type="button"
@@ -3682,6 +4155,27 @@ function FinancialsPanel({
                               <Trash2 aria-hidden="true" size={15} />
                               <span>{isDeletingStatement ? "删除中" : "删除"}</span>
                             </button>
+                          </div>
+                          <div className="company-meta financial-statement-audit">
+                            {statement.period_type ? (
+                              <span>{formatFinancialPeriodType(statement.period_type)}</span>
+                            ) : null}
+                            {statement.period_start ? <span>{statement.period_start}</span> : null}
+                            {statement.period_end ? <span>{statement.period_end}</span> : null}
+                            {statement.fiscal_year ? (
+                              <span>FY{statement.fiscal_year} {statement.fiscal_period ?? ""}</span>
+                            ) : null}
+                            {statement.taxonomy ? <span>{statement.taxonomy}</span> : null}
+                            {sourceTagCount > 0 ? (
+                              <span title="标准财务字段对应的 SEC 原始 XBRL 标签">
+                                SEC 来源标签 {sourceTagCount} 项
+                              </span>
+                            ) : null}
+                            {statementMappingDiagnosticCount > 0 ? (
+                              <span title="候选标签回退或低优先级标签被忽略的审计记录">
+                                映射诊断 {statementMappingDiagnosticCount} 项
+                              </span>
+                            ) : null}
                           </div>
                           <dl className="financial-fields">
                             {orderedFinancialFields(statement.fields).map(([key, value]) => (
@@ -3720,6 +4214,7 @@ type FinancialEvidenceSummaryProps = {
 };
 
 function FinancialEvidenceSummary({ financialEvidencePack }: FinancialEvidenceSummaryProps) {
+  const currency = financialEvidencePack.reporting_currency ?? "CNY";
   const latestFacts = getPackRecord(financialEvidencePack.financial_facts, "latest");
   const profitability = getPackRecord(financialEvidencePack.financial_metrics, "profitability");
   const growthQuality = getPackRecord(financialEvidencePack.financial_metrics, "growth_quality");
@@ -3733,25 +4228,25 @@ function FinancialEvidenceSummary({ financialEvidencePack }: FinancialEvidenceSu
     <>
       <dl className="financial-evidence-summary" aria-label="财务证据概览">
         <MetricFact label="最新期间" value={financialEvidencePack.latest_period ?? "待更新"} />
-        <MetricFact label="收入" value={formatFinancialSummaryMoney(latestFacts.revenue)} />
-        <MetricFact label="净利润" value={formatFinancialSummaryMoney(latestFacts.net_profit)} />
+        <MetricFact label="收入" value={formatFinancialSummaryMoney(latestFacts.revenue, currency)} />
+        <MetricFact label="净利润" value={formatFinancialSummaryMoney(latestFacts.net_profit, currency)} />
         <MetricFact
           label="自由现金流"
-          value={formatFinancialSummaryMoney(cashFlowQuality.free_cash_flow)}
+          value={formatFinancialSummaryMoney(cashFlowQuality.free_cash_flow, currency)}
         />
         <MetricFact
           label="货币资金"
-          value={formatFinancialSummaryMoney(balanceSheetAdjustment.cash_and_equivalents)}
+          value={formatFinancialSummaryMoney(balanceSheetAdjustment.cash_and_equivalents, currency)}
         />
         <MetricFact
           label="有息负债"
-          value={formatFinancialSummaryMoney(balanceSheetAdjustment.interest_bearing_debt)}
+          value={formatFinancialSummaryMoney(balanceSheetAdjustment.interest_bearing_debt, currency)}
         />
         <MetricFact
           label="净现金"
-          value={formatFinancialSummaryMoney(balanceSheetAdjustment.net_cash)}
+          value={formatFinancialSummaryMoney(balanceSheetAdjustment.net_cash, currency)}
         />
-        <MetricFact label="分红" value={formatFinancialSummaryMoney(capitalAllocation.dividend)} />
+        <MetricFact label="分红" value={formatFinancialSummaryMoney(capitalAllocation.dividend, currency)} />
         <MetricFact label="ROE" value={formatFinancialSummaryPercent(profitability.roe)} />
         <MetricFact label="毛利率" value={formatFinancialSummaryPercent(profitability.gross_margin)} />
         <MetricFact label="净利率" value={formatFinancialSummaryPercent(profitability.net_margin)} />
@@ -3852,6 +4347,7 @@ type AnnouncementsPanelProps = {
   syncState: AnnouncementSyncState;
   deleteState: AnnouncementDeleteState;
   summaryState: AnnouncementSummaryState;
+  capability?: ProviderCapability;
   onSyncAnnouncements: () => void;
   onDeleteAnnouncement: (announcementId: number) => void;
   onSummarizeAnnouncement: () => void;
@@ -3864,6 +4360,7 @@ function AnnouncementsPanel({
   syncState,
   deleteState,
   summaryState,
+  capability,
   onSyncAnnouncements,
   onDeleteAnnouncement,
   onSummarizeAnnouncement,
@@ -3909,7 +4406,7 @@ function AnnouncementsPanel({
             className="panel-action"
             type="button"
             title="搜索并同步公告"
-            disabled={isSyncing}
+            disabled={isSyncing || !capabilityAllowsAction(capability)}
             onClick={onSyncAnnouncements}
           >
             <Search aria-hidden="true" size={15} />
@@ -3917,6 +4414,10 @@ function AnnouncementsPanel({
           </button>
         </div>
       </div>
+
+      {!capabilityAllowsAction(capability) ? (
+        <div className="sync-message sync-message--error">{capabilityDetail(capability)}</div>
+      ) : null}
 
       {syncState.message ? (
         <div
@@ -3967,16 +4468,17 @@ function AnnouncementsPanel({
             const displayStatus = getAnnouncementDisplayStatus(announcement);
             const keyFacts = Array.isArray(announcement.key_facts) ? announcement.key_facts : [];
             const tags = sanitizeAnnouncementTags(announcement.tags);
+            const displayTitle = formatAnnouncementTitle(announcement);
             return (
               <li className="announcement-row" key={announcement.id}>
                 <div className="announcement-row__title">
-                  <strong>{announcement.title}</strong>
+                  <strong>{displayTitle}</strong>
                   <span>{formatDate(announcement.published_at)}</span>
                   <button
                     className="icon-action icon-action--danger"
                     type="button"
                     title="删除公告"
-                    aria-label={`删除公告：${announcement.title}`}
+                    aria-label={`删除公告：${displayTitle}`}
                     disabled={isDeleting}
                     onClick={() => onDeleteAnnouncement(announcement.id)}
                   >
@@ -3987,7 +4489,7 @@ function AnnouncementsPanel({
                     className="icon-action"
                     type="button"
                     title="读取公告原文并生成单条深度摘要"
-                    aria-label={`深度摘要：${announcement.title}`}
+                    aria-label={`深度摘要：${displayTitle}`}
                     disabled={isSummarizing || isDeleting}
                     onClick={() => onSummarizeSingleAnnouncement(announcement.id)}
                   >
@@ -3997,9 +4499,20 @@ function AnnouncementsPanel({
                 </div>
                 <div className="company-meta">
                   <span>ID #{announcement.id}</span>
-                  <span>{announcement.category}</span>
+                  <span>{formatDisclosureType(announcement.category)}</span>
                   <span>{announcementSummaryStatusLabels[displayStatus] ?? displayStatus}</span>
-                  {announcement.source ? <span>来源 {announcement.source}</span> : null}
+                  {announcement.source ? (
+                    <span>来源 {sourceLabels[announcement.source] ?? announcement.source}</span>
+                  ) : null}
+                  {announcement.filing_form ? (
+                    <span>SEC 表单 {formatSecFilingForm(announcement.filing_form)}</span>
+                  ) : null}
+                  {announcement.document_type &&
+                  announcement.document_type !== announcement.category ? (
+                    <span>类型 {formatDisclosureType(announcement.document_type)}</span>
+                  ) : null}
+                  {announcement.language ? <span>语言 {formatDisclosureLanguage(announcement.language)}</span> : null}
+                  {announcement.period_end ? <span>期末 {announcement.period_end}</span> : null}
                   {announcement.impact_direction ? (
                     <span>
                       {impactDirectionLabels[announcement.impact_direction] ??
@@ -4024,11 +4537,21 @@ function AnnouncementsPanel({
                     查看来源
                   </a>
                 ) : null}
-                <p>{announcement.summary ?? "待后续智能摘要"}</p>
+                <p>
+                  {announcement.summary
+                    ? formatAnnouncementMetadataText(
+                        announcement.summary,
+                        announcement,
+                        displayTitle
+                      )
+                    : "待后续智能摘要"}
+                </p>
                 {keyFacts.length > 0 ? (
                   <ul className="compact-fact-list">
                     {keyFacts.slice(0, 4).map((fact) => (
-                      <li key={fact}>{fact}</li>
+                      <li key={fact}>
+                        {formatAnnouncementMetadataText(fact, announcement, displayTitle)}
+                      </li>
                     ))}
                   </ul>
                 ) : null}
@@ -5245,18 +5768,22 @@ function formatDraftPercent(value: number): string {
   })}%`;
 }
 
-function formatValuationRangeItem(totalValue: number | null, perShareValue: number | null): string {
-  return `${formatFinancialSummaryMoney(totalValue)} / 每股 ${formatPerShareIntrinsicValue(perShareValue)}`;
+function formatValuationRangeItem(
+  totalValue: number | null,
+  perShareValue: number | null,
+  currency: string
+): string {
+  return `${formatFinancialSummaryMoney(totalValue, currency)} / 每股 ${formatPerShareIntrinsicValue(perShareValue, currency)}`;
 }
 
-function formatPerShareIntrinsicValue(value: number | null): string {
+function formatPerShareIntrinsicValue(value: number | null, currency: string): string {
   if (value === null || !Number.isFinite(value)) {
     return "待计算";
   }
   return `${value.toLocaleString("zh-CN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
-  })} CNY`;
+  })} ${currency}`;
 }
 
 function formatShareCount(value: unknown): string {
@@ -5265,6 +5792,17 @@ function formatShareCount(value: unknown): string {
     return "待更新";
   }
   return `${formatLargeNumber(numberValue)} 股`;
+}
+
+function formatShareBasisStatus(status: unknown, basis: unknown): string {
+  const normalizedStatus = String(status ?? "");
+  if (normalizedStatus === "confirmed") {
+    return `${String(basis ?? "issuer_common_share")} · 已确认`;
+  }
+  if (normalizedStatus === "needs_input") {
+    return "口径待确认，已阻断每股价值";
+  }
+  return String(basis ?? "待补充");
 }
 
 function formatMethodName(value: unknown): string {
@@ -5820,6 +6358,14 @@ function formatFinancialValue(key: string, value: unknown, currency: string): st
     return "无";
   }
 
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "结构化审计数据";
+    }
+  }
+
   return String(value);
 }
 
@@ -5827,14 +6373,22 @@ function orderedFinancialFields(fields: Record<string, unknown>): [string, unkno
   const orderIndex = new Map(
     financialFieldDisplayOrder.map((fieldName, index) => [fieldName, index])
   );
-  return Object.entries(fields).sort(([leftKey], [rightKey]) => {
+  return Object.entries(fields)
+    .filter(([key]) => !financialMetadataFields.has(key))
+    .sort(([leftKey], [rightKey]) => {
     const leftIndex = orderIndex.get(leftKey) ?? Number.MAX_SAFE_INTEGER;
     const rightIndex = orderIndex.get(rightKey) ?? Number.MAX_SAFE_INTEGER;
     if (leftIndex !== rightIndex) {
       return leftIndex - rightIndex;
     }
     return leftKey.localeCompare(rightKey, "zh-CN");
-  });
+    });
+}
+
+function countRecordEntries(value: unknown): number {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? Object.keys(value).length
+    : 0;
 }
 
 function sortFinancialStatementsForDisplay(statements: FinancialStatement[]): FinancialStatement[] {
@@ -5892,11 +6446,11 @@ function getPackRecord(source: Record<string, unknown>, key: string): Record<str
     : {};
 }
 
-function formatFinancialSummaryMoney(value: unknown): string {
+function formatFinancialSummaryMoney(value: unknown, currency = "CNY"): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "待更新";
   }
-  return `${formatLargeNumber(value)} CNY`;
+  return `${formatLargeNumber(value)} ${currency}`;
 }
 
 function formatNormalizationMethod(value: unknown): string {
@@ -6038,21 +6592,138 @@ function formatLargeNumber(value: number): string {
   return value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 }
 
-function formatMoney(value: number | null): string {
+function formatMoney(value: number | null, currency?: string): string {
   if (value === null || !Number.isFinite(value)) {
     return "待更新";
   }
-  return `${formatLargeNumber(value)} 元`;
+  return `${formatLargeNumber(value)} ${currency ?? "元"}`;
 }
 
-function formatPrice(value: number | null): string {
+function formatPrice(value: number | null, currency?: string): string {
   if (value === null || !Number.isFinite(value)) {
     return "待更新";
   }
-  return value.toLocaleString("zh-CN", {
+  const formatted = value.toLocaleString("zh-CN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   });
+  return currency ? `${formatted} ${currency}` : formatted;
+}
+
+function formatSecurityType(value: string): string {
+  return { common_stock: "普通股", ads: "ADS", adr: "ADR" }[value] ?? value;
+}
+
+function capabilityLabel(value: string): string {
+  return {
+    profile: "档案",
+    quote: "行情",
+    financials: "财务",
+    disclosures: "披露",
+    dividend: "分红",
+    fx: "汇率"
+  }[value] ?? value;
+}
+
+function capabilityStatusLabel(value: ProviderCapability["status"] | undefined): string {
+  const labels: Record<string, string> = {
+    available: "可用",
+    partial: "部分可用",
+    unavailable: "不可用",
+    stale: "需刷新",
+    blocked: "已阻断"
+  };
+  return labels[value ?? ""] ?? "读取中";
+}
+
+function capabilityAllowsAction(value: ProviderCapability | undefined): boolean {
+  return value === undefined || value.status === "available" || value.status === "partial";
+}
+
+function capabilityDetail(value: ProviderCapability | undefined): string {
+  if (!value) return "能力状态读取中";
+  return [
+    capabilityStatusLabel(value.status),
+    value.provider ? `Provider ${value.provider}` : null,
+    value.reason,
+    value.remediation
+  ]
+    .filter(Boolean)
+    .join("；");
+}
+
+function formatDisclosureLanguage(value: string): string {
+  return { zh: "中文", en: "英文", "en-US": "英文", "zh-HK": "繁体中文" }[value] ?? value;
+}
+
+function formatDisclosureType(value: string): string {
+  return disclosureTypeLabels[value] ?? value;
+}
+
+function formatSecFilingForm(value: string): string {
+  const baseForm = value.replace(/\/A$/, "");
+  const label = {
+    "10-K": "年度报告",
+    "10-Q": "季度报告",
+    "20-F": "境外发行人年度报告",
+    "6-K": "境外发行人临时报告",
+    "8-K": "重大事项报告",
+    "DEF 14A": "股东大会委托书"
+  }[baseForm];
+  if (!label) return value;
+  return `${label}${value.endsWith("/A") ? "修订版" : ""}（${value}）`;
+}
+
+function formatAnnouncementTitle(announcement: Announcement): string {
+  const title = announcement.title.trim();
+  const form = announcement.filing_form;
+  if (!form || announcement.source !== "sec_edgar") return title;
+  const legacyDate = announcement.period_end ?? announcement.published_at.slice(0, 10);
+  if (title !== `${form} ${legacyDate}`) return title;
+  const dateLabel = announcement.period_end ? "报告期截至" : "披露于";
+  return `${formatSecFilingForm(form)} · ${dateLabel} ${legacyDate}`;
+}
+
+function formatAnnouncementMetadataText(
+  value: string,
+  announcement: Announcement,
+  displayTitle: string
+): string {
+  let formatted = cleanDisplayText(value);
+  for (const [code, label] of Object.entries(disclosureTypeLabels)) {
+    formatted = formatted.replaceAll(code, label);
+  }
+  if (announcement.source === "sec_edgar" && announcement.filing_form) {
+    const legacyDate = announcement.period_end ?? announcement.published_at.slice(0, 10);
+    formatted = formatted.replaceAll(
+      `${announcement.filing_form} ${legacyDate}`,
+      displayTitle
+    );
+    formatted = formatted.replaceAll("sec_edgar", "SEC EDGAR");
+  }
+  return formatted;
+}
+
+function formatFinancialPeriodType(value: string): string {
+  return {
+    annual: "年度",
+    quarterly_ytd: "季度累计",
+    semiannual_ytd: "半年度累计",
+    event: "事项"
+  }[value] ?? value;
+}
+
+function formatFxAudit(audit: Record<string, unknown>): string {
+  const formula = String(audit.formula ?? "交叉汇率");
+  const base = String(audit.base_currency ?? "base");
+  const quote = String(audit.quote_currency ?? "quote");
+  const basePerEur = readNumber(audit.base_per_eur);
+  const quotePerEur = readNumber(audit.quote_per_eur);
+  const rateDate = String(audit.common_rate_date ?? "同日");
+  if (basePerEur !== null && quotePerEur !== null) {
+    return `${rateDate}：${quote} 每 EUR ${quotePerEur} / ${base} 每 EUR ${basePerEur}；${formula}`;
+  }
+  return formula;
 }
 
 function formatRatio(value: number | null): string {

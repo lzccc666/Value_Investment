@@ -150,6 +150,10 @@
       "medium": 0.65
     }
   },
+  "market_data": {
+    "fx_max_age_days": 7,
+    "quote_max_age_hours": 168
+  },
   "price_decision": {
     "buy_price_scenario": "base",
     "safety_margin_max": 0.5,

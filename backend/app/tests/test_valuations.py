@@ -166,6 +166,46 @@ def test_create_draft_waits_for_user_confirmation_before_calculation(
     assert confirmed.confidence is not None
 
 
+def test_multi_class_share_basis_blocks_per_share_until_explicitly_confirmed(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.query(Company).filter_by(ticker="BRK.B.US").one()
+        _seed_all_analyst_runs(session, company)
+        _seed_financials(session, company, currency="USD")
+        _seed_memo(session, company)
+
+        blocked_draft = create_draft_valuation_run(session, company)
+        blocked = _confirm_run(session, blocked_draft)
+
+        assert blocked.share_basis_snapshot["status"] == "needs_input"
+        assert blocked.results["status"] == "needs_share_basis"
+        assert blocked.results["intrinsic_value_range"]["per_share_value"] == {}
+        assert any(
+            item["field"] == "share_basis"
+            for item in blocked.results["valuation_input_gaps"]
+        )
+
+        company.external_ids = {
+            **company.external_ids,
+            "share_basis_confirmation": {
+                "basis": "issuer_common_share",
+                "confirmed": True,
+                "source": "fixture_issuer_class_reconciliation",
+            },
+        }
+        session.commit()
+        confirmed_draft = create_draft_valuation_run(session, company)
+        confirmed = _confirm_run(session, confirmed_draft)
+
+        assert confirmed.share_basis_snapshot["status"] == "confirmed"
+        assert confirmed.share_basis_snapshot["source"] == (
+            "fixture_issuer_class_reconciliation"
+        )
+        assert confirmed.results["status"] == "calculated_after_user_confirmation"
+        assert confirmed.results["intrinsic_value_range"]["per_share_value"]["base"] > 0
+        assert blocked.results["status"] == "needs_share_basis"
 def test_user_can_adjust_model_weights_before_valuation(tmp_path: Path) -> None:
     session_factory = _make_test_db(tmp_path)
     configured_weights = {
@@ -1098,13 +1138,14 @@ def _seed_financials(
     *,
     include_cash_flow: bool = True,
     include_balance_sheet: bool = True,
+    currency: str = "CNY",
 ) -> None:
     session.add(
         FinancialStatement(
             company_id=company.id,
             period="2025A",
             statement_type="main_financial_indicators",
-            currency="CNY",
+            currency=currency,
             fields={
                 "report_date": "2025-12-31",
                 "revenue": 1_000_000_000,
@@ -1125,7 +1166,7 @@ def _seed_financials(
                 company_id=company.id,
                 period="2025A",
                 statement_type="cash_flow_statement",
-                currency="CNY",
+                currency=currency,
                 fields={
                     "report_date": "2025-12-31",
                     "operating_cash_flow": 120_000_000,
@@ -1143,7 +1184,7 @@ def _seed_financials(
                 company_id=company.id,
                 period="2025A",
                 statement_type="balance_sheet",
-                currency="CNY",
+                currency=currency,
                 fields={
                     "report_date": "2025-12-31",
                     "cash_and_equivalents": 200_000_000,

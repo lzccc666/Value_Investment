@@ -1,0 +1,231 @@
+{
+  "cik": 320193,
+  "entityName": "Apple Inc.",
+  "facts": {
+    "us-gaap": {
+      "RevenueFromContractWithCustomerExcludingAssessedTax": {
+        "units": {
+          "USD": [
+            {
+              "start": "2024-09-29",
+              "end": "2025-09-27",
+              "val": 400000000000,
+              "accn": "0000320193-25-000079",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2025-10-31"
+            },
+            {
+              "start": "2024-09-29",
+              "end": "2025-09-27",
+              "val": 410000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            },
+            {
+              "start": "2025-09-28",
+              "end": "2026-06-27",
+              "val": 320000000000,
+              "accn": "0000320193-26-000100",
+              "fy": 2026,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2026-07-31"
+            }
+          ]
+        }
+      },
+      "SalesRevenueNet": {
+        "units": {
+          "USD": [
+            {
+              "start": "2023-10-01",
+              "end": "2024-09-28",
+              "val": 391035000000,
+              "accn": "0000320193-24-000123",
+              "fy": 2024,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2024-11-01"
+            }
+          ]
+        }
+      },
+      "GrossProfit": {
+        "units": {
+          "USD": [
+            {
+              "start": "2024-09-29",
+              "end": "2025-09-27",
+              "val": 180000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "NetIncomeLoss": {
+        "units": {
+          "USD": [
+            {
+              "start": "2024-09-29",
+              "end": "2025-09-27",
+              "val": 100000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "OperatingIncomeLoss": {
+        "units": {
+          "USD": [
+            {
+              "start": "2024-09-29",
+              "end": "2025-09-27",
+              "val": 125000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "EarningsPerShareDiluted": {
+        "units": {
+          "USD/shares": [
+            {
+              "start": "2024-09-29",
+              "end": "2025-09-27",
+              "val": 6.75,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "NetCashProvidedByUsedInOperatingActivities": {
+        "units": {
+          "USD": [
+            {
+              "start": "2024-09-29",
+              "end": "2025-09-27",
+              "val": 120000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "PaymentsToAcquirePropertyPlantAndEquipment": {
+        "units": {
+          "USD": [
+            {
+              "start": "2024-09-29",
+              "end": "2025-09-27",
+              "val": 10000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "CashAndCashEquivalentsAtCarryingValue": {
+        "units": {
+          "USD": [
+            {
+              "end": "2025-09-27",
+              "val": 36000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "Assets": {
+        "units": {
+          "USD": [
+            {
+              "end": "2025-09-27",
+              "val": 365000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "Liabilities": {
+        "units": {
+          "USD": [
+            {
+              "end": "2025-09-27",
+              "val": 310000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "StockholdersEquity": {
+        "units": {
+          "USD": [
+            {
+              "end": "2025-09-27",
+              "val": 55000000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      },
+      "EntityCommonStockSharesOutstanding": {
+        "units": {
+          "shares": [
+            {
+              "end": "2025-09-27",
+              "val": 14800000000,
+              "accn": "0000320193-26-000098",
+              "fy": 2025,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2026-01-10"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

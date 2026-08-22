@@ -88,7 +88,13 @@ const mocks = vi.hoisted(() => {
     getCompanies: vi.fn(),
     createCompany: vi.fn(),
     getCompany: vi.fn(),
+    getCompanyListings: vi.fn(),
+    getCompanyMarketCapabilities: vi.fn(),
+    getLatestListingMarketSnapshot: vi.fn(),
     refreshCompanyProfile: vi.fn(),
+    refreshListingProfile: vi.fn(),
+    refreshListingMarketSnapshot: vi.fn(),
+    refreshFxRate: vi.fn(),
     getCompanyFinancials: vi.fn(),
     getCompanyFinancialEvidencePack: vi.fn(),
     syncCompanyFinancials: vi.fn(),
@@ -139,7 +145,23 @@ const mocks = vi.hoisted(() => {
     getCurrentParameterConfig: vi.fn(),
     getDefaultParameterConfig: vi.fn(),
     validateParameterConfig: vi.fn(),
-    publishParameterConfig: vi.fn()
+    publishParameterConfig: vi.fn(),
+    getPortfolioOwners: vi.fn(),
+    createPortfolioOwner: vi.fn(),
+    updatePortfolioOwner: vi.fn(),
+    deletePortfolioOwner: vi.fn(),
+    getPortfolioSnapshots: vi.fn(),
+    createPortfolioSnapshot: vi.fn(),
+    updatePortfolioSnapshot: vi.fn(),
+    deletePortfolioSnapshot: vi.fn(),
+    getPortfolioHoldings: vi.fn(),
+    createPortfolioHolding: vi.fn(),
+    updatePortfolioHolding: vi.fn(),
+    deletePortfolioHolding: vi.fn(),
+    getPortfolioValuation: vi.fn(),
+    refreshPortfolioQuotes: vi.fn(),
+    getMarketFear: vi.fn(),
+    refreshMarketFear: vi.fn()
   };
 });
 
@@ -272,7 +294,13 @@ vi.mock("../services/api", () => ({
   getCompanies: mocks.getCompanies,
   createCompany: mocks.createCompany,
   getCompany: mocks.getCompany,
+  getCompanyListings: mocks.getCompanyListings,
+  getCompanyMarketCapabilities: mocks.getCompanyMarketCapabilities,
+  getLatestListingMarketSnapshot: mocks.getLatestListingMarketSnapshot,
   refreshCompanyProfile: mocks.refreshCompanyProfile,
+  refreshListingProfile: mocks.refreshListingProfile,
+  refreshListingMarketSnapshot: mocks.refreshListingMarketSnapshot,
+  refreshFxRate: mocks.refreshFxRate,
   getCompanyFinancials: mocks.getCompanyFinancials,
   getCompanyFinancialEvidencePack: mocks.getCompanyFinancialEvidencePack,
   syncCompanyFinancials: mocks.syncCompanyFinancials,
@@ -336,12 +364,34 @@ vi.mock("../services/api", () => ({
   getCurrentParameterConfig: mocks.getCurrentParameterConfig,
   getDefaultParameterConfig: mocks.getDefaultParameterConfig,
   validateParameterConfig: mocks.validateParameterConfig,
-  publishParameterConfig: mocks.publishParameterConfig
+  publishParameterConfig: mocks.publishParameterConfig,
+  getPortfolioOwners: mocks.getPortfolioOwners,
+  createPortfolioOwner: mocks.createPortfolioOwner,
+  updatePortfolioOwner: mocks.updatePortfolioOwner,
+  deletePortfolioOwner: mocks.deletePortfolioOwner,
+  getPortfolioSnapshots: mocks.getPortfolioSnapshots,
+  createPortfolioSnapshot: mocks.createPortfolioSnapshot,
+  updatePortfolioSnapshot: mocks.updatePortfolioSnapshot,
+  deletePortfolioSnapshot: mocks.deletePortfolioSnapshot,
+  getPortfolioHoldings: mocks.getPortfolioHoldings,
+  createPortfolioHolding: mocks.createPortfolioHolding,
+  updatePortfolioHolding: mocks.updatePortfolioHolding,
+  deletePortfolioHolding: mocks.deletePortfolioHolding,
+  getPortfolioValuation: mocks.getPortfolioValuation,
+  refreshPortfolioQuotes: mocks.refreshPortfolioQuotes,
+  getMarketFear: mocks.getMarketFear,
+  refreshMarketFear: mocks.refreshMarketFear
 }));
 
 import { App } from "../app/App";
 
 beforeEach(() => {
+  mocks.getPortfolioOwners.mockResolvedValue({ items: [], total: 0 });
+  mocks.getMarketFear.mockResolvedValue({
+    status: "failed",
+    items: [],
+    notice: "波动率指标反映市场预期波动程度，不代表价格方向，也不是买卖建议。"
+  });
   mocks.getHealth.mockResolvedValue({
     status: "ok",
     service: "Value Investment API",
@@ -359,6 +409,24 @@ beforeEach(() => {
   mocks.getCompany.mockImplementation((companyId: number) =>
     Promise.resolve(companyId === 99 ? mocks.createdCompany : mocks.company)
   );
+  mocks.getCompanyListings.mockImplementation((companyId: number) =>
+    Promise.resolve({ company_id: companyId, items: [] })
+  );
+  mocks.getCompanyMarketCapabilities.mockImplementation(
+    (companyId: number, listingId: number) =>
+      Promise.resolve({
+        company_id: companyId,
+        listing_id: listingId,
+        market: "CN",
+        capabilities: Object.fromEntries(
+          ["profile", "quote", "financials", "disclosures", "dividend", "fx"].map((key) => [
+            key,
+            { status: "available", provider: "test_fixture" }
+          ])
+        )
+      })
+  );
+  mocks.getLatestListingMarketSnapshot.mockResolvedValue(null);
   mocks.refreshCompanyProfile.mockResolvedValue({
     ...mocks.company,
     market_cap: 1800000000000,
@@ -371,6 +439,37 @@ beforeEach(() => {
     dividend_yield_static: 0.0384,
     market_data_updated_at: "2026-08-13T14:30:00Z",
     updated_at: "2026-08-13T14:30:00Z"
+  });
+  mocks.refreshListingProfile.mockResolvedValue({
+    ...mocks.company,
+    updated_at: "2026-08-13T14:30:00Z"
+  });
+  mocks.refreshListingMarketSnapshot.mockResolvedValue({
+    id: 901,
+    listing_id: 1,
+    price: 1420.5,
+    currency: "CNY",
+    market_cap: 1800000000000,
+    pe_ttm: 21.34,
+    pe_dynamic: 16.12,
+    pe_static: 21.34,
+    pb_ratio: 7.56,
+    ps_ratio: 11.2,
+    dividend_yield_ttm: 0.0408,
+    dividend_yield_static: 0.0384,
+    price_as_of: "2026-08-13T14:30:00Z",
+    fetched_at: "2026-08-13T14:30:00Z",
+    source: "test_fixture",
+    source_url: "https://example.test/quote",
+    raw_snapshot_hash: "snapshot-hash"
+  });
+  mocks.refreshFxRate.mockResolvedValue({
+    id: 902,
+    base_currency: "CNY",
+    quote_currency: "HKD",
+    rate: 1.08,
+    rate_date: "2026-08-13",
+    calculation_audit: { method: "same_date_cross_via_eur" }
   });
   mocks.getCompanyFinancials.mockResolvedValue({
     items: [
@@ -1171,13 +1270,14 @@ beforeEach(() => {
     valuation_rule_matrix: { rule_mappings: {} },
     memo_decision: {},
     valuation_models: {},
-    price_decision: {}
+    price_decision: {},
+    market_data: { quote_max_age_hours: 168, fx_max_age_days: 7 }
   };
   const parameterValidation = {
     valid: true,
     errors: [],
     warnings: [],
-    actual_parameter_count: 372,
+    actual_parameter_count: 377,
     audit_parameter_count: 92
   };
   const currentParameterConfig = {
@@ -1218,6 +1318,38 @@ beforeEach(() => {
         expert: true,
         audit_only: false,
         risk: "medium"
+      },
+      {
+        path: "market_data.quote_max_age_hours",
+        domain: "market_data",
+        label: "行情最长有效小时数",
+        code_name: "market_data.quote_max_age_hours",
+        description: "011 允许行情快照参与新价格决策的最长年龄；超过后必须刷新。",
+        unit: "小时",
+        default_value: 168,
+        current_value: 168,
+        minimum: 1,
+        maximum: 720,
+        editable: true,
+        expert: false,
+        audit_only: false,
+        risk: "high"
+      },
+      {
+        path: "market_data.fx_max_age_days",
+        domain: "market_data",
+        label: "汇率最长有效天数",
+        code_name: "market_data.fx_max_age_days",
+        description: "011 跨币种换算允许汇率快照参与新价格决策的最长年龄；超过后必须刷新。",
+        unit: "天",
+        default_value: 7,
+        current_value: 7,
+        minimum: 1,
+        maximum: 90,
+        editable: true,
+        expert: false,
+        audit_only: false,
+        risk: "high"
       }
     ]
   };
@@ -1263,7 +1395,13 @@ beforeEach(() => {
   mocks.getCompanies.mockClear();
   mocks.createCompany.mockClear();
   mocks.getCompany.mockClear();
+  mocks.getCompanyListings.mockClear();
+  mocks.getCompanyMarketCapabilities.mockClear();
+  mocks.getLatestListingMarketSnapshot.mockClear();
   mocks.refreshCompanyProfile.mockClear();
+  mocks.refreshListingProfile.mockClear();
+  mocks.refreshListingMarketSnapshot.mockClear();
+  mocks.refreshFxRate.mockClear();
   mocks.getCompanyFinancials.mockClear();
   mocks.getCompanyFinancialEvidencePack.mockClear();
   mocks.syncCompanyFinancials.mockClear();
@@ -1711,9 +1849,10 @@ describe("App", () => {
       await screen.findByRole("heading", { name: "参数配置中心", level: 1 })
     ).toBeInTheDocument();
     expect(await screen.findByText("当前源码参数")).toBeInTheDocument();
-    expect(screen.getByText(/372 个生效参数/)).toBeInTheDocument();
+    expect(screen.getByText(/377 个生效参数/)).toBeInTheDocument();
     expect(screen.queryByText(/审计参数/)).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "数据采样" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "市场数据" })).toBeInTheDocument();
     expect(screen.getByText("公司列表每页默认数量")).toBeInTheDocument();
     expect(screen.getByText("公司列表单次请求上限")).toBeInTheDocument();
     expect(
@@ -1897,6 +2036,132 @@ describe("App", () => {
     expect(await screen.findByText("可用于综合的成功视角")).toBeInTheDocument();
   });
 
+  it("switches issuer listings and keeps downstream requests bound to the selected listing", async () => {
+    const hkListing = {
+      id: 11,
+      company_id: 1,
+      ticker: "09988.HK",
+      symbol: "09988",
+      exchange: "HKEX",
+      market: "HK",
+      trading_currency: "HKD",
+      security_type: "common_stock",
+      listed_date: "2019-11-26",
+      is_primary: true,
+      is_active: true,
+      underlying_shares_per_listing_unit: 1,
+      provider_identifiers: { akshare_symbol: "09988" },
+      created_at: "2026-08-20T00:00:00Z",
+      updated_at: "2026-08-20T00:00:00Z"
+    };
+    const usListing = {
+      ...hkListing,
+      id: 12,
+      ticker: "BABA.US",
+      symbol: "BABA",
+      exchange: "NYSE",
+      market: "US",
+      trading_currency: "USD",
+      security_type: "ads",
+      listed_date: "2014-09-19",
+      is_primary: false,
+      underlying_shares_per_listing_unit: 8,
+      provider_identifiers: { cik: "0001577552" }
+    };
+    mocks.getCompany.mockResolvedValue({
+      ...mocks.company,
+      name: "阿里巴巴集团",
+      legal_name: "Alibaba Group Holding Limited",
+      ticker: hkListing.ticker,
+      exchange: hkListing.exchange,
+      domicile_country: "KY",
+      reporting_currency: "CNY",
+      fiscal_year_end: "03-31",
+      primary_listing: hkListing
+    });
+    mocks.getCompanyListings.mockResolvedValue({ company_id: 1, items: [hkListing, usListing] });
+    mocks.getLatestListingMarketSnapshot.mockImplementation((listingId: number) =>
+      Promise.resolve({
+        id: listingId === 12 ? 912 : 911,
+        listing_id: listingId,
+        price: listingId === 12 ? 90.5 : 82.25,
+        currency: listingId === 12 ? "USD" : "HKD",
+        market_cap: null,
+        pe_ttm: 18.2,
+        pe_dynamic: null,
+        pe_static: null,
+        pb_ratio: 2.7,
+        ps_ratio: null,
+        dividend_yield_ttm: 0.012,
+        dividend_yield_static: null,
+        price_as_of: "2026-08-20T20:00:00Z",
+        fetched_at: "2026-08-20T20:01:00Z",
+        source: "test_fixture",
+        source_url: "https://example.test/baba-quote",
+        raw_snapshot_hash: `snapshot-${listingId}`
+      })
+    );
+    const valuation = {
+      ...makeValuationRun(),
+      valuation_currency: "CNY",
+      share_basis_snapshot: {
+        status: "success",
+        basis: "issuer_ordinary_share",
+        ordinary_shares_outstanding: 19000000000
+      }
+    };
+    mocks.getLatestValuationRun.mockResolvedValue({ company_id: 1, item: valuation });
+    mocks.getValuationRuns.mockResolvedValue({ items: [valuation], total: 1, limit: 20, offset: 0 });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    expect(await screen.findByRole("heading", { name: "阿里巴巴集团" })).toBeInTheDocument();
+    expect(screen.getByText("Alibaba Group Holding Limited")).toBeInTheDocument();
+
+    const listingSelector = screen.getByLabelText("当前 Listing");
+    expect(listingSelector).toHaveValue("11");
+    fireEvent.change(listingSelector, { target: { value: "12" } });
+    await waitFor(() => {
+      expect(mocks.getLatestListingMarketSnapshot).toHaveBeenLastCalledWith(
+        12,
+        expect.any(AbortSignal)
+      );
+    });
+    expect(await screen.findByText("90.50 USD")).toBeInTheDocument();
+    expect(screen.getByText("ADS · 1 单位对应 8 股发行人普通股")).toBeInTheDocument();
+
+    await openWorkspaceSection("Financials");
+    fireEvent.click(screen.getByRole("button", { name: "搜索财务数据" }));
+    await waitFor(() => {
+      expect(mocks.syncCompanyFinancials).toHaveBeenCalledWith(1, {
+        limit: 60,
+        listing_id: 12
+      });
+    });
+
+    await openWorkspaceSection("Announcements");
+    fireEvent.click(screen.getByRole("button", { name: "搜索公告" }));
+    await waitFor(() => {
+      expect(mocks.syncCompanyAnnouncements).toHaveBeenCalledWith(1, {
+        years: 1,
+        listing_id: 12
+      });
+    });
+
+    await openWorkspaceSection("Price Decision");
+    expect(await screen.findByText("BABA.US · NYSE")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "生成价格决策" }));
+    await waitFor(() => {
+      expect(mocks.createPriceDecisionRun).toHaveBeenCalledWith(1, {
+        valuation_run_id: 501,
+        safety_margin_override: null,
+        listing_id: 12
+      });
+    });
+  });
+
   it("hides the new company panel while searching companies", async () => {
     render(<App />);
 
@@ -1982,6 +2247,24 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "公司档案", level: 1 })).toBeInTheDocument();
     expect(await screen.findByText("基础档案")).toBeInTheDocument();
     expect(screen.queryByText("公司档案加载失败")).not.toBeInTheDocument();
+  });
+
+  it("keeps full company information visible in analyst, memo, and valuation views", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+
+    for (const sectionName of ["Analyst Views", "Memo", "Valuation Lab"]) {
+      await openWorkspaceSection(sectionName);
+      expect(screen.getByText("基础档案")).toBeInTheDocument();
+      expect(screen.getByText("基本信息")).toBeInTheDocument();
+      expect(screen.getByText("行情更新时间")).toBeInTheDocument();
+      expect(screen.getByText("1,355.29")).toBeInTheDocument();
+      expect(screen.getByText("20.48x")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "刷新行情" })).toBeInTheDocument();
+    }
   });
 
   it("opens the price-blind valuation lab and recalculates editable assumptions", async () => {
@@ -2079,6 +2362,7 @@ describe("App", () => {
     expect(screen.getByText("行情更新时间")).toBeInTheDocument();
     expect(screen.getByText("基本信息")).toBeInTheDocument();
     expect(screen.getByText("1,355.29")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新行情" })).toBeInTheDocument();
 
     const discountRateInputs = screen.getAllByLabelText("折现率");
     fireEvent.change(discountRateInputs[1], { target: { value: "10.5" } });
@@ -2706,6 +2990,75 @@ describe("App", () => {
     expect(screen.getAllByText("2016年报").length).toBeGreaterThan(0);
   });
 
+  it("renders SEC audit metadata and financial gap field names in Chinese", async () => {
+    mocks.getCompanyFinancials.mockResolvedValueOnce({
+      items: [
+        {
+          id: 88,
+          company_id: 1,
+          period: "2025FY",
+          statement_type: "income_statement",
+          currency: "USD",
+          fields: {
+            revenue: 400_000_000_000,
+            source_tags: {
+              RevenueFromContractWithCustomerExcludingAssessedTax: "us-gaap"
+            },
+            mapping_diagnostics: [
+              {
+                field: "revenue",
+                code: "fallback_tag_used",
+                tag: "Revenues"
+              }
+            ]
+          },
+          source: "sec_companyfacts",
+          source_url: "https://www.sec.gov/Archives/edgar/data/320193",
+          period_type: "annual",
+          fiscal_year: 2025,
+          fiscal_period: "FY",
+          taxonomy: "us-gaap",
+          created_at: "2026-08-22T00:00:00Z"
+        }
+      ],
+      total: 1,
+      limit: 60,
+      offset: 0
+    });
+    mocks.getCompanyFinancialEvidencePack.mockResolvedValueOnce({
+      ...makeFinancialEvidencePack("2025FY", {
+        revenue: 400_000_000_000,
+        net_profit: 100_000_000_000
+      }),
+      financial_data_gaps: [
+        {
+          field: "impairment_losses",
+          severity: "low",
+          reason: "缺少减值损失明细，资产质量和利润质量判断置信度下降。",
+          needed_by: ["analyst_view", "valuation_lab"],
+          replacement_available: false
+        }
+      ],
+      financial_data_gap_messages: [
+        "缺少减值损失明细，资产质量和利润质量判断置信度下降。"
+      ]
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Financials");
+
+    expect(await screen.findByText("SEC 来源标签 1 项")).toBeInTheDocument();
+    expect(await screen.findByText("映射诊断 1 项")).toBeInTheDocument();
+    expect(await screen.findByText("减值损失明细")).toBeInTheDocument();
+    expect(await screen.findByText("年度")).toBeInTheDocument();
+    expect(screen.queryByText("source_tags")).not.toBeInTheDocument();
+    expect(screen.queryByText("mapping_diagnostics")).not.toBeInTheDocument();
+    expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
+  });
+
   it("shows financial statement delete failures without removing the item", async () => {
     mocks.deleteCompanyFinancialStatement.mockRejectedValueOnce(
       new Error("Financial statement not found")
@@ -2778,6 +3131,57 @@ describe("App", () => {
       "href",
       "https://example.test/notices/detail/600519/AN1.html"
     );
+  });
+
+  it("renders legacy SEC form-only announcements as readable Chinese titles", async () => {
+    mocks.getCompanyAnnouncements.mockResolvedValueOnce({
+      items: [
+        {
+          id: 90,
+          company_id: 1,
+          title: "10-Q 2026-06-27",
+          published_at: "2026-07-31T00:00:00Z",
+          category: "quarterly_report",
+          content: null,
+          raw_content: null,
+          summary: "类别：quarterly_report；性质：公告事项；影响：未知。",
+          source: "sec_edgar",
+          source_url: "https://www.sec.gov/Archives/edgar/data/320193/filing.htm",
+          raw_url: null,
+          source_document_id: "0000320193-26-000100",
+          document_type: "quarterly_report",
+          filing_form: "10-Q",
+          language: "en-US",
+          period_end: "2026-06-27",
+          content_type: "text/html",
+          key_facts: ["标题：10-Q 2026-06-27", "来源：sec_edgar"],
+          created_at: "2026-08-22T00:00:00Z"
+        }
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "公司搜索" }));
+    expect(await screen.findByText("贵州茅台")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "档案" }));
+    await openWorkspaceSection("Announcements");
+
+    expect(
+      await screen.findByText("季度报告（10-Q） · 报告期截至 2026-06-27")
+    ).toBeInTheDocument();
+    expect(await screen.findByText("SEC 表单 季度报告（10-Q）")).toBeInTheDocument();
+    expect(await screen.findByText("来源 SEC EDGAR")).toBeInTheDocument();
+    expect(await screen.findByText("语言 英文")).toBeInTheDocument();
+    expect(await screen.findByText(/类别：季度报告/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("标题：季度报告（10-Q） · 报告期截至 2026-06-27")
+    ).toBeInTheDocument();
+    expect(await screen.findByText("来源：SEC EDGAR")).toBeInTheDocument();
+    expect(screen.queryByText("quarterly_report")).not.toBeInTheDocument();
+    expect(screen.queryByText("en-US")).not.toBeInTheDocument();
   });
 
   it("shows announcement search failures", async () => {
@@ -3970,6 +4374,18 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "备份与恢复" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "数据库维护" })).toBeInTheDocument();
     expect(mocks.getDataManagementSummary).toHaveBeenCalled();
+  });
+
+  it("opens Investment Tools independently while Dashboard remains 8 of 8", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("8 / 8")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "投资小工具" }));
+
+    expect(await screen.findByRole("heading", { name: "投资小工具", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "持仓组合" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "市场温度" })).toBeInTheDocument();
+    expect(mocks.getPortfolioOwners).toHaveBeenCalled();
   });
 
   it("previews and confirms company cleanup with the backend phrase", async () => {

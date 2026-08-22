@@ -19,7 +19,14 @@ from app.db.models import AnalysisRun, Announcement, Company, Evidence
 from app.db.session import create_sqlalchemy_engine, get_db
 from app.main import create_app
 from app.schemas.evidence import EvidenceImportTextRequest, EvidenceSearchRequest
-from app.services.evidence_service import import_text_evidence, search_company_evidence
+from app.services.evidence_service import (
+    _build_fallback_queries,
+    _build_official_fallback_leads,
+    _build_seed_source_leads,
+    _default_fallback_search_provider,
+    import_text_evidence,
+    search_company_evidence,
+)
 
 
 def _make_test_db(tmp_path: Path):
@@ -792,6 +799,45 @@ def test_evidence_search_uses_fallback_when_primary_provider_fails_for_a_share(
     assert run.result["search_stats"]["fallback_stage"] == "a_share_disclosure"
     assert run.result["search_stats"]["query_errors"]
     assert "贵州茅台 600519 监管函 问询函 site:sse.com.cn" in run.result["queries"]
+
+
+@pytest.mark.parametrize(
+    ("ticker", "expected_domains"),
+    [
+        ("00700.HK", {"hkexnews.hk", "sfc.hk", "censtatd.gov.hk"}),
+        ("AAPL.US", {"sec.gov", "bea.gov", "bls.gov", "census.gov"}),
+    ],
+)
+def test_non_a_share_evidence_fallback_uses_market_official_sources_only(
+    tmp_path: Path, ticker: str, expected_domains: set[str]
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == ticker))
+        assert company is not None
+        queries = _build_fallback_queries(company, ["监管"])
+        leads = _build_official_fallback_leads(company, ["监管"])
+        seed_leads = _build_seed_source_leads(company, ["监管"])
+        provider = _default_fallback_search_provider(
+            company=company,
+            provider=FakeEmptySearchProvider(),
+            search_provider_was_injected=False,
+        )
+
+    combined = " ".join(
+        [*queries]
+        + [str(item.get("url") or "") for item in leads]
+        + [str(item.get("url") or "") for item in seed_leads]
+    ).lower()
+    assert any(domain in combined for domain in expected_domains)
+    assert "sse.com.cn" not in combined
+    assert "cninfo.com.cn" not in combined
+    assert provider is not None
+    assert isinstance(provider, CompositeWebSearchProvider)
+    assert not any(
+        isinstance(item, AShareCompanyDisclosureSearchProvider)
+        for item in provider.providers
+    )
 
 
 def test_evidence_search_creates_official_search_leads_when_fallback_has_no_candidates(

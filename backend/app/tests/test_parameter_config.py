@@ -26,7 +26,7 @@ def test_default_parameter_config_is_complete_and_valid() -> None:
 
     assert result.valid is True
     assert result.errors == []
-    assert result.actual_parameter_count == 375
+    assert result.actual_parameter_count == 377
     assert result.audit_parameter_count == 0
     assert config["valuation_models"]["normalization_year_weights"] == [0.50, 0.30, 0.20]
     assert config["valuation_models"]["analyst_impact_scale"] == 2.0
@@ -34,6 +34,7 @@ def test_default_parameter_config_is_complete_and_valid() -> None:
     assert config["valuation_rule_matrix"]["safety_margin_max"] == 0.5
     assert config["price_decision"]["safety_margin_min"] == 0.1
     assert config["price_decision"]["safety_margin_max"] == 0.5
+    assert config["market_data"] == {"quote_max_age_hours": 168, "fx_max_age_days": 7}
     assert "fcf_year_weights" not in config["valuation_models"]
 
 
@@ -48,6 +49,10 @@ def test_parameter_metadata_keeps_scores_counts_and_multipliers_as_raw_numbers()
     assert metadata["valuation_rule_matrix.safety_margin_additions.warn"]["unit"] == "%"
     assert metadata["valuation_models.scenarios.conservative.growth_spread"]["unit"] == "倍"
     assert metadata["valuation_models.base_discount_rate"]["unit"] == "%"
+    assert metadata["market_data.quote_max_age_hours"]["unit"] == "小时"
+    assert metadata["market_data.fx_max_age_days"]["unit"] == "天"
+    assert metadata["market_data.quote_max_age_hours"]["minimum"] == 1.0
+    assert metadata["market_data.quote_max_age_hours"]["maximum"] == 720.0
 
 
 def test_all_visible_parameter_copy_is_chinese_specific_and_uniquely_named() -> None:
@@ -60,7 +65,7 @@ def test_all_visible_parameter_copy_is_chinese_specific_and_uniquely_named() -> 
     labels = [str(item["label"]) for item in metadata]
     descriptions = [str(item["description"]) for item in metadata]
 
-    assert len(metadata) == 265
+    assert len(metadata) == 267
     assert len(labels) == len(set(labels))
     assert all("_" not in label and "未审计" not in label for label in labels)
     assert all(len(description) >= 24 for description in descriptions)
@@ -112,6 +117,20 @@ def test_validation_returns_all_detected_errors() -> None:
         "rule_coverage",
     }.issubset(codes)
     assert len(result.errors) >= 5
+
+
+def test_market_data_parameters_require_bounded_integers() -> None:
+    config = default_parameter_config()
+    config["market_data"]["quote_max_age_hours"] = 0
+    config["market_data"]["fx_max_age_days"] = 7.5
+
+    result = validate_parameter_config(config)
+
+    assert result.valid is False
+    assert [item.path for item in result.errors if item.code == "market_data_range"] == [
+        "market_data.quote_max_age_hours",
+        "market_data.fx_max_age_days",
+    ]
 
 
 def test_missing_source_uses_builtin_defaults_without_creating_a_file(

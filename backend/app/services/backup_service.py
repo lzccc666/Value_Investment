@@ -22,6 +22,14 @@ from app.services.maintenance_gate import MaintenanceBusyError, maintenance_gate
 
 BUSINESS_TABLES = (
     "companies",
+    "security_listings",
+    "market_snapshots",
+    "fx_rate_snapshots",
+    "portfolio_owners",
+    "portfolio_snapshots",
+    "portfolio_holdings",
+    "market_fear_snapshots",
+    "buy_memo_entries",
     "financial_statements",
     "announcements",
     "evidence",

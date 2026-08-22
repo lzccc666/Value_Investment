@@ -5,7 +5,10 @@ from app.api.routes import (
     companies,
     data_management,
     evidence,
+    fx_rates,
     health,
+    investment_tools,
+    market_data,
     memos,
     parameter_config,
     price_decisions,
@@ -15,6 +18,9 @@ from app.api.routes import (
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["system"])
 api_router.include_router(companies.router, tags=["companies"])
+api_router.include_router(market_data.router, tags=["market-data"])
+api_router.include_router(fx_rates.router, tags=["market-data"])
+api_router.include_router(investment_tools.router, tags=["investment-tools"])
 api_router.include_router(evidence.router, tags=["evidence"])
 api_router.include_router(analysis.router, tags=["analysis"])
 api_router.include_router(memos.router, tags=["memos"])

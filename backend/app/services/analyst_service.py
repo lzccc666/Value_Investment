@@ -25,7 +25,10 @@ from app.analysis.prompts.analyst import (
     build_analyst_prompt,
 )
 from app.analysis.result_sanitizer import sanitize_error_text
-from app.analysis.valuation_parameter_matrix import derive_valuation_parameter_matrix
+from app.analysis.valuation_parameter_matrix import (
+    PriceAnchorOutputError,
+    derive_valuation_parameter_matrix,
+)
 from app.configuration.runtime import parameter_config_context, parameter_value
 from app.db.models import (
     AnalysisRun,
@@ -530,15 +533,26 @@ def run_company_analyst_view(
         )
 
         try:
-            output = model_gateway.generate_structured(
-                system_prompt=ANALYST_SYSTEM_PROMPT,
-                user_prompt=build_analyst_prompt(profile=profile, data_snapshot=data_snapshot),
-                schema=AnalystAnalysisOutput,
+            output = _generate_analyst_output(
+                model_gateway,
+                profile=profile,
+                data_snapshot=data_snapshot,
+                strict_boundary_retry=False,
                 temperature=float(
                     parameter_value("analyst_engine.model_temperatures.analyst", 0.2)
                 ),
-                enable_web_search=True,
             )
+            try:
+                _validate_price_blind_output(run=run, profile=profile, output=output)
+            except PriceAnchorOutputError:
+                output = _generate_analyst_output(
+                    model_gateway,
+                    profile=profile,
+                    data_snapshot=data_snapshot,
+                    strict_boundary_retry=True,
+                    temperature=0.0,
+                )
+                _validate_price_blind_output(run=run, profile=profile, output=output)
             output = _apply_fact_ledger_overrides(output, data_snapshot)
             output = _apply_financial_unit_corrections(output, data_snapshot)
             _validate_output_profile(output, profile, data_snapshot=data_snapshot)
@@ -550,6 +564,40 @@ def run_company_analyst_view(
         except Exception as exc:
             _fail_run(session, run, exc)
             raise
+
+
+def _generate_analyst_output(
+    model_gateway: ModelGateway,
+    *,
+    profile: AnalystProfile,
+    data_snapshot: dict[str, object],
+    strict_boundary_retry: bool,
+    temperature: float,
+) -> AnalystAnalysisOutput:
+    return model_gateway.generate_structured(
+        system_prompt=ANALYST_SYSTEM_PROMPT,
+        user_prompt=build_analyst_prompt(
+            profile=profile,
+            data_snapshot=data_snapshot,
+            strict_boundary_retry=strict_boundary_retry,
+        ),
+        schema=AnalystAnalysisOutput,
+        temperature=temperature,
+        enable_web_search=True,
+    )
+
+
+def _validate_price_blind_output(
+    *,
+    run: AnalysisRun,
+    profile: AnalystProfile,
+    output: AnalystAnalysisOutput,
+) -> None:
+    derive_valuation_parameter_matrix(
+        source_run_id=run.id,
+        profile=profile,
+        result=output.model_dump(mode="json"),
+    )
 
 
 def run_company_analyst_views_batch(
@@ -601,17 +649,21 @@ def _build_financial_model_display(
     metrics = financial_evidence_pack.get("financial_metrics")
     latest_facts = facts.get("latest") if isinstance(facts, dict) else None
     fact_series = facts.get("series") if isinstance(facts, dict) else None
+    currency = str(financial_evidence_pack.get("reporting_currency") or "").upper()
+    if len(currency) != 3:
+        currency = "UNKNOWN"
 
     latest_amounts: dict[str, object] = {}
     if isinstance(latest_facts, dict):
         for field, value in latest_facts.items():
             if field == "shares_outstanding" or not _is_number(value):
                 continue
-            amount_100m_cny = float(value) / 100_000_000
+            amount_100m = float(value) / 100_000_000
             latest_amounts[str(field)] = {
-                "raw_cny": float(value),
-                "value_100m_cny": round(amount_100m_cny, 4),
-                "display": f"{amount_100m_cny:.2f}亿元",
+                "currency": currency,
+                "raw_value": float(value),
+                "value_100m": round(amount_100m, 4),
+                "display": f"{amount_100m:.2f}亿 {currency}",
             }
 
     amount_series: dict[str, object] = {}
@@ -625,12 +677,13 @@ def _build_financial_model_display(
                 if not isinstance(item, dict) or not _is_number(item.get("value")):
                     continue
                 raw_value = float(item["value"])
-                amount_100m_cny = raw_value / 100_000_000
+                amount_100m = raw_value / 100_000_000
                 display_items.append(
                     {
                         "period": item.get("period"),
-                        "value_100m_cny": round(amount_100m_cny, 4),
-                        "display": f"{amount_100m_cny:.2f}亿元",
+                        "currency": currency,
+                        "value_100m": round(amount_100m, 4),
+                        "display": f"{amount_100m:.2f}亿 {currency}",
                     }
                 )
             if display_items:
@@ -651,12 +704,37 @@ def _build_financial_model_display(
                 "display": f"{percent_value:.2f}%",
             }
 
+    legacy_latest_amounts: dict[str, object] = {}
+    legacy_amount_series: dict[str, object] = {}
+    if currency == "CNY":
+        for field, item in latest_amounts.items():
+            if not isinstance(item, dict):
+                continue
+            legacy_latest_amounts[field] = {
+                "raw_cny": item["raw_value"],
+                "value_100m_cny": item["value_100m"],
+                "display": f"{float(item['value_100m']):.2f}亿元",
+            }
+        for field, items in amount_series.items():
+            if not isinstance(items, list):
+                continue
+            legacy_amount_series[field] = [
+                {
+                    "period": item.get("period"),
+                    "value_100m_cny": item.get("value_100m"),
+                    "display": f"{float(item['value_100m']):.2f}亿元",
+                }
+                for item in items
+                if isinstance(item, dict) and _is_number(item.get("value_100m"))
+            ]
+
     return {
         "latest_period": financial_evidence_pack.get("latest_period"),
+        "currency": currency,
         "unit_contract": {
-            "raw_monetary_unit": "CNY元",
-            "display_monetary_unit": "亿元",
-            "cny_per_100m": 100_000_000,
+            "raw_monetary_unit": f"{currency} 原币单位",
+            "display_monetary_unit": f"亿 {currency}",
+            "currency_units_per_100m": 100_000_000,
             "raw_ratio_unit": "0-1小数",
             "display_ratio_unit": "百分比",
             "ratio_conversion": "raw_decimal * 100",
@@ -665,8 +743,10 @@ def _build_financial_model_display(
                 "原始金额和原始小数只供程序计算，不得直接拼接亿元或百分号。"
             ),
         },
-        "latest_amounts_100m_cny": latest_amounts,
-        "amount_series_100m_cny": amount_series,
+        "latest_amounts_100m": latest_amounts,
+        "amount_series_100m": amount_series,
+        "latest_amounts_100m_cny": legacy_latest_amounts,
+        "amount_series_100m_cny": legacy_amount_series,
         "latest_percentages": latest_percentages,
     }
 
@@ -758,8 +838,10 @@ def build_company_analysis_snapshot(
                 "分析师可按需搜索公开基本面信息；结果仅用于本次模型上下文，"
                 "不经过 007、不写入 Evidence，也不要求最终结果展示网址。"
             ),
-            "input_policy": "008-010 保持 price-blind，行情、估值倍数和价格敏感证据不得进入快照。",
-            "output_policy": "只输出基本面规则判断，不输出价格、交易动作或仓位建议。",
+            "input_policy": (
+                "008-010 保持 price-blind，只接收经营、会计、现金流、治理和行业研究输入。"
+            ),
+            "output_policy": "只输出基本面规则判断，不输出下游市场对照或决策内容。",
             "allowed_outputs": [
                 "business_quality",
                 "management_quality",
@@ -2469,16 +2551,35 @@ def _hash_snapshot(snapshot: dict[str, object]) -> str:
 
 
 def _company_snapshot(company: Company) -> dict[str, Any]:
+    primary_listing = company.primary_listing
     return {
         "id": company.id,
         "ticker": company.ticker,
         "exchange": company.exchange,
         "name": company.name,
+        "canonical_key": company.canonical_key,
+        "legal_name": company.legal_name,
+        "aliases": list(company.aliases or []),
+        "domicile_country": company.domicile_country,
+        "reporting_currency": company.reporting_currency,
+        "fiscal_year_end": company.fiscal_year_end,
         "industry": company.industry,
         "description": company.description,
         "listed_date": company.listed_date.isoformat() if company.listed_date else None,
         "status": company.status,
         "tags": company.tags,
+        "primary_listing": (
+            {
+                "id": primary_listing.id,
+                "ticker": primary_listing.ticker,
+                "exchange": primary_listing.exchange,
+                "market": primary_listing.market,
+                "trading_currency": primary_listing.trading_currency,
+                "security_type": primary_listing.security_type,
+            }
+            if primary_listing is not None
+            else None
+        ),
     }
 
 
@@ -2491,6 +2592,14 @@ def _financial_snapshot(item: FinancialStatement) -> dict[str, object]:
         "fields": _remove_price_sensitive_fields(item.fields),
         "source": item.source,
         "source_url": item.source_url,
+        "source_record_id": item.source_record_id,
+        "filing_type": item.filing_type,
+        "taxonomy": item.taxonomy,
+        "period_start": item.period_start.isoformat() if item.period_start else None,
+        "period_end": item.period_end.isoformat() if item.period_end else None,
+        "period_type": item.period_type,
+        "fiscal_year": item.fiscal_year,
+        "fiscal_period": item.fiscal_period,
         "created_at": item.created_at.isoformat(),
     }
 
@@ -2501,6 +2610,10 @@ def _announcement_snapshot(item: Announcement) -> dict[str, object]:
         "title": item.title,
         "published_at": item.published_at.isoformat(),
         "category": item.category,
+        "document_type": item.document_type,
+        "filing_form": item.filing_form,
+        "language": item.language,
+        "period_end": item.period_end.isoformat() if item.period_end else None,
         "summary": _truncate_text(
             item.summary,
             max_length=int(parameter_value("data_sampling.analysis_excerpt_chars", 360)),

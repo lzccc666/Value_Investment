@@ -12,6 +12,7 @@ PriceDecisionRunStatus = Literal["active", "deleted"]
 class PriceDecisionCreateRequest(BaseModel):
     valuation_run_id: int | None = Field(default=None, ge=1)
     safety_margin_override: float | None = None
+    listing_id: int | None = Field(default=None, ge=1)
 
 
 class PriceDecisionRunRead(BaseModel):
@@ -21,6 +22,9 @@ class PriceDecisionRunRead(BaseModel):
     company_id: int
     valuation_run_id: int
     memo_id: int
+    listing_id: int | None = None
+    market_snapshot_id: int | None = None
+    fx_rate_snapshot_id: int | None = None
     version_no: int
     run_version: str
     formula_version: str
@@ -31,6 +35,11 @@ class PriceDecisionRunRead(BaseModel):
     config_hash: str | None = None
     config_snapshot: dict[str, object] = Field(default_factory=dict)
     intrinsic_values_per_share: dict[str, float] = Field(default_factory=dict)
+    issuer_intrinsic_values_per_share: dict[str, float] = Field(default_factory=dict)
+    valuation_currency: str | None = None
+    trading_currency: str | None = None
+    underlying_shares_per_listing_unit: float | None = None
+    fx_rate: float | None = None
     current_price: float
     market_data_updated_at: datetime
     suggested_safety_margin: float

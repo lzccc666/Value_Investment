@@ -31,6 +31,7 @@ from app.data_sources.eastmoney_financials import (
 from app.data_sources.eastmoney_market_snapshot import (
     EastmoneyMarketSnapshotClient,
     UnsupportedMarketSnapshotSourceError,
+    _to_eastmoney_secid,
 )
 from app.db.base import Base
 from app.db.init_db import init_db
@@ -503,6 +504,17 @@ def test_eastmoney_market_snapshot_client_falls_back_to_delay_endpoint(
     assert snapshot.dividend_yield_static == 65033211845.95 / 1694223093019.29
     assert snapshot.fetched_at.isoformat() == "2026-08-14T07:00:00+08:00"
     assert "push2delay.eastmoney.com" in snapshot.source_url
+
+
+def test_eastmoney_market_snapshot_routes_us_symbols_by_exchange() -> None:
+    assert _to_eastmoney_secid("AAPL.US", exchange="NASDAQ") == "105.AAPL"
+    assert _to_eastmoney_secid("AXP.US", exchange="NYSE") == "106.AXP"
+    assert _to_eastmoney_secid("TEST.US", exchange="AMEX") == "107.TEST"
+    assert _to_eastmoney_secid("AAPL.US") == "105.AAPL"
+    assert _to_eastmoney_secid("BRK.A.US", exchange="NYSE") == "106.BRK_A"
+    assert _to_eastmoney_secid("BRK.B.US", exchange="NYSE") == "106.BRK_B"
+    assert _to_eastmoney_secid("920185.BJ", exchange="BSE") == "0.920185"
+    assert _to_eastmoney_secid("AAPL.US", exchange="OTC") is None
 
 
 def test_eastmoney_market_snapshot_uses_announced_dividend_when_latest_total_is_partial(
@@ -1303,6 +1315,138 @@ def test_company_financial_evidence_pack_reports_flags_and_missing_data(
     )
     assert income_statement_gap["replacement_available"] is True
     assert "利润构成明细" in income_statement_gap["reason"]
+
+
+def test_financial_evidence_pack_derives_sec_debt_cost_and_non_calendar_cagr(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "AAPL.US"))
+        assert company is not None
+        for fiscal_year, revenue, net_profit in (
+            (2025, 400.0, 100.0),
+            (2024, 360.0, 90.0),
+            (2023, 330.0, 80.0),
+            (2022, 300.0, 75.0),
+        ):
+            fields = {
+                "report_date": f"{fiscal_year}-09-27",
+                "report_type": "10-K",
+                "revenue": revenue,
+                "net_profit": net_profit,
+            }
+            if fiscal_year == 2025:
+                fields.update(
+                    {
+                        "gross_profit": 170.0,
+                        "cash_and_equivalents": 80.0,
+                        "short_term_interest_bearing_debt": 10.0,
+                        "long_term_interest_bearing_debt": 70.0,
+                    }
+                )
+            if fiscal_year == 2022:
+                fields["asset_impairment_loss"] = 0.0
+            session.add(
+                FinancialStatement(
+                    company_id=company.id,
+                    period=f"{fiscal_year}FY",
+                    statement_type="income_statement",
+                    currency="USD",
+                    fields=fields,
+                    source="sec_companyfacts",
+                    filing_type="10-K",
+                    period_type="annual",
+                    fiscal_year=fiscal_year,
+                    fiscal_period="FY",
+                )
+            )
+        session.add(
+            FinancialStatement(
+                company_id=company.id,
+                period="2024Q1",
+                statement_type="income_statement",
+                currency="USD",
+                fields={
+                    "report_date": "2023-12-31",
+                    "report_type": "10-Q",
+                    "revenue": 120.0,
+                    "net_profit": 25.0,
+                },
+                source="sec_companyfacts",
+                filing_type="10-Q",
+                period_type="quarterly_ytd",
+                fiscal_year=2024,
+                fiscal_period="Q1",
+            )
+        )
+        session.commit()
+        statements = session.scalars(
+            select(FinancialStatement).where(FinancialStatement.company_id == company.id)
+        ).all()
+
+    pack = build_financial_evidence_pack(statements)
+    latest = pack["financial_facts"]["latest"]
+    gap_fields = {item["field"] for item in pack["financial_data_gaps"]}
+
+    assert latest["interest_bearing_debt"] == 80.0
+    assert latest["net_cash"] == 0.0
+    assert latest["operating_cost"] == 230.0
+    assert pack["financial_trends"]["revenue_cagr_3y"] == pytest.approx(
+        (400.0 / 300.0) ** (1 / 3) - 1
+    )
+    assert pack["financial_trends"]["net_profit_cagr_3y"] == pytest.approx(
+        (100.0 / 75.0) ** (1 / 3) - 1
+    )
+    assert "interest_bearing_debt" not in gap_fields
+    assert "operating_cost" not in gap_fields
+    assert "revenue_cagr_3y" not in gap_fields
+    assert "net_profit_cagr_3y" not in gap_fields
+    assert "impairment_losses" in gap_fields
+    impairment_gap = next(
+        item for item in pack["financial_data_gaps"] if item["field"] == "impairment_losses"
+    )
+    assert "最新期间" in impairment_gap["reason"]
+    assert "不能按 0 处理" in impairment_gap["reason"]
+
+
+def test_us_dividend_capability_becomes_available_after_sec_fact_is_stored(
+    tmp_path: Path,
+) -> None:
+    session_factory = _make_test_db(tmp_path)
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "AAPL.US"))
+        assert company is not None
+        session.add(
+            FinancialStatement(
+                company_id=company.id,
+                period="2025FY",
+                statement_type="cash_flow_statement",
+                currency="USD",
+                fields={"report_date": "2025-09-27", "dividend": 15_000_000_000.0},
+                source="sec_companyfacts",
+            )
+        )
+        session.commit()
+
+    app = create_app(initialize_database=False)
+
+    def override_get_db():
+        with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as client:
+        company_id = _get_company_id(client, "AAPL")
+        response = client.get(f"/api/companies/{company_id}/market-capabilities")
+
+    assert response.status_code == 200
+    dividend = response.json()["capabilities"]["dividend"]
+    assert dividend == {
+        "status": "available",
+        "provider": "sec_companyfacts",
+        "reason": "已读取该发行人的 SEC 标准 XBRL 现金分红事实",
+    }
 
 
 def test_company_financial_evidence_pack_reports_income_statement_quality_flags(
@@ -2916,6 +3060,36 @@ def test_seed_db_adds_real_companies_when_database_already_has_existing_data(
 
     assert company is not None
     assert company.name == "贵州茅台"
+
+
+def test_seed_db_preserves_provider_enriched_issuer_metadata(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'provider-profile.db').as_posix()}"
+    engine = create_sqlalchemy_engine(database_url)
+    init_db(engine)
+
+    with Session(engine) as session:
+        company = session.scalar(select(Company).where(Company.ticker == "09988.HK"))
+        assert company is not None
+        company.legal_name = "Alibaba Group Holding Ltd"
+        company.aliases = ["阿里巴巴-W", "Alibaba Group Holding Ltd"]
+        company.domicile_country = "HK"
+        company.reporting_currency = "CNY"
+        company.fiscal_year_end = "03-31"
+        company.external_ids = {"sec_cik": "0001577552", "lei": "provider-lei"}
+        session.commit()
+
+    init_db(engine)
+
+    with Session(engine) as session:
+        company = session.scalar(select(Company).where(Company.ticker == "09988.HK"))
+        assert company is not None
+        assert company.legal_name == "Alibaba Group Holding Ltd"
+        assert company.aliases == ["阿里巴巴-W", "Alibaba Group Holding Ltd"]
+        assert company.fiscal_year_end == "03-31"
+        assert company.external_ids == {
+            "sec_cik": "0001577552",
+            "lei": "provider-lei",
+        }
 
 
 def test_seed_db_promotes_existing_hk_listing_to_a_share_without_changing_id(

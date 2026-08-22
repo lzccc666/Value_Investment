@@ -590,6 +590,7 @@ def _recompute_latest_memo(session: Session, *, company_id: int) -> InvestmentMe
 
 def _source_run_snapshot(run: AnalysisRun) -> dict[str, object]:
     result = run.result if isinstance(run.result, dict) else {}
+    input_snapshot = run.input_snapshot if isinstance(run.input_snapshot, dict) else {}
     return {
         "run_id": run.id,
         "analyst_profile": run.analyst_profile,
@@ -599,6 +600,54 @@ def _source_run_snapshot(run: AnalysisRun) -> dict[str, object]:
         "profile_fit_score": result.get("profile_fit_score"),
         "overview": result.get("overview"),
         "result": _compact_analyst_result(result),
+        "market_context": _source_market_context(input_snapshot),
+    }
+
+
+def _source_market_context(input_snapshot: dict[str, object]) -> dict[str, object]:
+    company = input_snapshot.get("company")
+    company = company if isinstance(company, dict) else {}
+    financial_pack = input_snapshot.get("financial_evidence_pack")
+    financial_pack = financial_pack if isinstance(financial_pack, dict) else {}
+    announcements = input_snapshot.get("announcements")
+    announcements = announcements if isinstance(announcements, list) else []
+    announcement_rows = [item for item in announcements if isinstance(item, dict)]
+    return {
+        "issuer": {
+            key: company.get(key)
+            for key in (
+                "canonical_key",
+                "legal_name",
+                "domicile_country",
+                "reporting_currency",
+                "fiscal_year_end",
+                "primary_listing",
+            )
+            if company.get(key) is not None
+        },
+        "reporting_currency": financial_pack.get("reporting_currency"),
+        "accounting_standard": financial_pack.get("accounting_standard"),
+        "disclosure_languages": sorted(
+            {
+                str(item["language"])
+                for item in announcement_rows
+                if item.get("language")
+            }
+        ),
+        "filing_forms": sorted(
+            {
+                str(item["filing_form"])
+                for item in announcement_rows
+                if item.get("filing_form")
+            }
+        ),
+        "document_types": sorted(
+            {
+                str(item["document_type"])
+                for item in announcement_rows
+                if item.get("document_type")
+            }
+        ),
     }
 
 
@@ -838,16 +887,35 @@ def _topic_key(value: str) -> str:
 
 
 def _company_snapshot(company: Company) -> dict[str, object]:
+    primary_listing = company.primary_listing
     return {
         "id": company.id,
         "ticker": company.ticker,
         "exchange": company.exchange,
         "name": company.name,
+        "canonical_key": company.canonical_key,
+        "legal_name": company.legal_name,
+        "aliases": list(company.aliases or []),
+        "domicile_country": company.domicile_country,
+        "reporting_currency": company.reporting_currency,
+        "fiscal_year_end": company.fiscal_year_end,
         "industry": company.industry,
         "description": company.description,
         "listed_date": company.listed_date.isoformat() if company.listed_date else None,
         "status": company.status,
         "tags": company.tags,
+        "primary_listing": (
+            {
+                "id": primary_listing.id,
+                "ticker": primary_listing.ticker,
+                "exchange": primary_listing.exchange,
+                "market": primary_listing.market,
+                "trading_currency": primary_listing.trading_currency,
+                "security_type": primary_listing.security_type,
+            }
+            if primary_listing is not None
+            else None
+        ),
     }
 
 

@@ -13,10 +13,17 @@ import {
 } from "./CompanyWorkspaceView";
 import { DashboardView } from "./DashboardView";
 import { DataManagementView } from "./DataManagementView";
+import { InvestmentToolsView } from "./InvestmentToolsView";
 import { ParameterConfigView } from "./ParameterConfigView";
 import { navigationItems, type NavItemId } from "./dashboardData";
 
-type WorkbenchView = "dashboard" | "company-search" | "company-workspace" | "parameter-config" | "data-management";
+type WorkbenchView =
+  | "dashboard"
+  | "company-search"
+  | "company-workspace"
+  | "investment-tools"
+  | "parameter-config"
+  | "data-management";
 
 type ApiState =
   | { status: "checking"; label: "API 检查中" }
@@ -37,6 +44,7 @@ const navigationViewMap: Record<
   "valuation-lab": { view: "company-workspace", section: "valuation-lab" },
   memo: { view: "company-workspace", section: "memo" },
   "price-decision": { view: "company-workspace", section: "price-decision" },
+  "investment-tools": { view: "investment-tools" },
   "parameter-config": { view: "parameter-config" },
   "data-management": { view: "data-management" }
 };
@@ -61,6 +69,10 @@ const pageMeta: Record<WorkbenchView, { eyebrow: string; title: string }> = {
   "data-management": {
     eyebrow: "Operations · 012",
     title: "数据管理"
+  },
+  "investment-tools": {
+    eyebrow: "Independent Tools · 015",
+    title: "投资小工具"
   }
 };
 
@@ -249,6 +261,9 @@ export function App() {
         ) : null}
         {activeView === "data-management" ? (
           <DataManagementView refreshToken={refreshToken} />
+        ) : null}
+        {activeView === "investment-tools" ? (
+          <InvestmentToolsView refreshToken={refreshToken} />
         ) : null}
         {activeView === "parameter-config" ? (
           <ParameterConfigView refreshToken={refreshToken} />

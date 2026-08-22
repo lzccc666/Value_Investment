@@ -21,7 +21,7 @@ from app.analysis.valuation_parameter_matrix import (
 )
 from app.configuration.runtime import parameter_config_context, parameter_value
 from app.db.models import AnalysisRun, Company, ValuationRun, utc_now
-from app.services.companies import list_company_financials
+from app.services.companies import get_primary_listing, list_company_financials
 from app.services.financial_metrics import build_financial_evidence_pack
 from app.services.memo_service import get_latest_memo_for_valuation
 from app.services.parameter_config_service import get_runtime_parameter_config
@@ -46,6 +46,11 @@ FORBIDDEN_PRICE_FIELDS = {
     "market_sentiment",
     "safety_margin",
     "trade_action",
+    "market_snapshot",
+    "market_snapshot_id",
+    "fx_rate",
+    "fx_rate_snapshot",
+    "fx_rate_snapshot_id",
 }
 FORBIDDEN_PRICE_TERMS = (
     "当前价格",
@@ -93,6 +98,13 @@ def build_valuation_snapshot(session: Session, company: Company) -> dict[str, ob
     financial_evidence_pack = build_financial_evidence_pack(financials)
     if not financial_evidence_pack.get("latest_period"):
         raise ValuationInputError("需要先同步财务数据，当前没有可用于估值的财务证据包。")
+    valuation_currency = _safe_str(financial_evidence_pack.get("reporting_currency"))
+    if not valuation_currency:
+        raise ValuationInputError("财务证据包缺少唯一 reporting currency，不能生成 010。")
+    if company.reporting_currency and valuation_currency != company.reporting_currency:
+        raise ValuationInputError("财务证据包币种与发行人 reporting currency 不一致。")
+    primary_listing = get_primary_listing(session, company.id)
+    share_basis_policy = _share_basis_policy(company, primary_listing)
 
     scrubber = _PriceBlindScrubber()
     memo_sections = memo.sections if isinstance(memo.sections, dict) else {}
@@ -121,6 +133,22 @@ def build_valuation_snapshot(session: Session, company: Company) -> dict[str, ob
             "industry": company.industry,
             "status": company.status,
             "tags": company.tags,
+            "canonical_key": company.canonical_key,
+            "reporting_currency": valuation_currency,
+            "fiscal_year_end": company.fiscal_year_end,
+            "share_basis_policy": share_basis_policy,
+            "primary_listing": (
+                {
+                    "id": primary_listing.id,
+                    "ticker": primary_listing.ticker,
+                    "exchange": primary_listing.exchange,
+                    "market": primary_listing.market,
+                    "trading_currency": primary_listing.trading_currency,
+                    "security_type": primary_listing.security_type,
+                }
+                if primary_listing is not None
+                else None
+            ),
         },
         "price_blind_boundary": {
             "price_blind": True,
@@ -226,6 +254,8 @@ def create_draft_valuation_run(
         memo_inputs = snapshot.get("memo_inputs")
         memo_id = _as_int(memo_inputs.get("memo_id")) if isinstance(memo_inputs, dict) else None
         payload = _calculate_valuation_payload(snapshot, user_assumptions or {})
+        valuation_currency = _safe_str(payload["valuation_inputs"].get("valuation_currency"))
+        share_basis_snapshot = _dict(payload["valuation_inputs"].get("share_basis"))
         run = ValuationRun(
             company_id=company.id,
             memo_id=memo_id,
@@ -248,6 +278,8 @@ def create_draft_valuation_run(
             confidence=payload["confidence"],
             confidence_summary=payload["confidence_summary"],
             source_map=payload["source_map"],
+            valuation_currency=valuation_currency or None,
+            share_basis_snapshot=share_basis_snapshot,
             user_note=user_note,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -318,7 +350,46 @@ def _calculate_valuation_payload(
     financial_pack = _dict(snapshot.get("financial_evidence_pack"))
     memo_inputs = _dict(snapshot.get("memo_inputs"))
     valuation_inputs = _derive_valuation_inputs(financial_pack)
+    valuation_currency = _safe_str(financial_pack.get("reporting_currency"))
+    if not valuation_currency:
+        raise ValuationInputError("财务证据包缺少唯一 reporting currency，不能计算估值。")
+    valuation_inputs["valuation_currency"] = valuation_currency
+    shares_outstanding = _num(valuation_inputs.get("shares_outstanding"))
+    company_context = _dict(snapshot.get("company"))
+    share_basis_policy = _dict(company_context.get("share_basis_policy"))
+    requires_confirmation = bool(share_basis_policy.get("requires_explicit_confirmation"))
+    explicitly_confirmed = bool(share_basis_policy.get("explicitly_confirmed"))
+    share_basis_confirmed = bool(
+        shares_outstanding
+        and shares_outstanding > 0
+        and (not requires_confirmation or explicitly_confirmed)
+    )
+    valuation_inputs["share_basis"] = {
+        "basis": "issuer_common_share",
+        "shares_outstanding": shares_outstanding,
+        "status": "confirmed" if share_basis_confirmed else "needs_input",
+        "source": (
+            share_basis_policy.get("confirmation_source")
+            if requires_confirmation and explicitly_confirmed
+            else "financial_evidence_pack.financial_facts"
+        ),
+        "requires_explicit_confirmation": requires_confirmation,
+        "reason": (
+            "多股类证券需要显式确认财务总股本对应的发行人普通股口径。"
+            if requires_confirmation and not explicitly_confirmed
+            else None
+        ),
+    }
     input_gaps = _derive_valuation_input_gaps(financial_pack, valuation_inputs)
+    if not share_basis_confirmed:
+        input_gaps.append(
+            {
+                "field": "share_basis",
+                "reason": valuation_inputs["share_basis"].get("reason")
+                or "缺少可解释的发行人普通股总股本口径。",
+                "required_for": ["per_share_value", "price_decision"],
+            }
+        )
     analyst_matrices = [
         item for item in _list(snapshot.get("analyst_parameter_matrices")) if isinstance(item, dict)
     ]
@@ -355,12 +426,15 @@ def _calculate_valuation_payload(
             method_results,
             valuation_inputs,
         )
+        if not share_basis_confirmed:
+            intrinsic_value_range["per_share_value"] = {}
+            intrinsic_value_range["status"] = "needs_share_basis"
     else:
         method_results = []
         intrinsic_value_range = {
             "total_equity_value": {},
             "per_share_value": {},
-            "currency": "CNY",
+            "currency": valuation_currency,
             "status": "needs_user_confirmation",
         }
         weighting = []
@@ -401,7 +475,9 @@ def _calculate_valuation_payload(
             "title": "无锚定估值实验",
             "price_blind": True,
             "status": (
-                "calculated_after_user_confirmation"
+                "needs_share_basis"
+                if user_confirmed and not share_basis_confirmed
+                else "calculated_after_user_confirmation"
                 if user_confirmed
                 else "needs_user_confirmation"
             ),
@@ -420,7 +496,11 @@ def _calculate_valuation_payload(
             "analyst_weight_snapshot": analyst_snapshot.get("analyst_weights", []),
             "dynamic_safety_margin_formula_version": "010_dynamic_safety_margin_v2",
             "next_step": (
-                "参数已确认，估值结果已生成。" if user_confirmed else "请先确认或调整模型建议参数。"
+                "请先确认多股类证券的发行人普通股 share basis。"
+                if user_confirmed and not share_basis_confirmed
+                else "参数已确认，估值结果已生成。"
+                if user_confirmed
+                else "请先确认或调整模型建议参数。"
             ),
         },
         "sensitivity": (
@@ -432,9 +512,32 @@ def _calculate_valuation_payload(
     }
 
 
+def _share_basis_policy(company: Company, primary_listing: object) -> dict[str, object]:
+    external_ids = company.external_ids if isinstance(company.external_ids, dict) else {}
+    confirmation = external_ids.get("share_basis_confirmation")
+    confirmation = confirmation if isinstance(confirmation, dict) else {}
+    symbol = str(getattr(primary_listing, "symbol", "") or "").upper()
+    market = str(getattr(primary_listing, "market", "") or "").upper()
+    known_multi_class_symbol = symbol in {"BRK.A", "BRK.B", "GOOG", "GOOGL"}
+    requires_explicit = bool(
+        external_ids.get("share_basis_requires_confirmation")
+        or (market == "US" and ("." in symbol or known_multi_class_symbol))
+    )
+    explicitly_confirmed = bool(
+        confirmation.get("confirmed") is True
+        and confirmation.get("basis") == "issuer_common_share"
+    )
+    return {
+        "requires_explicit_confirmation": requires_explicit,
+        "explicitly_confirmed": explicitly_confirmed,
+        "confirmation_source": confirmation.get("source"),
+    }
+
+
 def _derive_valuation_inputs(financial_pack: dict[str, object]) -> dict[str, object]:
     facts = _dict(financial_pack.get("financial_facts"))
     latest = _dict(facts.get("latest"))
+    series = _dict(facts.get("series"))
     metrics = _dict(financial_pack.get("financial_metrics"))
     profitability = _dict(metrics.get("profitability"))
     balance_sheet = _dict(financial_pack.get("balance_sheet_adjustment"))
@@ -487,17 +590,39 @@ def _derive_valuation_inputs(financial_pack: dict[str, object]) -> dict[str, obj
             "depreciation_and_amortization"
         ),
         "working_capital_change": normalized_base_values.get("working_capital_change"),
-        "cash_and_equivalents": _num(balance_sheet.get("cash_and_equivalents"))
-        or _num(latest.get("cash_and_equivalents")),
-        "interest_bearing_debt": _num(balance_sheet.get("interest_bearing_debt"))
-        or _num(latest.get("interest_bearing_debt")),
-        "net_cash": _num(balance_sheet.get("net_cash")) or _num(latest.get("net_cash")),
-        "shareholders_equity": _num(latest.get("shareholders_equity")),
-        "total_assets": _num(latest.get("total_assets")),
-        "total_liabilities": _num(latest.get("total_liabilities")),
+        "cash_and_equivalents": _first_number(
+            balance_sheet.get("cash_and_equivalents"),
+            latest.get("cash_and_equivalents"),
+            _latest_series_value(series, "cash_and_equivalents"),
+        ),
+        "interest_bearing_debt": _first_number(
+            balance_sheet.get("interest_bearing_debt"),
+            latest.get("interest_bearing_debt"),
+            _latest_series_value(series, "interest_bearing_debt"),
+        ),
+        "net_cash": _first_number(
+            balance_sheet.get("net_cash"),
+            latest.get("net_cash"),
+            _latest_series_value(series, "net_cash"),
+        ),
+        "shareholders_equity": _first_number(
+            latest.get("shareholders_equity"),
+            _latest_series_value(series, "shareholders_equity"),
+        ),
+        "total_assets": _first_number(
+            latest.get("total_assets"),
+            _latest_series_value(series, "total_assets"),
+        ),
+        "total_liabilities": _first_number(
+            latest.get("total_liabilities"),
+            _latest_series_value(series, "total_liabilities"),
+        ),
         "dividend": normalized_base_values.get("dividend"),
-        "shares_outstanding": _num(capital_allocation.get("shares_outstanding"))
-        or _num(latest.get("shares_outstanding")),
+        "shares_outstanding": _first_number(
+            capital_allocation.get("shares_outstanding"),
+            latest.get("shares_outstanding"),
+            _latest_series_value(series, "shares_outstanding"),
+        ),
         "roe": _num(profitability.get("roe")),
         "gross_margin": _num(profitability.get("gross_margin")),
         "net_margin": _num(profitability.get("net_margin")),
@@ -1142,6 +1267,21 @@ def _series_value_by_period(series: dict[str, object], field: str) -> dict[str, 
     return values
 
 
+def _latest_series_value(series: dict[str, object], field: str) -> float | None:
+    for item in _list(series.get(field)):
+        if isinstance(item, dict) and (value := _num(item.get("value"))) is not None:
+            return value
+    return None
+
+
+def _first_number(*values: object) -> float | None:
+    for value in values:
+        number = _num(value)
+        if number is not None:
+            return number
+    return None
+
+
 def _weighted_values(values: list[float], weights: list[float]) -> float:
     usable = list(zip(values, weights, strict=False))
     total_weight = sum(weight for _, weight in usable)
@@ -1183,7 +1323,13 @@ def _period_type(period: str) -> str:
     normalized = period.strip().upper()
     if not normalized:
         return "unknown"
-    if normalized.endswith("A") or "ANNUAL" in normalized or "年报" in period or "年度" in period:
+    if (
+        normalized.endswith("A")
+        or normalized.endswith("FY")
+        or "ANNUAL" in normalized
+        or "年报" in period
+        or "年度" in period
+    ):
         return "annual"
     if (
         "H1" in normalized
@@ -2414,7 +2560,9 @@ def _combine_method_results(
         {
             "total_equity_value": total_values,
             "per_share_value": per_share_values,
-            "unit": "CNY",
+            "unit": _safe_str(valuation_inputs.get("valuation_currency")),
+            "currency": _safe_str(valuation_inputs.get("valuation_currency")),
+            "share_basis": _dict(valuation_inputs.get("share_basis")),
             "per_share_status": "success" if shares else "needs_input",
         },
         normalized_weights,

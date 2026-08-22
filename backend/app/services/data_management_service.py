@@ -18,11 +18,19 @@ from app.db.init_db import init_db
 from app.db.models import (
     AnalysisRun,
     Announcement,
+    BuyMemoEntry,
     Company,
     Evidence,
     FinancialStatement,
+    FxRateSnapshot,
     InvestmentMemo,
+    MarketFearSnapshot,
+    MarketSnapshot,
+    PortfolioHolding,
+    PortfolioOwner,
+    PortfolioSnapshot,
     PriceDecisionRun,
+    SecurityListing,
     ValuationRun,
 )
 from app.schemas.data_management import (
@@ -66,6 +74,18 @@ MODEL_BY_TABLE = {
     "investment_memos": InvestmentMemo,
     "valuation_runs": ValuationRun,
     "price_decision_runs": PriceDecisionRun,
+}
+FOUNDATION_MODEL_BY_TABLE = {
+    "security_listings": SecurityListing,
+    "market_snapshots": MarketSnapshot,
+    "fx_rate_snapshots": FxRateSnapshot,
+}
+INDEPENDENT_MODEL_BY_TABLE = {
+    "portfolio_owners": PortfolioOwner,
+    "portfolio_snapshots": PortfolioSnapshot,
+    "portfolio_holdings": PortfolioHolding,
+    "market_fear_snapshots": MarketFearSnapshot,
+    "buy_memo_entries": BuyMemoEntry,
 }
 
 
@@ -306,7 +326,7 @@ def _build_plan(
             table: _count(session, model, model.company_id == company.id)
             for table, model in MODEL_BY_TABLE.items()
         }
-        return _plan(counts)
+        return _plan(counts, protected_records=_company_foundation_records(session, company.id))
     if operation_type == DataOperationType.CLEAR_ANALYSIS_HISTORY:
         counts = {
             "price_decision_runs": _count(session, PriceDecisionRun),
@@ -364,6 +384,129 @@ def _reset_company(session: Session, company_id: int) -> None:
     ):
         session.execute(delete(model).where(model.company_id == company_id))
     session.commit()
+
+
+def _company_foundation_records(session: Session, company_id: int) -> list[dict[str, Any]]:
+    listings = list(
+        session.scalars(
+            select(SecurityListing)
+            .where(SecurityListing.company_id == company_id)
+            .order_by(SecurityListing.id)
+        )
+    )
+    listing_ids = [item.id for item in listings]
+    market_snapshots = (
+        list(
+            session.scalars(
+                select(MarketSnapshot)
+                .where(MarketSnapshot.listing_id.in_(listing_ids))
+                .order_by(MarketSnapshot.id)
+            )
+        )
+        if listing_ids
+        else []
+    )
+    fx_ids = sorted(
+        {
+            int(value)
+            for value in session.scalars(
+                select(PriceDecisionRun.fx_rate_snapshot_id).where(
+                    PriceDecisionRun.company_id == company_id,
+                    PriceDecisionRun.fx_rate_snapshot_id.is_not(None),
+                )
+            )
+            if value is not None
+        }
+    )
+    portfolio_holdings = (
+        list(
+            session.scalars(
+                select(PortfolioHolding)
+                .where(PortfolioHolding.listing_id.in_(listing_ids))
+                .order_by(PortfolioHolding.id)
+            )
+        )
+        if listing_ids
+        else []
+    )
+    portfolio_snapshot_ids = sorted({item.snapshot_id for item in portfolio_holdings})
+    portfolio_snapshots = (
+        list(
+            session.scalars(
+                select(PortfolioSnapshot)
+                .where(PortfolioSnapshot.id.in_(portfolio_snapshot_ids))
+                .order_by(PortfolioSnapshot.id)
+            )
+        )
+        if portfolio_snapshot_ids
+        else []
+    )
+    portfolio_owner_ids = sorted({item.owner_id for item in portfolio_snapshots})
+    buy_memo_entries = list(
+        session.scalars(
+            select(BuyMemoEntry)
+            .where(BuyMemoEntry.company_id == company_id)
+            .order_by(BuyMemoEntry.id)
+        )
+    )
+    return [
+        *(
+            {
+                "table": "security_listings",
+                "record_id": item.id,
+                "reason": "发行人证券身份保留",
+            }
+            for item in listings
+        ),
+        *(
+            {
+                "table": "market_snapshots",
+                "record_id": item.id,
+                "reason": "Listing 级不可变行情快照保留",
+            }
+            for item in market_snapshots
+        ),
+        *(
+            {
+                "table": "fx_rate_snapshots",
+                "record_id": item_id,
+                "reason": "共享不可变汇率快照保留",
+            }
+            for item_id in fx_ids
+        ),
+        *(
+            {
+                "table": "portfolio_owners",
+                "record_id": item_id,
+                "reason": "015 持仓人不属于公司研究清理范围",
+            }
+            for item_id in portfolio_owner_ids
+        ),
+        *(
+            {
+                "table": "portfolio_snapshots",
+                "record_id": item.id,
+                "reason": "015 历史持仓快照不属于公司研究清理范围",
+            }
+            for item in portfolio_snapshots
+        ),
+        *(
+            {
+                "table": "portfolio_holdings",
+                "record_id": item.id,
+                "reason": "015 Listing 持仓不属于公司研究清理范围",
+            }
+            for item in portfolio_holdings
+        ),
+        *(
+            {
+                "table": "buy_memo_entries",
+                "record_id": item.id,
+                "reason": "015 买入备忘录快照不属于公司研究清理范围",
+            }
+            for item in buy_memo_entries
+        ),
+    ]
 
 
 def _clear_analysis_history(session: Session) -> None:
@@ -717,6 +860,14 @@ def _initialize_database(
 def _record_counts(session: Session) -> dict[str, int]:
     return {
         "companies": _count(session, Company),
+        **{
+            table: _count(session, model)
+            for table, model in FOUNDATION_MODEL_BY_TABLE.items()
+        },
+        **{
+            table: _count(session, model)
+            for table, model in INDEPENDENT_MODEL_BY_TABLE.items()
+        },
         **{table: _count(session, model) for table, model in MODEL_BY_TABLE.items()},
     }
 
@@ -735,6 +886,14 @@ def _database_fingerprint(session: Session) -> str:
         "counts": _record_counts(session),
         "max_ids": {
             "companies": session.scalar(select(func.max(Company.id))) or 0,
+            **{
+                table: session.scalar(select(func.max(model.id))) or 0
+                for table, model in FOUNDATION_MODEL_BY_TABLE.items()
+            },
+            **{
+                table: session.scalar(select(func.max(model.id))) or 0
+                for table, model in INDEPENDENT_MODEL_BY_TABLE.items()
+            },
             **{
                 table: session.scalar(select(func.max(model.id))) or 0
                 for table, model in MODEL_BY_TABLE.items()

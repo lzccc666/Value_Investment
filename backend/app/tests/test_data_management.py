@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -11,11 +12,19 @@ from app.db.init_db import init_db
 from app.db.models import (
     AnalysisRun,
     Announcement,
+    BuyMemoEntry,
     Company,
     Evidence,
     FinancialStatement,
+    FxRateSnapshot,
     InvestmentMemo,
+    MarketFearSnapshot,
+    MarketSnapshot,
+    PortfolioHolding,
+    PortfolioOwner,
+    PortfolioSnapshot,
     PriceDecisionRun,
+    SecurityListing,
     ValuationRun,
 )
 from app.db.session import create_sqlalchemy_engine, get_db
@@ -144,6 +153,113 @@ def _research_chain(session: Session, company: Company, *, suffix: str = "") -> 
     }
 
 
+def _market_foundation(
+    session: Session, company: Company, decision_id: int
+) -> tuple[SecurityListing, MarketSnapshot, FxRateSnapshot]:
+    listing = SecurityListing(
+        company_id=company.id,
+        ticker=company.ticker,
+        symbol=company.ticker,
+        exchange=company.exchange,
+        market="US",
+        trading_currency="USD",
+        is_primary=True,
+    )
+    fx = FxRateSnapshot(
+        base_currency="CNY",
+        quote_currency="USD",
+        rate=0.14,
+        rate_date=date(2026, 8, 20),
+        fetched_at=datetime.now(UTC),
+        source=f"test-{company.id}",
+        calculation_audit={"formula": "quote_per_eur / base_per_eur"},
+    )
+    session.add_all([listing, fx])
+    session.flush()
+    market = MarketSnapshot(
+        listing_id=listing.id,
+        price=10,
+        currency="USD",
+        price_as_of=datetime.now(UTC),
+        fetched_at=datetime.now(UTC),
+        source="test",
+    )
+    session.add(market)
+    session.flush()
+    decision = session.get(PriceDecisionRun, decision_id)
+    assert decision is not None
+    decision.listing_id = listing.id
+    decision.market_snapshot_id = market.id
+    decision.fx_rate_snapshot_id = fx.id
+    session.commit()
+    return listing, market, fx
+
+
+def _investment_tools_data(
+    session: Session,
+    listing: SecurityListing,
+    decision_id: int,
+) -> dict[str, int]:
+    owner = PortfolioOwner(name="测试持仓人", owner_type="investor")
+    session.add(owner)
+    session.flush()
+    snapshot = PortfolioSnapshot(
+        owner_id=owner.id,
+        title="2026 年中持仓",
+        as_of_date=date(2026, 6, 30),
+        base_currency="CNY",
+    )
+    session.add(snapshot)
+    session.flush()
+    holding = PortfolioHolding(
+        snapshot_id=snapshot.id,
+        listing_id=listing.id,
+        quantity=Decimal("12.34567890"),
+    )
+    fear = MarketFearSnapshot(
+        market="US",
+        indicator_code="VIX",
+        indicator_name="Cboe VIX",
+        value=Decimal("18.125000"),
+        daily_change=Decimal("-0.250000"),
+        moving_average_20=Decimal("19.000000"),
+        percentile_3y=Decimal("45.5000"),
+        temperature_score=Decimal("45.5000"),
+        temperature_level="升温",
+        data_date=date(2026, 8, 21),
+        observation_count=756,
+        fetched_at=datetime.now(UTC),
+        source="fixture",
+    )
+    session.add_all([holding, fear])
+    decision = session.get(PriceDecisionRun, decision_id)
+    assert decision is not None
+    buy_memo = BuyMemoEntry(
+        company_id=listing.company_id,
+        source_price_decision_run_id=decision.id,
+        company_name=listing.company.name,
+        listing_ticker=listing.ticker,
+        exchange=listing.exchange,
+        trading_currency=listing.trading_currency,
+        base_intrinsic_value=Decimal("10"),
+        suggested_buy_price=Decimal("8"),
+        designed_safety_margin=Decimal("0.2"),
+        latest_report_period="2025A",
+        price_decision_version_no=decision.version_no,
+        price_decision_run_version=decision.run_version,
+        price_decision_created_at=decision.created_at,
+    )
+    session.add(buy_memo)
+    session.commit()
+    return {
+        "owner": owner.id,
+        "snapshot": snapshot.id,
+        "holding": holding.id,
+        "fear": fear.id,
+        "buy_memo": buy_memo.id,
+    }
+
+
 def _preview_and_execute(client: TestClient, operation_type: str, parameters: dict):
     preview = client.post(
         "/api/data-management/operations/preview",
@@ -167,13 +283,23 @@ def test_company_reset_is_isolated_and_preserves_company(tmp_path: Path) -> None
     with factory() as session:
         target = _company(session, "RESET.US")
         other = _company(session, "OTHER.US")
-        _research_chain(session, target)
+        target_ids = _research_chain(session, target)
+        listing, market, fx = _market_foundation(session, target, target_ids["decision"])
+        investment_ids = _investment_tools_data(session, listing, target_ids["decision"])
         other_ids = _research_chain(session, other, suffix="-other")
 
     preview, result = _preview_and_execute(
         client, "reset_company_research_data", {"company_id": target.id}
     )
     assert preview["affected_counts"]["investment_memos"] == 1
+    protected = {(item["table"], item["record_id"]) for item in preview["protected_records"]}
+    assert ("security_listings", listing.id) in protected
+    assert ("market_snapshots", market.id) in protected
+    assert ("fx_rate_snapshots", fx.id) in protected
+    assert ("portfolio_owners", investment_ids["owner"]) in protected
+    assert ("portfolio_snapshots", investment_ids["snapshot"]) in protected
+    assert ("portfolio_holdings", investment_ids["holding"]) in protected
+    assert ("buy_memo_entries", investment_ids["buy_memo"]) in protected
     assert result["backup_id"]
     with factory() as session:
         assert session.get(Company, target.id) is not None
@@ -185,6 +311,52 @@ def test_company_reset_is_isolated_and_preserves_company(tmp_path: Path) -> None
         )
         assert session.get(Evidence, other_ids["evidence"]) is not None
         assert session.get(PriceDecisionRun, other_ids["decision"]) is not None
+        assert session.get(SecurityListing, listing.id) is not None
+        assert session.get(MarketSnapshot, market.id) is not None
+        assert session.get(FxRateSnapshot, fx.id) is not None
+        assert session.get(PortfolioOwner, investment_ids["owner"]) is not None
+        assert session.get(PortfolioSnapshot, investment_ids["snapshot"]) is not None
+        assert session.get(PortfolioHolding, investment_ids["holding"]) is not None
+        assert session.get(MarketFearSnapshot, investment_ids["fear"]) is not None
+        buy_memo = session.get(BuyMemoEntry, investment_ids["buy_memo"])
+        assert buy_memo is not None
+        assert buy_memo.source_price_decision_run_id is None
+
+
+def test_summary_and_backup_manifest_include_market_foundation_tables(tmp_path: Path) -> None:
+    _, factory, client = _make_environment(tmp_path)
+    with factory() as session:
+        company = _company(session, "FOUNDATION.US")
+        ids = _research_chain(session, company)
+        listing, _, _ = _market_foundation(session, company, ids["decision"])
+        _investment_tools_data(session, listing, ids["decision"])
+
+    summary = client.get("/api/data-management/summary")
+    assert summary.status_code == 200, summary.text
+    counts = summary.json()["record_counts"]
+    assert counts["security_listings"] >= 1
+    assert counts["market_snapshots"] >= 1
+    assert counts["fx_rate_snapshots"] >= 1
+    assert counts["portfolio_owners"] == 1
+    assert counts["portfolio_snapshots"] == 1
+    assert counts["portfolio_holdings"] == 1
+    assert counts["market_fear_snapshots"] == 1
+    assert counts["buy_memo_entries"] == 1
+
+    backup = client.post("/api/data-management/backups", json={"reason": "foundation"})
+    assert backup.status_code == 200, backup.text
+    manifest_counts = backup.json()["record_counts"]
+    assert manifest_counts["security_listings"] == counts["security_listings"]
+    assert manifest_counts["market_snapshots"] == counts["market_snapshots"]
+    assert manifest_counts["fx_rate_snapshots"] == counts["fx_rate_snapshots"]
+    for table in (
+        "portfolio_owners",
+        "portfolio_snapshots",
+        "portfolio_holdings",
+        "market_fear_snapshots",
+        "buy_memo_entries",
+    ):
+        assert manifest_counts[table] == counts[table]
 
 
 def test_clear_analysis_history_preserves_source_data_and_evidence_runs(tmp_path: Path) -> None:
@@ -192,6 +364,8 @@ def test_clear_analysis_history_preserves_source_data_and_evidence_runs(tmp_path
     with factory() as session:
         company = _company(session, "CLEAR.US")
         ids = _research_chain(session, company)
+        listing, _, _ = _market_foundation(session, company, ids["decision"])
+        investment_ids = _investment_tools_data(session, listing, ids["decision"])
 
     _preview_and_execute(client, "clear_analysis_history", {})
     with factory() as session:
@@ -200,7 +374,14 @@ def test_clear_analysis_history_preserves_source_data_and_evidence_runs(tmp_path
         assert session.get(Evidence, ids["evidence"]) is not None
         assert session.get(AnalysisRun, ids["evidence_run"]) is not None
         assert session.get(AnalysisRun, ids["analyst_run"]) is None
+        buy_memo = session.get(BuyMemoEntry, investment_ids["buy_memo"])
+        assert buy_memo is not None
+        assert buy_memo.source_price_decision_run_id is None
         assert session.get(AnalysisRun, ids["memo_run"]) is None
+        assert session.get(PortfolioOwner, investment_ids["owner"]) is not None
+        assert session.get(PortfolioSnapshot, investment_ids["snapshot"]) is not None
+        assert session.get(PortfolioHolding, investment_ids["holding"]) is not None
+        assert session.get(MarketFearSnapshot, investment_ids["fear"]) is not None
 
 
 def test_operation_token_is_single_use_rejects_wrong_phrase_and_state_change(
@@ -380,12 +561,25 @@ def test_initialize_database_restores_standard_seed_and_reports_restart(tmp_path
     _, factory, client = _make_environment(tmp_path)
     with factory() as session:
         custom = _company(session, "CUSTOM-INIT.US")
-    _, result = _preview_and_execute(client, "initialize_database", {})
+        ids = _research_chain(session, custom)
+        listing, _, _ = _market_foundation(session, custom, ids["decision"])
+        investment_ids = _investment_tools_data(session, listing, ids["decision"])
+    preview, result = _preview_and_execute(client, "initialize_database", {})
+    assert preview["affected_counts"]["portfolio_owners"] == 1
+    assert preview["affected_counts"]["portfolio_snapshots"] == 1
+    assert preview["affected_counts"]["portfolio_holdings"] == 1
+    assert preview["affected_counts"]["market_fear_snapshots"] == 1
+    assert preview["affected_counts"]["buy_memo_entries"] == 1
     assert result["restart_required"] is True
     assert result["integrity_check"] == "ok"
     with factory() as session:
         assert session.scalar(select(Company).where(Company.ticker == custom.ticker)) is None
         assert session.scalar(select(Company).where(Company.ticker == "600519.SH")) is not None
+        assert session.get(PortfolioOwner, investment_ids["owner"]) is None
+        assert session.get(PortfolioSnapshot, investment_ids["snapshot"]) is None
+        assert session.get(PortfolioHolding, investment_ids["holding"]) is None
+        assert session.get(MarketFearSnapshot, investment_ids["fear"]) is None
+        assert session.get(BuyMemoEntry, investment_ids["buy_memo"]) is None
 
 
 def test_write_requests_are_rejected_during_maintenance(tmp_path: Path) -> None:

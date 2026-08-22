@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -102,6 +103,11 @@ def summarize_company_announcement(
             output,
             raw_content=resolved_content.raw_content_for_storage,
             model_name=model_name,
+            content_source=(
+                resolved_content.source_url
+                if resolved_content.content_status == "fetched"
+                else None
+            ),
         )
         session.commit()
         session.refresh(announcement)
@@ -320,9 +326,16 @@ def _apply_summary_to_announcement(
     *,
     raw_content: str | None,
     model_name: str | None,
+    content_source: str | None = None,
 ) -> None:
     if raw_content:
         announcement.raw_content = raw_content
+        if content_source:
+            announcement.content_source = content_source
+            announcement.content_fetched_at = datetime.now(UTC)
+            announcement.raw_content_hash = hashlib.sha256(
+                raw_content.encode("utf-8")
+            ).hexdigest()
     announcement.summary = output.summary
     announcement.key_facts = output.key_facts
     announcement.category = output.category or announcement.category

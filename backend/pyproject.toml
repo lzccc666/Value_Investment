@@ -9,8 +9,10 @@ description = "FastAPI backend for a local-first value investment research workb
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "akshare==1.18.81",
   "fastapi>=0.116.0,<1.0.0",
   "httpx>=0.28.0,<1.0.0",
+  "pypdf>=5.0.0,<7.0.0",
   "pydantic-settings>=2.10.0,<3.0.0",
   "sqlalchemy>=2.0.0,<3.0.0",
   "tzdata>=2025.2",

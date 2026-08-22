@@ -49,6 +49,13 @@ type ActionState =
 
 const TABLE_LABELS: Record<string, string> = {
   companies: "公司",
+  security_listings: "证券 Listing",
+  market_snapshots: "行情快照",
+  fx_rate_snapshots: "汇率快照",
+  portfolio_owners: "持仓人",
+  portfolio_snapshots: "持仓快照",
+  portfolio_holdings: "持仓明细",
+  market_fear_snapshots: "市场温度缓存",
   financial_statements: "财务报表",
   announcements: "公告",
   evidence: "外部证据",

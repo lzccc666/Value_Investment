@@ -79,7 +79,7 @@ ANALYST_PROFILES: dict[str, AnalystProfile] = {
         name="Warren Buffett",
         display_name="巴菲特",
         description="从长期经济特征、可分配现金和管理层资本配置判断企业质量。",
-        philosophy="先确认是一门可长期理解和持有的好生意，再检查现金真实性与管理层是否持续增厚每股价值。",
+        philosophy="先确认是一门可长期理解的好生意，再检查现金真实性与管理层是否持续增厚每股价值。",
         core_logic=(
             "竞争优势必须在客户行为、单位经济和长期财务中交叉验证。",
             "会计利润只有转化为可分配所有者收益才有经济意义。",

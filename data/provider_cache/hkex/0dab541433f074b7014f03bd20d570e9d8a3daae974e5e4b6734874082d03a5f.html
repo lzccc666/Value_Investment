@@ -1,0 +1,2097 @@
+<!DOCTYPE html>
+<html class="news-hkex" xmlns="http://www.w3.org/1999/xhtml"><head id="j_idt2">
+    <title>Listed Company Information Title Search</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="format-detection" content="telephone=no" />
+    <link href="/ncms/images/favicon.ico" rel="icon" />
+    <link href="/ncms/css/main.css" rel="stylesheet" />
+    <link href="/ncms/css/titlesearch.css" rel="stylesheet" />
+	
+    <script type="text/javascript" src="/ncms/script/hkex_app.js"></script>
+    <script type="text/javascript" src="/ncms/script/hkex_settings.js"></script>
+    <script type="text/javascript" src="/ncms/script/hkex_widget.js"></script>  
+    
+    <script type="text/javascript">
+    		document.documentElement.setAttribute("lang","en");
+		 	
+	</script></head><body>
+<form id="j_idt10" name="j_idt10" method="post" action="/search/titlesearch.xhtml" enctype="application/x-www-form-urlencoded" style="display: none;">
+<input type="hidden" name="j_idt10" value="j_idt10" />
+<input id="j_idt10:loadMoreRange" type="hidden" name="j_idt10:loadMoreRange" value="100" />
+<input id="startDate" type="hidden" value="2024-01-01" />
+<input id="endDate" type="hidden" value="2026-08-21" />
+<input id="stockId" type="hidden" value="7609" />
+<input id="stockCode" type="hidden" value="00700 TENCENT" />
+<input id="searchType" type="hidden" value="rbAll" />
+<input id="searchTypeInt" type="hidden" value="0" />
+<input id="newsTitle" type="hidden" />
+<input id="tierOneId" type="hidden" value="-2" />
+<input id="tierTwoId" type="hidden" value="-2" />
+<input id="tierTwoGpId" type="hidden" value="-2" />
+<input id="selectedDocType" type="hidden" value="-1" />
+<input id="selectedSecurities" type="hidden" value="0" />
+<input id="displayResultTable" type="hidden" /><input type="hidden" name="javax.faces.ViewState" id="j_id1:javax.faces.ViewState:0" value="-6643488798741050073:-1359168848383172893" autocomplete="off" />
+</form>
+	<input type="hidden" name="titleSearchResultControl.searchByIndex" value="0" />
+	<input type="hidden" name="titleSearchByAllResult.dateFromUi" />
+	<input type="hidden" name="titleSearchByAllResult.dateToUi" />
+
+	<script type="text/javascript" src="/ncms/script/vendor.js"></script>
+		 <script type="text/javascript" src="/ncms/script/hkex_head.js"></script>
+    
+    
+    <div id="skip-to-content"></div>
+	
+    
+	<div id="hkex_news_topbanner">
+        <section class="banner banner__mobile_breadcrumb banner__head">
+            <div class="tab-content">
+		    	<div data-include-html="titleSearchSearchPanel.html" role="tabpanel" class="tab-pane active" id="tab-panel-title-search"></div>
+		    </div>
+        </section>
+    </div>
+	
+	
+	
+	<script type="text/javascript">
+	    var displayResultTable = $('input#displayResultTable').val();
+		if(displayResultTable == ''){
+			// JS variables, please set before hkex_pagebanner.js
+		   var pageDefaultTitle = "LISTED COMPANY INFORMATION SEARCH RESULTS";	
+		    var pageDefaultSubTitle = ""; // TO override page subtitle
+		    var pageDefaultBanner = "/ncms/media/HKEXnews/top_banner_bg.png"; // TO override page banner for desktop
+		    var pageDefaultTabletBanner = "/ncms/media/HKEXnews/top_banner_bg_tablet.png"; // TO override page banner for tablet
+		}
+	</script>
+		    <script type="text/javascript" src="/ncms/script/hkex_pagebanner.js"></script>
+    
+
+    
+    <div class="container content-container title-search-container content-container-reset table-mobile-list-container" style="display:  ">
+        <input id="LISTING_CAT_LINK" type="hidden" value="https://www.hkex.com.hk/eng/rulesreg/listrules/listsptop/listoc/co_inf.htm" style="display: none;" />
+        <input id="lang" type="hidden" value="E" style="display: none;" />
+        <main class="title-search"><div id="categoryPanel"> 
+            <div class="title-search-topbar">
+                <div class="title-search-info">
+                    <div class="quick-links">
+                        <ul>
+                        
+						   <li><a href="https://di.hkex.com.hk/di/NSSrchCorpQW.aspx?src=MAIN&amp;lang=EN&amp;in=1&amp;sc=00700" title="Disclosure of Interests">Disclosure of Interests</a></li>
+                                	<li>Listing Category: Primary Listing</li>
+                        </ul>
+                    </div><div id="recordCountPanel">
+                    <div class="title-search-info-footer clearfix">
+                        <div class="total-records">Total records found: 442 </div>
+                    </div></div>
+                </div>
+            </div></div><div id="titleSearchResultPanel"> 
+            <div class="title-search-content">            
+                <div class="title-search-result search-page-container">
+                    <div class="title-search-result-toolbar result-toolbar">
+                        <div class="hideHeadline">
+                            <a tabindex="0" class="hideShow showing"><span class="hide-headline">Hide Headline</span><span class="show-headline">Show Headline</span></a>
+                        </div>
+                        <div class="mobileSort">
+                            <a tabindex="0" data-toggle="nav-popover" class="sort__dropdown">Sort</a>
+                            <div class="popover result-toolbar-popover">
+                                <div class="popover__content">
+                                    <ul class="popover__content-list">
+                                        <li class="popover__list-item" onclick="javascript:sortByReleaseTimeDesc()"><a tabindex="0" data-sort-by="0" data-sort-dir="1">Latest information</a></li>
+                                        <li class="popover__list-item" onclick="javascript:sortByReleaseTimeAsc()"><a tabindex="0" data-sort-by="0" data-sort-dir="0">Oldest information</a></li>
+                                        <li class="popover__list-item" onclick="javascript:sortByStockCodeAsc()"><a tabindex="0" data-sort-by="1" data-sort-dir="0">Stock Code low to high</a></li>
+                                        <li class="popover__list-item" onclick="javascript:sortByStockCodeDesc()"><a tabindex="0" data-sort-by="1" data-sort-dir="1">Stock Code high to low</a></li>
+                                        <li class="popover__list-item" onclick="javascript:sortByStockNameAsc()"><a tabindex="0" data-sort-by="2" data-sort-dir="0">Stock Name A to Z</a></li>
+                                        <li class="popover__list-item" onclick="javascript:sortByStockNameDesc()"><a tabindex="0" data-sort-by="2" data-sort-dir="1">Stock Name Z to A</a></li> 
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="title-search-result-mobile desktop-hidden tablet-hidden">
+                    </div>
+                    
+                    <table class="table sticky-header-table table-scroll table-mobile-list" role="grid" data-sortlist="[[0,1]]">
+                        <thead>
+                            <tr>
+                                <th class="release-date" data-column-class="release-date" data-sorter="extractDDMMYYYY" data-date-format="ddmmyyyy" onclick="javascript:sortTable('DateTime')">Release Time</th>
+                                <th class="stock-code" data-column-class="stock-code" data-sorter="text" onclick="javascript:sortTable('StockCode')">Stock Code</th>
+                                <th class="stock-code-name" data-column-class="stock-code-name" onclick="javascript:sortTable('StockName')">Stock Short Name</th>
+                                <th class="sorter-false document-details headline-toggle" data-column-class="document-details">Document</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>20/08/2026 17:35</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0820/2026082000673.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">88KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>19/08/2026 17:40</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0819/2026081900748.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>18/08/2026 17:48</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0818/2026081801120.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>17/08/2026 17:37</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0817/2026081700967.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>14/08/2026 19:56</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Share Scheme]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0814/2026081401619.pdf" rel="noopener noreferrer" target="_blank">GRANT OF AWARDS PURSUANT TO SHARE AWARD SCHEME
+										</a>
+						            	  (<span class="attachment_filesize">134KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>14/08/2026 19:53</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Share Scheme]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0814/2026081401603.pdf" rel="noopener noreferrer" target="_blank">GRANT OF OPTIONS PURSUANT TO SHARE OPTION SCHEME
+										</a>
+						            	  (<span class="attachment_filesize">134KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>13/08/2026 17:07</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0813/2026081300601.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares
+										</a>
+						            	  (<span class="attachment_filesize">83KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>12/08/2026 16:31</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Interim Results]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0812/2026081200296.pdf" rel="noopener noreferrer" target="_blank">ANNOUNCEMENT OF THE RESULTS FOR THE THREE AND SIX MONTHS ENDED 30 JUNE 2026
+										</a>
+						            	  (<span class="attachment_filesize">729KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>06/08/2026 16:57</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Monthly Returns<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0806/2026080600836.pdf" rel="noopener noreferrer" target="_blank">Monthly Return of Equity Issuer on Movements in Securities for the month ended 31 July 2026
+										</a>
+						            	  (<span class="attachment_filesize">68KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/07/2026 17:58</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0709/2026070900827.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>08/07/2026 17:53</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0708/2026070800629.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>07/07/2026 16:44</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Monthly Returns<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0707/2026070700630.pdf" rel="noopener noreferrer" target="_blank">Monthly Return of Equity Issuer on Movements in Securities for the month ended 30 June 2026
+										</a>
+						            	  (<span class="attachment_filesize">69KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>06/07/2026 17:55</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0706/2026070601366.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>03/07/2026 17:49</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0703/2026070301691.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>02/07/2026 17:25</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0702/2026070202644.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>30/06/2026 18:17</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0630/2026063001676.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">92KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>29/06/2026 17:10</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0629/2026062900878.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>26/06/2026 17:28</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0626/2026062600876.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>25/06/2026 17:30</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0625/2026062500869.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>24/06/2026 17:59</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0624/2026062400873.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>23/06/2026 17:32</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0623/2026062300716.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>22/06/2026 18:05</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Date of Board Meeting]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0622/2026062200918.pdf" rel="noopener noreferrer" target="_blank">DATE OF BOARD MEETING
+										</a>
+						            	  (<span class="attachment_filesize">100KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>22/06/2026 17:48</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0622/2026062200868.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>18/06/2026 17:47</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0618/2026061800934.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>17/06/2026 17:40</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0617/2026061701036.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>17/06/2026 12:09</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Debt and Structured Products - [Offering Circular and Pricing Supplement - Debt Securities]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0617/2026061700427.pdf" rel="noopener noreferrer" target="_blank">Publication of Pricing Supplements for the Issuance of US$1,750,000,000 5.00% Senior Notes Due 2036 and US$700,000,000 5.60% Senior Notes Due 2046 and CNY11,000,000,000 2.50% Senior Notes Due 2036 and CNY4,000,000,000 3.10% Senior Notes Due 2056 under the Global Medium Term Note Programme of Tencent Holdings Limited with Maximum Limit of US$30 Billion
+										</a>
+						            	  (<span class="attachment_filesize">569KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>17/06/2026 07:57</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Debt and Structured Products - [Formal Notice - Debt Securities]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0617/2026061700299.pdf" rel="noopener noreferrer" target="_blank">NOTICE OF LISTING ON THE STOCK EXCHANGE OF HONG KONG LIMITED - US$1,750,000,000 5.00% Senior Notes Due 2036 and US$700,000,000 5.60% Senior Notes Due 2046 and CNY11,000,000,000 2.50% Senior Notes Due 2036 and CNY4,000,000,000 3.10% Senior Notes Due 2056 issued under the Global Medium Term Note Programme of Tencent Holdings Limited with Maximum Limit of US$30 Billion
+										</a>
+						            	  (<span class="attachment_filesize">119KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>17/06/2026 07:51</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Issue of Debt Securities]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0617/2026061700293.pdf" rel="noopener noreferrer" target="_blank">COMPLETION OF US$2.45 BILLION AND CNY15 BILLION ISSUE OF NOTES UNDER THE GLOBAL MEDIUM TERM NOTE PROGRAMME
+										</a>
+						            	  (<span class="attachment_filesize">114KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>16/06/2026 17:29</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0616/2026061600974.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>15/06/2026 17:48</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0615/2026061501010.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>12/06/2026 17:49</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0612/2026061200974.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>11/06/2026 18:03</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0611/2026061100976.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>10/06/2026 17:37</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0610/2026061000850.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>10/06/2026 07:09</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Issue of Debt Securities]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0610/2026061000041.pdf" rel="noopener noreferrer" target="_blank">PRICING OF US$2.45 BILLION AND CNY15 BILLION NOTES UNDER THE GLOBAL MEDIUM TERM NOTE PROGRAMME
+										</a>
+						            	  (<span class="attachment_filesize">165KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/06/2026 18:02</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0609/2026060900905.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/06/2026 12:02</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Debt and Structured Products - [Offering Circular - Debt Issuance Programmes]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0609/2026060900199.pdf" rel="noopener noreferrer" target="_blank">Tencent Holdings Limited - Publication of Offering Circular under the Global Medium Term Note Programme with Maximum Limit of US$30 Billion
+										</a>
+						            	  (<span class="attachment_filesize">3MB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>08/06/2026 17:41</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0608/2026060800842.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>08/06/2026 12:03</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Debt and Structured Products - [Formal Notice - Debt Issuance Programmes]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0608/2026060800165.pdf" rel="noopener noreferrer" target="_blank">NOTICE OF LISTING ON THE STOCK EXCHANGE OF HONG KONG LIMITED - Global Medium Term Note Programme of Tencent Holdings Limited with Maximum Limit of US$30 Billion
+										</a>
+						            	  (<span class="attachment_filesize">111KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>08/06/2026 12:01</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Issue of Debt Securities]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0608/2026060800159.pdf" rel="noopener noreferrer" target="_blank">UPDATE OF THE GLOBAL MEDIUM TERM NOTE PROGRAMME&#x3b; PROPOSED ISSUE OF NOTES UNDER THE GLOBAL MEDIUM TERM NOTE PROGRAMME&#x3b; AND EXTRACT OF FINANCIAL INFORMATION
+										</a>
+						            	  (<span class="attachment_filesize">581KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>05/06/2026 17:24</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0605/2026060500962.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>04/06/2026 17:52</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0604/2026060401856.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>04/06/2026 16:31</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Monthly Returns<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0604/2026060400753.pdf" rel="noopener noreferrer" target="_blank">Monthly Return of Equity Issuer on Movements in Securities for the month ended 31 May 2026
+										</a>
+						            	  (<span class="attachment_filesize">68KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>03/06/2026 17:27</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0603/2026060301564.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>02/06/2026 18:07</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0602/2026060201945.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>01/06/2026 17:06</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0601/2026060102262.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>29/05/2026 17:55</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0529/2026052901471.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>28/05/2026 17:55</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0528/2026052801132.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>27/05/2026 17:39</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0527/2026052700881.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>26/05/2026 18:10</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0526/2026052601090.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>22/05/2026 17:34</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0522/2026052200907.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>21/05/2026 17:40</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0521/2026052100781.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>20/05/2026 17:37</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0520/2026052000726.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">88KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>19/05/2026 17:37</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0519/2026051900592.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">88KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>18/05/2026 17:52</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0518/2026051800872.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>13/05/2026 20:58</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Results of AGM]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0513/2026051301257.pdf" rel="noopener noreferrer" target="_blank">POLL RESULTS FOR THE 2026 ANNUAL GENERAL MEETING
+										</a>
+						            	  (<span class="attachment_filesize">114KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>13/05/2026 16:31</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Quarterly Results]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0513/2026051300334.pdf" rel="noopener noreferrer" target="_blank">ANNOUNCEMENT OF THE RESULTS FOR THE THREE MONTHS ENDED 31 MARCH 2026
+										</a>
+						            	  (<span class="attachment_filesize">642KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>07/05/2026 16:35</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Monthly Returns<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0507/2026050700677.pdf" rel="noopener noreferrer" target="_blank">Monthly Return of Equity Issuer on Movements in Securities for the month ended 30 April 2026
+										</a>
+						            	  (<span class="attachment_filesize">69KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/04/2026 18:34</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0409/2026040901714.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/04/2026 18:14</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Monthly Returns<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0409/2026040901641.pdf" rel="noopener noreferrer" target="_blank">Monthly Return of Equity Issuer on Movements in Securities for the month ended 31 March 2026
+										</a>
+						            	  (<span class="attachment_filesize">69KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/04/2026 17:33</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Proxy Forms<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0409/2026040901411.pdf" rel="noopener noreferrer" target="_blank">FORM OF PROXY
+										</a>
+						            	  (<span class="attachment_filesize">117KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/04/2026 17:31</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Notice of AGM &#x2f; Closure of Books or Change of Book Closure Period]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0409/2026040901357.pdf" rel="noopener noreferrer" target="_blank">NOTICE OF ANNUAL GENERAL MEETING
+										</a>
+						            	  (<span class="attachment_filesize">119KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/04/2026 17:29</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Circulars - [General Mandate &#x2f; Explanatory Statement for Repurchase of Shares &#x2f; Re-election or Appointment of Director...<div class='fancy-note-tooltip-hover' data-tooltip-position='nextsibling'>  <a href='javascript:void(0)' class='fancy-note-label tooltip' >More</a></div><div class='fancy-note-hover bottom mobile-hidden'>Circulars - [General Mandate &#x2f; Explanatory Statement for Repurchase of Shares &#x2f; Re-election or Appointment of Director subject to Shareholders&#x27; Approval]</div>]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0409/2026040901309.pdf" rel="noopener noreferrer" target="_blank">GENERAL MANDATES TO ISSUE AND REPURCHASE SHARES, RE-ELECTION OF DIRECTORS AND NOTICE OF ANNUAL GENERAL MEETING
+										</a>
+						            	  (<span class="attachment_filesize">308KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/04/2026 17:26</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Financial Statements&#x2f;ESG Information - [Environmental, Social and Governance Information&#x2f;Report]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0409/2026040901285.pdf" rel="noopener noreferrer" target="_blank">ENVIRONMENTAL, SOCIAL AND GOVERNANCE REPORT 2025
+										</a>
+						            	  (<span class="attachment_filesize">17MB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/04/2026 17:21</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Financial Statements&#x2f;ESG Information - [Annual Report]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0409/2026040901231.pdf" rel="noopener noreferrer" target="_blank">ANNUAL REPORT 2025
+										</a>
+						            	  (<span class="attachment_filesize">4MB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>08/04/2026 17:52</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0408/2026040801737.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>02/04/2026 19:07</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0402/2026040202434.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>01/04/2026 18:21</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0401/2026040103286.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>31/03/2026 17:32</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0331/2026033101569.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>30/03/2026 18:04</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0330/2026033001096.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>27/03/2026 17:34</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0327/2026032701306.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">88KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>26/03/2026 18:09</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0326/2026032601124.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>25/03/2026 22:00</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Share Scheme]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0325/2026032501845.pdf" rel="noopener noreferrer" target="_blank">GRANT OF AWARDS PURSUANT TO SHARE AWARD SCHEME
+										</a>
+						            	  (<span class="attachment_filesize">134KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>25/03/2026 21:57</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Share Scheme]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0325/2026032501837.pdf" rel="noopener noreferrer" target="_blank">GRANT OF OPTIONS PURSUANT TO SHARE OPTION SCHEME
+										</a>
+						            	  (<span class="attachment_filesize">134KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>23/03/2026 17:43</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Date of Board Meeting]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0323/2026032300828.pdf" rel="noopener noreferrer" target="_blank">DATE OF BOARD MEETING
+										</a>
+						            	  (<span class="attachment_filesize">99KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>19/03/2026 16:50</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0319/2026031900554.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares
+										</a>
+						            	  (<span class="attachment_filesize">83KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>18/03/2026 16:33</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Dividend or Distribution (Announcement Form)]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0318/2026031800476.pdf" rel="noopener noreferrer" target="_blank">FINAL DIVIDEND FOR THE YEAR ENDED 31 DECEMBER 2025
+										</a>
+						            	  (<span class="attachment_filesize">42KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>18/03/2026 16:30</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Final Results &#x2f; Dividend or Distribution &#x2f; Closure of Books or Change of Book Closure Period]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0318/2026031800388.pdf" rel="noopener noreferrer" target="_blank">ANNOUNCEMENT OF THE ANNUAL RESULTS FOR THE YEAR ENDED 31 DECEMBER 2025
+										</a>
+						            	  (<span class="attachment_filesize">742KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>05/03/2026 16:35</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Monthly Returns<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0305/2026030500596.pdf" rel="noopener noreferrer" target="_blank">Monthly Return of Equity Issuer on Movements in Securities for the month ended 28 February 2026
+										</a>
+						            	  (<span class="attachment_filesize">67KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>05/02/2026 16:40</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Monthly Returns<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0205/2026020500948.pdf" rel="noopener noreferrer" target="_blank">Monthly Return of Equity Issuer on Movements in Securities for the month ended 31 January 2026
+										</a>
+						            	  (<span class="attachment_filesize">69KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>15/01/2026 17:41</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0115/2026011500536.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>14/01/2026 18:46</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0114/2026011400955.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>13/01/2026 18:10</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0113/2026011300621.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>12/01/2026 17:30</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0112/2026011200540.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>09/01/2026 17:59</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0109/2026010900797.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>08/01/2026 17:36</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0108/2026010800578.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Returns
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>07/01/2026 18:07</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0107/2026010701209.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>07/01/2026 16:33</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Monthly Returns<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0107/2026010700518.pdf" rel="noopener noreferrer" target="_blank">Monthly Return of Equity Issuer on Movements in Securities for the month ended 31 December 2025
+										</a>
+						            	  (<span class="attachment_filesize">66KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>06/01/2026 17:25</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0106/2026010601301.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>05/01/2026 17:43</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0105/2026010502124.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>02/01/2026 17:45</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2026/0102/2026010202291.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>31/12/2025 16:55</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1231/2025123101271.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">92KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>30/12/2025 17:13</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1230/2025123000694.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>29/12/2025 17:34</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1229/2025122900908.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>24/12/2025 16:31</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1224/2025122400753.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">91KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>23/12/2025 18:38</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Announcements and Notices - [Date of Board Meeting]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1223/2025122300949.pdf" rel="noopener noreferrer" target="_blank">DATE OF BOARD MEETING
+										</a>
+						            	  (<span class="attachment_filesize">97KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>23/12/2025 17:58</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1223/2025122300797.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>22/12/2025 17:39</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1222/2025122200942.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">90KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>19/12/2025 17:26</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1219/2025121900824.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>18/12/2025 17:16</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1218/2025121800940.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>
+						      <tr>
+						      	 <td class="text-right text-end release-time"> <span class="mobile-list-heading">Release Time: </span>17/12/2025 17:40</td>
+			
+						         <td class="text-right text-end stock-short-code"><span class="mobile-list-heading">Stock Code: </span>00700<br/>80700</td>
+						        
+						         <td class="stock-short-name"><span class="mobile-list-heading">Stock Short Name: </span>TENCENT<br/>TENCENT-R</td>
+						        
+						         <td>
+						         	 <span class="mobile-list-heading">Document: </span>
+						             <div class="headline">Next Day Disclosure Returns - [Others &#x2f; Share Buyback]<br/>
+						             </div>
+         
+						             <div class="doc-link">
+						             	<a href="/listedco/listconews/sehk/2025/1217/2025121700977.pdf" rel="noopener noreferrer" target="_blank">Next Day Disclosure Return - Changes in issued shares and share buybacks
+										</a>
+						            	  (<span class="attachment_filesize">89KB</span>)<span class="pdf"></span>
+						             </div>
+						         </td>
+						      </tr>                      
+                       </tbody>
+                   </table>
+                  
+                </div><div id="recordCountPanel2">
+                <div class="search-results__content-loadmore component-loadmore component-loadmore-no-options">
+                    <div class="component-loadmore__container">
+                        <div class="component-loadmore__dropdown-container">
+                            <ul>
+                                <li>
+                                    <a href="javascript:loadMore();" class="component-loadmore__link component-loadmore__icon" load-data="100">LOAD MORE</a>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="component-loadmore-leftPart__container">
+                        		Showing 100 of 442 records 
+                        </div>
+                    </div>
+                </div>
+                <div class="component-loadmore-leftPart__container-Mobile">
+                        	Showing 100 of 442 records 
+                </div></div>
+            </div></div>
+        </main>
+    </div>     
+    
+    <div class="fancy-popup-wrap fancy-note">
+        <div>
+            
+            <div class="fancy-note-popup" id="cms-lci-disclaimer">
+                <a class="fancy-note-close" href="#"></a>
+                <div class="fancy-note-detail">
+                    <div class="fancy-note-title">Disclaimer</div>
+                    <div class="fancy-note-desc">
+                        <p>Information contained in the materials available under the web page containing the hyperlink to this disclaimer is posted on this website for the purpose of providing information to the public in Hong Kong.  It is not intended as investment advice and must not be relied on as such.  It is the sole responsibility of any person who is located outside of Hong Kong to check and comply with all applicable laws and regulations before accessing and using the materials and information.                            
+                        </p>
+                        <p>Please note that the web page contains materials and information provided to HKEX electronically (including information provided in electronic format) by listed issuers, new listing applicants and relevant parties and there is no agency, employee or partner relationship between HKEX and such parties.  HKEX does not assume responsibility for screening, editing or monitoring such materials and the information contained in the materials.  The information contained in the materials is not verified by HKEX.
+                        </p>
+                        <p>HKEX and/or its subsidiaries take no responsibility for the materials and information available under the web page, make no representation as to their accuracy, reliability, completeness or ownership and expressly disclaim any liability whatsoever for any loss howsoever arising from or in reliance upon the whole or any part of the information. Some materials may contain hyperlinks to external websites or web pages for which HKEX and/or its subsidiaries are not responsible.  (Please see HKEX's "<a href="http://www2.hkexnews.hk/Global/Exchange/Hyperlink-Policy?sc_lang=en" target="_blank">Hyperlink Policy</a>").
+                        </p>
+                        <p>Nothing herein shall constitute or be considered to be a limitation upon or a waiver of the privileges and immunities of HKEX and its subsidiaries, which are specifically reserved.
+                        </p>
+                        <p>Copyright exists in the information and materials available under the web page and may belong to HKEX, to the author or to any other party depending on the circumstances of publications.  Reproduction, distribution, use and/or linking without consent from the relevant parties is not permitted.
+                        </p>
+                        <p>If you believe or are aware that any information contained in the materials is inaccurate, erroneous, unlawful, obscene, defamatory or infringes any intellectual property rights of a third party, please contact HKEX e-Submission by email at: <a href="mailto:ESSHotline@hkex.com.hk">ESSHotline@hkex.com.hk</a>. 
+                        </p>
+                    </div>
+                </div>
+            </div>
+            <div class="fancy-note-shade"></div>
+        </div>
+    </div>
+    
+    
+    <div class="overlay"></div>
+    	<script type="text/javascript" src="/ncms/script/hkex_foot.js"></script>
+    
+    
+	<script type="text/javascript">
+    (function($) {
+		includeHTML();
+	})(window.hkexCMS);
+    
+    </script>
+    <script type="text/javascript" src="/ncms/script/main.js"></script>
+    <script type="text/javascript" src="/ncms/eds/titlesearch/config.js"></script>
+    <script type="text/javascript" src="/ncms/js/titlesearch.js"></script>
+    <script type="text/javascript" src="/ncms/js/titlesearch_research.js"></script>
+  	<script type="text/javascript" src="/ncms/js/search.js"></script>
+  	<script type="text/javascript"> 
+    TitlseSearchConfig();
+    </script><script type="text/javascript" nonce="6d41863dae344ec7ef09971f1759f4c6" src="/B4oWnIkbxovF3oc760NUFGFRdcE/hQuEwcNEw9ui/TGgCAg/HgpGWT/9gDRcV?v=34da8bb4-4584-1a66-1207-36b068a51721" defer></script></body>
+
+</html>

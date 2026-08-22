@@ -22,6 +22,7 @@ from app.db.session import create_sqlalchemy_engine, get_db
 from app.main import create_app
 from app.schemas.analysis import AnalystAnalysisOutput, AnalystRunRequest
 from app.services.analyst_service import (
+    _build_financial_model_display,
     build_company_analysis_snapshot,
     list_latest_company_analysis_runs,
     run_company_analyst_view,
@@ -141,6 +142,9 @@ def test_price_blind_gate_does_not_confuse_esg_rating_or_per_share_value() -> No
     cases = (
         ("buffett", "durable_moat", "ESG评级改善，但护城河仍需按经营证据判断。"),
         ("munger", "incentive_alignment", "激励考核与长期每股价值增长一致。"),
+        ("graham", "capital_structure_safety", "资产负债率较高，财务安全边际偏弱。"),
+        ("duan_yongping", "right_business", "公司持有多种有价证券和长期投资。"),
+        ("peter_lynch", "story_numbers_alignment", "公司通过渠道卖出产品并回收现金。"),
     )
     for profile_id, rule_id, summary in cases:
         profile = get_analyst_profile(profile_id)
@@ -190,6 +194,29 @@ def test_price_blind_gate_still_excludes_explicit_price_anchors() -> None:
             },
         )
 
+    for summary in (
+        "估值安全边际需要结合市场数据判断。",
+        "当前信息不足，不建议买入。",
+        "可以继续持有。",
+    ):
+        with pytest.raises(PriceAnchorOutputError):
+            derive_valuation_parameter_matrix(
+                source_run_id=103,
+                profile=profile,
+                result={
+                    "profile_fit_score": 0.8,
+                    "confidence": 0.7,
+                    "rule_checks": [
+                        {
+                            "rule_id": rule.id,
+                            "status": "warn",
+                            "summary": summary if index == 0 else "仅使用基本面证据。",
+                        }
+                        for index, rule in enumerate(profile.rules)
+                    ],
+                },
+            )
+
 
 def test_analyst_prompt_enforces_price_blind_deep_profile_contract() -> None:
     profile = get_analyst_profile("li_lu")
@@ -207,13 +234,9 @@ def test_analyst_prompt_enforces_price_blind_deep_profile_contract() -> None:
     combined_prompt = ANALYST_SYSTEM_PROMPT + prompt
 
     for expected in (
-        "当前价格",
-        "历史价格",
-        "目标价",
-        "市值",
-        "持仓成本",
-        "安全边际",
         "008 必须彻底 price-blind",
+        "只分析业务经营、会计、现金流、资产负债、资本配置",
+        "不得读取、推断或输出下游市场对照、交易决策或仓位决策内容",
         "core_logic",
         "decision_sequence",
         "preferred_evidence",
@@ -228,8 +251,8 @@ def test_analyst_prompt_enforces_price_blind_deep_profile_contract() -> None:
         "rule_checks[].financial_periods",
         "source_refs.financial_periods",
         "不要把利润表或财务记录写入 evidence_ids",
-        "不要计算内在价值",
-        "不要输出买入、卖出、持有、减仓",
+        "不要计算每股内在价值",
+        "不要输出任何交易或仓位决策",
         "financial_evidence_pack.model_display",
         "raw_decimal=0.77936",
         "绝不能写成 0.78%",
@@ -237,8 +260,47 @@ def test_analyst_prompt_enforces_price_blind_deep_profile_contract() -> None:
     ):
         assert expected in combined_prompt
 
-    assert "最终 JSON 不得复述禁止概念或其英文技术字段名" in combined_prompt
+    assert "最终 JSON 不得命名或复述被排除的下游概念及其技术字段名" in combined_prompt
     assert "不得把它们写成未评估项、无法判断项或数据缺口" in combined_prompt
+    for excluded_anchor in (
+        "当前价格",
+        "历史价格",
+        "目标价",
+        "市值",
+        "持仓成本",
+        "估值倍数",
+        "市场情绪",
+        "安全边际",
+        "safety_margin",
+    ):
+        assert excluded_anchor not in combined_prompt
+
+    retry_prompt = build_analyst_prompt(
+        profile=profile,
+        data_snapshot={"company": {"name": "测试公司"}},
+        strict_boundary_retry=True,
+    )
+    assert retry_prompt.startswith("上一次输出越过了下游决策边界。请从头重新生成")
+
+
+def test_analyst_financial_display_uses_reporting_currency_without_cny_assumption() -> None:
+    display = _build_financial_model_display(
+        {
+            "latest_period": "2025FY",
+            "reporting_currency": "USD",
+            "financial_facts": {
+                "latest": {"revenue": 410_000_000_000},
+                "series": {"revenue": [{"period": "2025FY", "value": 410_000_000_000}]},
+            },
+            "financial_metrics": {},
+        }
+    )
+
+    assert display["currency"] == "USD"
+    assert display["unit_contract"]["raw_monetary_unit"] == "USD 原币单位"
+    assert display["latest_amounts_100m"]["revenue"]["display"] == "4100.00亿 USD"
+    assert display["amount_series_100m"]["revenue"][0]["display"] == "4100.00亿 USD"
+    assert display["latest_amounts_100m_cny"] == {}
 
 
 def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
@@ -280,7 +342,7 @@ def test_analyst_view_uses_existing_data_snapshot_and_creates_latest_run(
     assert payload["run_type"] == "analyst_view"
     assert payload["analyst_profile"] == "buffett"
     assert payload["run_version"] == "008_v1"
-    assert payload["prompt_version"] == "analyst_view_v5"
+    assert payload["prompt_version"] == "analyst_view_v6"
     assert payload["is_latest"] is True
     assert payload["confidence"] == payload["result"]["confidence"]
     assert payload["result"]["overview"] == "现金流质量较好，但证据仍需补充。"
@@ -595,6 +657,10 @@ def test_analyst_snapshot_uses_isolated_ranked_source_limits(tmp_path: Path) -> 
         "title",
         "published_at",
         "category",
+        "document_type",
+        "filing_form",
+        "language",
+        "period_end",
         "summary",
         "key_facts",
         "tags",
@@ -1041,11 +1107,18 @@ def test_analyst_snapshot_excludes_price_sensitive_inputs(tmp_path: Path) -> Non
         "ticker",
         "exchange",
         "name",
+        "canonical_key",
+        "legal_name",
+        "aliases",
+        "domicile_country",
+        "reporting_currency",
+        "fiscal_year_end",
         "industry",
         "description",
         "listed_date",
         "status",
         "tags",
+        "primary_listing",
     }
 
 
@@ -1641,12 +1714,13 @@ def test_analyst_output_rejects_price_sensitive_analysis(tmp_path: Path) -> None
         company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
         assert company is not None
 
+        gateway = FakePriceAwareAnalysisGateway()
         with pytest.raises(PriceAnchorOutputError):
             run_company_analyst_view(
                 session,
                 company,
                 "buffett",
-                gateway=FakePriceAwareAnalysisGateway(),
+                gateway=gateway,
             )
 
         run = session.scalar(
@@ -1662,6 +1736,30 @@ def test_analyst_output_rejects_price_sensitive_analysis(tmp_path: Path) -> None
     assert run is not None
     assert run.status == "failed"
     assert run.result["error_type"] == "PriceAnchorOutputError"
+    assert gateway.call_count == 2
+
+
+def test_analyst_price_anchor_output_is_regenerated_once(tmp_path: Path) -> None:
+    session_factory = _make_test_db(tmp_path)
+    _seed_analysis_snapshot_fixture(session_factory)
+
+    with session_factory() as session:
+        company = session.scalar(select(Company).where(Company.ticker == "600519.SH"))
+        assert company is not None
+        gateway = FakeRecoveringPriceAnchorGateway()
+
+        run = run_company_analyst_view(
+            session,
+            company,
+            "buffett",
+            gateway=gateway,
+        )
+
+    assert run.status == "success"
+    assert gateway.call_count == 2
+    assert gateway.temperatures == [0.2, 0.0]
+    assert "上一次输出越过了下游决策边界" in gateway.user_prompts[1]
+    assert "safety_margin" not in str(run.result)
 
 
 def test_analyst_snapshot_only_exposes_minimal_external_evidence_fields(
@@ -2033,7 +2131,11 @@ class FakeInvalidReferenceGateway:
 class FakePriceAwareAnalysisGateway:
     model_name = "fake-price-aware-analysis-model"
 
+    def __init__(self) -> None:
+        self.call_count = 0
+
     def generate_structured(self, **kwargs):
+        self.call_count += 1
         schema = kwargs["schema"]
         return schema.model_validate(
             {
@@ -2087,6 +2189,32 @@ class FakePriceAwareAnalysisGateway:
                 "follow_up_questions": [],
             }
         )
+
+
+class FakeRecoveringPriceAnchorGateway(FakeAnalystGateway):
+    def __init__(self) -> None:
+        self.call_count = 0
+        self.temperatures: list[float] = []
+        self.user_prompts: list[str] = []
+
+    def generate_structured(self, **kwargs):
+        self.call_count += 1
+        self.temperatures.append(float(kwargs["temperature"]))
+        self.user_prompts.append(str(kwargs["user_prompt"]))
+        output = super().generate_structured(**kwargs)
+        if self.call_count != 1:
+            return output
+
+        payload = output.model_dump(mode="json")
+        payload["valuation_assumption_details"] = [
+            {
+                "assumption_type": "safety_margin",
+                "reason": "测试首次越界后的自动重生成。",
+                "needed_inputs": [],
+                "source_refs": {},
+            }
+        ]
+        return kwargs["schema"].model_validate(payload)
 
 
 class FakeUnconfiguredGateway:

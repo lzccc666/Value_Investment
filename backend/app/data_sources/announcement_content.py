@@ -4,8 +4,13 @@ import re
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from io import BytesIO
+from typing import Protocol
+from urllib.parse import urlparse
 
 import httpx
+
+from app.data_sources.sec_edgar import SecEdgarClient
+from app.market_data.contracts import MarketDataError
 
 
 class AnnouncementContentFetchError(RuntimeError):
@@ -28,10 +33,21 @@ _NOTICE_BODY_MARKERS = (
 )
 
 
+class SecArchiveTextClient(Protocol):
+    def fetch_text(self, url: str) -> str: ...
+
+
 class AnnouncementContentFetcher:
-    def __init__(self, timeout: float = 20.0, max_bytes: int = 8_000_000) -> None:
+    def __init__(
+        self,
+        timeout: float = 20.0,
+        max_bytes: int = 8_000_000,
+        *,
+        sec_client: SecArchiveTextClient | None = None,
+    ) -> None:
         self._timeout = timeout
         self._max_bytes = max_bytes
+        self._sec_client = sec_client
 
     def fetch_text(self, *, source_url: str | None, raw_url: str | None) -> tuple[str, str]:
         urls = [url for url in (raw_url, source_url) if url]
@@ -52,7 +68,11 @@ class AnnouncementContentFetcher:
 
         for url in urls:
             try:
-                content = self._fetch_one(url)
+                content = (
+                    self._fetch_sec_archive(url)
+                    if _is_sec_archive_url(url)
+                    else self._fetch_one(url)
+                )
             except AnnouncementContentFetchError as exc:
                 errors.append(str(exc))
                 continue
@@ -61,6 +81,13 @@ class AnnouncementContentFetcher:
 
         joined = "；".join(errors) if errors else "未能读取到公告正文"
         raise AnnouncementContentFetchError(joined)
+
+    def _fetch_sec_archive(self, url: str) -> str:
+        try:
+            content = (self._sec_client or SecEdgarClient()).fetch_text(url)
+        except MarketDataError as exc:
+            raise AnnouncementContentFetchError(f"SEC Archives 正文请求失败：{exc}") from exc
+        return _extract_html_text(content[: self._max_bytes])
 
     def _fetch_eastmoney_notice_text(self, art_code: str) -> str:
         pages: list[str] = []
@@ -188,11 +215,11 @@ class _ReadableHTMLParser(HTMLParser):
         self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs) -> None:
-        if tag.lower() in {"script", "style", "noscript"}:
+        if tag.lower() in {"script", "style", "noscript", "ix:hidden"}:
             self._skip_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in {"script", "style", "noscript"} and self._skip_depth > 0:
+        if tag.lower() in {"script", "style", "noscript", "ix:hidden"} and self._skip_depth > 0:
             self._skip_depth -= 1
 
     def handle_data(self, data: str) -> None:
@@ -217,7 +244,7 @@ class _TargetedHTMLTextParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs) -> None:
         lower_tag = tag.lower()
         attrs_map = {name.lower(): (value or "") for name, value in attrs}
-        if lower_tag in {"script", "style", "noscript"}:
+        if lower_tag in {"script", "style", "noscript", "ix:hidden"}:
             self._skip_depth += 1
             return
 
@@ -231,7 +258,7 @@ class _TargetedHTMLTextParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         lower_tag = tag.lower()
-        if lower_tag in {"script", "style", "noscript"} and self._skip_depth > 0:
+        if lower_tag in {"script", "style", "noscript", "ix:hidden"} and self._skip_depth > 0:
             self._skip_depth -= 1
             return
 
@@ -254,6 +281,12 @@ def _extract_eastmoney_art_code(*urls: str | None) -> str | None:
         if match:
             return match.group(1).upper()
     return None
+
+
+def _is_sec_archive_url(url: str) -> bool:
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    return hostname in {"sec.gov", "www.sec.gov"} and parsed.path.startswith("/Archives/")
 
 
 def _preferred_trace_url(source_url: str | None, raw_url: str | None) -> str | None:

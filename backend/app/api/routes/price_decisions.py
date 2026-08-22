@@ -43,6 +43,7 @@ def create_company_price_decision_run(
             company,
             valuation_run_id=payload.valuation_run_id,
             safety_margin_override=payload.safety_margin_override,
+            listing_id=payload.listing_id,
         )
     except PriceDecisionInputError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

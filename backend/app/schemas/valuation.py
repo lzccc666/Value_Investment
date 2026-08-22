@@ -60,6 +60,8 @@ class ValuationRunRead(BaseModel):
     confidence: float | None = None
     confidence_summary: dict[str, object] = Field(default_factory=dict)
     source_map: dict[str, object] = Field(default_factory=dict)
+    valuation_currency: str | None = None
+    share_basis_snapshot: dict[str, object] = Field(default_factory=dict)
     user_note: str | None = None
     created_at: datetime
     updated_at: datetime

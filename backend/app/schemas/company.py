@@ -22,6 +22,14 @@ class CompanyCreate(BaseModel):
     listed_date: date | None = Field(default=None, description="上市日期，可选，格式 YYYY-MM-DD。")
     status: str = Field(default="未研究", max_length=40, description="研究状态，可选。")
     tags: list[str] = Field(default_factory=list, description="标签，可选。用于搜索和研究分类。")
+    legal_name: str | None = Field(default=None, max_length=255)
+    aliases: list[str] = Field(default_factory=list)
+    domicile_country: str | None = Field(default=None, min_length=2, max_length=2)
+    reporting_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    fiscal_year_end: str | None = Field(
+        default=None,
+        pattern=r"^(0[1-9]|1[0-2])-([0-2][0-9]|3[01])$",
+    )
 
     @field_validator("ticker", "exchange", "name", "status")
     @classmethod
@@ -31,7 +39,7 @@ class CompanyCreate(BaseModel):
             raise ValueError("字段不能为空")
         return normalized
 
-    @field_validator("industry", "description")
+    @field_validator("industry", "description", "legal_name")
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -40,7 +48,7 @@ class CompanyCreate(BaseModel):
         normalized = value.strip()
         return normalized or None
 
-    @field_validator("tags")
+    @field_validator("tags", "aliases")
     @classmethod
     def normalize_tags(cls, value: list[str]) -> list[str]:
         tags: list[str] = []
@@ -50,6 +58,95 @@ class CompanyCreate(BaseModel):
                 tags.append(tag)
         return tags
 
+    @field_validator("domicile_country", "reporting_currency")
+    @classmethod
+    def normalize_codes(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+class SecurityListingCreate(BaseModel):
+    ticker: str = Field(min_length=1, max_length=32)
+    symbol: str | None = Field(default=None, max_length=32)
+    exchange: str = Field(min_length=1, max_length=32)
+    market: str | None = Field(default=None, max_length=16)
+    trading_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    security_type: str = Field(default="common_stock", max_length=24)
+    listed_date: date | None = None
+    is_primary: bool = False
+    underlying_shares_per_listing_unit: float | None = Field(default=None, gt=0)
+    provider_identifiers: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("ticker", "exchange", "security_type")
+    @classmethod
+    def normalize_listing_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("字段不能为空")
+        return normalized.upper()
+
+    @field_validator("symbol", "market", "trading_currency")
+    @classmethod
+    def normalize_optional_listing_text(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value and value.strip() else None
+
+
+class SecurityListingRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    company_id: int
+    ticker: str
+    symbol: str
+    exchange: str
+    market: str
+    trading_currency: str
+    security_type: str
+    listed_date: date | None = None
+    is_primary: bool
+    is_active: bool
+    underlying_shares_per_listing_unit: float | None = None
+    provider_identifiers: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SecurityListingListResponse(BaseModel):
+    company_id: int
+    items: list[SecurityListingRead]
+
+
+class MarketSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    listing_id: int
+    price: float
+    currency: str
+    market_cap: float | None = None
+    pe_ttm: float | None = None
+    pe_dynamic: float | None = None
+    pe_static: float | None = None
+    pb_ratio: float | None = None
+    ps_ratio: float | None = None
+    dividend_yield_ttm: float | None = None
+    dividend_yield_static: float | None = None
+    price_as_of: datetime
+    fetched_at: datetime
+    source: str
+    source_url: str | None = None
+    raw_snapshot_hash: str | None = None
+
+
+class MarketSnapshotLatestResponse(BaseModel):
+    listing_id: int
+    item: MarketSnapshotRead | None = None
+
+
+class MarketCapabilitiesResponse(BaseModel):
+    company_id: int
+    listing_id: int
+    market: str
+    capabilities: dict[str, dict[str, object]] = Field(default_factory=dict)
+
 
 class CompanyRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -58,6 +155,13 @@ class CompanyRead(BaseModel):
     ticker: str
     exchange: str
     name: str
+    canonical_key: str | None = None
+    legal_name: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    domicile_country: str | None = None
+    reporting_currency: str | None = None
+    fiscal_year_end: str | None = None
+    external_ids: dict[str, object] = Field(default_factory=dict)
     industry: str | None = None
     description: str | None = None
     listed_date: date | None = None
@@ -77,6 +181,7 @@ class CompanyRead(BaseModel):
     market_data_updated_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    primary_listing: SecurityListingRead | None = None
 
     @field_serializer("market_data_updated_at", "created_at", "updated_at")
     def serialize_company_time(self, value: datetime | None) -> str | None:
@@ -105,6 +210,18 @@ class FinancialStatementRead(BaseModel):
     fields: dict[str, object] = Field(default_factory=dict)
     source: str | None = None
     source_url: str | None = None
+    source_record_id: str | None = None
+    filing_type: str | None = None
+    taxonomy: str | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    period_type: str | None = None
+    fiscal_year: int | None = None
+    fiscal_period: str | None = None
+    filed_at: datetime | None = None
+    unit_scale: float = 1.0
+    is_amendment: bool = False
+    raw_snapshot_hash: str | None = None
     created_at: datetime
 
     @field_serializer("created_at")
@@ -122,6 +239,10 @@ class FinancialStatementListResponse(BaseModel):
 
 
 class FinancialEvidencePackRead(BaseModel):
+    reporting_currency: str | None = None
+    accounting_standard: str | None = None
+    source_coverage: dict[str, object] = Field(default_factory=dict)
+    mapping_diagnostics: list[dict[str, object]] = Field(default_factory=list)
     latest_period: str | None = None
     periods: list[str] = Field(default_factory=list)
     financial_facts: dict[str, object] = Field(default_factory=dict)
@@ -159,6 +280,7 @@ class AnnouncementRead(BaseModel):
 
     id: int
     company_id: int
+    listing_id: int | None = None
     title: str
     published_at: datetime
     category: str
@@ -169,6 +291,15 @@ class AnnouncementRead(BaseModel):
     source: str | None = None
     source_url: str | None = None
     raw_url: str | None = None
+    source_document_id: str | None = None
+    document_type: str | None = None
+    filing_form: str | None = None
+    language: str | None = None
+    period_end: date | None = None
+    content_type: str | None = None
+    content_source: str | None = None
+    content_fetched_at: datetime | None = None
+    raw_content_hash: str | None = None
     impact_direction: str | None = None
     sentiment: str | None = None
     positive_impacts: list[str] = Field(default_factory=list)
