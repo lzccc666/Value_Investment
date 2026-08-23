@@ -30,6 +30,8 @@ from app.db.models import (
     PortfolioOwner,
     PortfolioSnapshot,
     PriceDecisionRun,
+    ReadingBook,
+    ReadingProgressEntry,
     SecurityListing,
     ValuationRun,
 )
@@ -86,6 +88,8 @@ INDEPENDENT_MODEL_BY_TABLE = {
     "portfolio_holdings": PortfolioHolding,
     "market_fear_snapshots": MarketFearSnapshot,
     "buy_memo_entries": BuyMemoEntry,
+    "reading_books": ReadingBook,
+    "reading_progress_entries": ReadingProgressEntry,
 }
 
 

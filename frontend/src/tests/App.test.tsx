@@ -85,6 +85,7 @@ const mocks = vi.hoisted(() => {
       market_data_updated_at: null
     },
     getHealth: vi.fn(),
+    requestLocalShutdown: vi.fn(),
     getCompanies: vi.fn(),
     createCompany: vi.fn(),
     getCompany: vi.fn(),
@@ -291,6 +292,7 @@ function makeSuccessfulAnalystRun(profile: (typeof fixedAnalystProfiles)[number]
 
 vi.mock("../services/api", () => ({
   getHealth: mocks.getHealth,
+  requestLocalShutdown: mocks.requestLocalShutdown,
   getCompanies: mocks.getCompanies,
   createCompany: mocks.createCompany,
   getCompany: mocks.getCompany,
@@ -397,7 +399,12 @@ beforeEach(() => {
     service: "Value Investment API",
     version: "0.1.0",
     environment: "development",
+    local_control_enabled: false,
     checked_at: "2026-01-01T00:00:00Z"
+  });
+  mocks.requestLocalShutdown.mockResolvedValue({
+    status: "accepted",
+    message: "关闭请求已接收，前后端服务即将停止。"
   });
   mocks.getCompanies.mockResolvedValue({
     items: [mocks.company],
@@ -1392,6 +1399,7 @@ beforeEach(() => {
     created_at: "2026-08-09T00:30:00Z"
   });
   mocks.getHealth.mockClear();
+  mocks.requestLocalShutdown.mockClear();
   mocks.getCompanies.mockClear();
   mocks.createCompany.mockClear();
   mocks.getCompany.mockClear();
@@ -1909,6 +1917,33 @@ describe("App", () => {
     expect(screen.queryByText("阶段边界")).not.toBeInTheDocument();
     expect(await within(screen.getByLabelText("研究公司")).findByText("1")).toBeInTheDocument();
     expect(await screen.findByText("Value Investment API 0.1.0")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "关闭前后端服务" })).not.toBeInTheDocument();
+  });
+
+  it("confirms and requests local frontend and backend shutdown", async () => {
+    mocks.getHealth
+      .mockResolvedValueOnce({
+        status: "ok",
+        service: "Value Investment API",
+        version: "0.1.0",
+        environment: "development",
+        local_control_enabled: true,
+        checked_at: "2026-01-01T00:00:00Z"
+      })
+      .mockRejectedValueOnce(new Error("service stopped"));
+    const closeSpy = vi.spyOn(window, "close").mockImplementation(() => undefined);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "关闭前后端服务" }));
+    const dialog = screen.getByRole("dialog", { name: "关闭本地服务" });
+    expect(within(dialog).getByText("未保存的浏览器输入会丢失。")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭服务" }));
+
+    await waitFor(() => expect(mocks.requestLocalShutdown).toHaveBeenCalledOnce());
+    expect(await screen.findByRole("heading", { name: "前后端已关闭" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "关闭页面" })).toBeInTheDocument();
+    await waitFor(() => expect(closeSpy).toHaveBeenCalledOnce());
+    closeSpy.mockRestore();
   });
 
   it("opens a recent company from the dashboard", async () => {

@@ -32,6 +32,13 @@ from app.schemas.investment_tools import (
     PortfolioSnapshotRead,
     PortfolioSnapshotUpdate,
     PortfolioValuationResponse,
+    ReadingBookCreate,
+    ReadingBookListResponse,
+    ReadingBookRead,
+    ReadingBookUpdate,
+    ReadingProgressCreate,
+    ReadingProgressRead,
+    ReadingProgressUpdate,
     SecUsListingCatalogResponse,
     SecUsListingImportRequest,
 )
@@ -74,6 +81,18 @@ from app.services.portfolio_service import (
     update_owner,
     update_snapshot,
     value_portfolio,
+)
+from app.services.reading_list_service import (
+    ReadingListConflictError,
+    ReadingListNotFoundError,
+    create_reading_book,
+    create_reading_progress,
+    delete_reading_book,
+    delete_reading_progress,
+    get_reading_book,
+    list_reading_books,
+    update_reading_book,
+    update_reading_progress,
 )
 
 router = APIRouter(prefix="/investment-tools")
@@ -367,6 +386,83 @@ def remove_buy_memo_entry(
     return DeleteResponse(id=entry_id, deleted=True)
 
 
+@router.get("/reading-books", response_model=ReadingBookListResponse)
+def get_reading_books(
+    db: Annotated[Session, Depends(get_db)],
+) -> ReadingBookListResponse:
+    items = list_reading_books(db)
+    return ReadingBookListResponse(items=items, total=len(items))
+
+
+@router.post(
+    "/reading-books",
+    response_model=ReadingBookRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_reading_book(
+    payload: ReadingBookCreate,
+    db: Annotated[Session, Depends(get_db)],
+) -> ReadingBookRead:
+    return _handle_reading(lambda: create_reading_book(db, payload))
+
+
+@router.get("/reading-books/{book_id}", response_model=ReadingBookRead)
+def get_reading_book_detail(
+    book_id: int,
+    db: Annotated[Session, Depends(get_db)],
+) -> ReadingBookRead:
+    return _handle_reading(lambda: get_reading_book(db, book_id))
+
+
+@router.patch("/reading-books/{book_id}", response_model=ReadingBookRead)
+def patch_reading_book(
+    book_id: int,
+    payload: ReadingBookUpdate,
+    db: Annotated[Session, Depends(get_db)],
+) -> ReadingBookRead:
+    return _handle_reading(lambda: update_reading_book(db, book_id, payload))
+
+
+@router.delete("/reading-books/{book_id}", response_model=DeleteResponse)
+def remove_reading_book(
+    book_id: int,
+    db: Annotated[Session, Depends(get_db)],
+) -> DeleteResponse:
+    _handle_reading(lambda: delete_reading_book(db, book_id))
+    return DeleteResponse(id=book_id, deleted=True)
+
+
+@router.post(
+    "/reading-books/{book_id}/progress",
+    response_model=ReadingProgressRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_reading_progress(
+    book_id: int,
+    payload: ReadingProgressCreate,
+    db: Annotated[Session, Depends(get_db)],
+) -> ReadingProgressRead:
+    return _handle_reading(lambda: create_reading_progress(db, book_id, payload))
+
+
+@router.patch("/reading-progress/{progress_id}", response_model=ReadingProgressRead)
+def patch_reading_progress(
+    progress_id: int,
+    payload: ReadingProgressUpdate,
+    db: Annotated[Session, Depends(get_db)],
+) -> ReadingProgressRead:
+    return _handle_reading(lambda: update_reading_progress(db, progress_id, payload))
+
+
+@router.delete("/reading-progress/{progress_id}", response_model=DeleteResponse)
+def remove_reading_progress(
+    progress_id: int,
+    db: Annotated[Session, Depends(get_db)],
+) -> DeleteResponse:
+    _handle_reading(lambda: delete_reading_progress(db, progress_id))
+    return DeleteResponse(id=progress_id, deleted=True)
+
+
 @router.get(
     "/buy-memo-companies",
     response_model=BuyMemoCompanyCandidateResponse,
@@ -427,3 +523,12 @@ def _handle(operation: Callable[[], T]) -> T:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+
+def _handle_reading(operation: Callable[[], T]) -> T:
+    try:
+        return operation()
+    except ReadingListNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ReadingListConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

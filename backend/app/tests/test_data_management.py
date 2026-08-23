@@ -24,6 +24,8 @@ from app.db.models import (
     PortfolioOwner,
     PortfolioSnapshot,
     PriceDecisionRun,
+    ReadingBook,
+    ReadingProgressEntry,
     SecurityListing,
     ValuationRun,
 )
@@ -250,6 +252,16 @@ def _investment_tools_data(
         price_decision_created_at=decision.created_at,
     )
     session.add(buy_memo)
+    reading_book = ReadingBook(
+        title="证券分析",
+        author="本杰明·格雷厄姆",
+        status="reading",
+        notes="数据管理边界测试",
+    )
+    reading_book.progress_entries.append(
+        ReadingProgressEntry(round_number=1, progress_percent=35)
+    )
+    session.add(reading_book)
     session.commit()
     return {
         "owner": owner.id,
@@ -257,6 +269,8 @@ def _investment_tools_data(
         "holding": holding.id,
         "fear": fear.id,
         "buy_memo": buy_memo.id,
+        "reading_book": reading_book.id,
+        "reading_progress": reading_book.progress_entries[0].id,
     }
 
 
@@ -318,6 +332,8 @@ def test_company_reset_is_isolated_and_preserves_company(tmp_path: Path) -> None
         assert session.get(PortfolioSnapshot, investment_ids["snapshot"]) is not None
         assert session.get(PortfolioHolding, investment_ids["holding"]) is not None
         assert session.get(MarketFearSnapshot, investment_ids["fear"]) is not None
+        assert session.get(ReadingBook, investment_ids["reading_book"]) is not None
+        assert session.get(ReadingProgressEntry, investment_ids["reading_progress"]) is not None
         buy_memo = session.get(BuyMemoEntry, investment_ids["buy_memo"])
         assert buy_memo is not None
         assert buy_memo.source_price_decision_run_id is None
@@ -342,6 +358,8 @@ def test_summary_and_backup_manifest_include_market_foundation_tables(tmp_path: 
     assert counts["portfolio_holdings"] == 1
     assert counts["market_fear_snapshots"] == 1
     assert counts["buy_memo_entries"] == 1
+    assert counts["reading_books"] == 1
+    assert counts["reading_progress_entries"] == 1
 
     backup = client.post("/api/data-management/backups", json={"reason": "foundation"})
     assert backup.status_code == 200, backup.text
@@ -355,6 +373,8 @@ def test_summary_and_backup_manifest_include_market_foundation_tables(tmp_path: 
         "portfolio_holdings",
         "market_fear_snapshots",
         "buy_memo_entries",
+        "reading_books",
+        "reading_progress_entries",
     ):
         assert manifest_counts[table] == counts[table]
 
@@ -382,6 +402,8 @@ def test_clear_analysis_history_preserves_source_data_and_evidence_runs(tmp_path
         assert session.get(PortfolioSnapshot, investment_ids["snapshot"]) is not None
         assert session.get(PortfolioHolding, investment_ids["holding"]) is not None
         assert session.get(MarketFearSnapshot, investment_ids["fear"]) is not None
+        assert session.get(ReadingBook, investment_ids["reading_book"]) is not None
+        assert session.get(ReadingProgressEntry, investment_ids["reading_progress"]) is not None
 
 
 def test_operation_token_is_single_use_rejects_wrong_phrase_and_state_change(
@@ -570,6 +592,8 @@ def test_initialize_database_restores_standard_seed_and_reports_restart(tmp_path
     assert preview["affected_counts"]["portfolio_holdings"] == 1
     assert preview["affected_counts"]["market_fear_snapshots"] == 1
     assert preview["affected_counts"]["buy_memo_entries"] == 1
+    assert preview["affected_counts"]["reading_books"] == 1
+    assert preview["affected_counts"]["reading_progress_entries"] == 1
     assert result["restart_required"] is True
     assert result["integrity_check"] == "ok"
     with factory() as session:
@@ -580,6 +604,8 @@ def test_initialize_database_restores_standard_seed_and_reports_restart(tmp_path
         assert session.get(PortfolioHolding, investment_ids["holding"]) is None
         assert session.get(MarketFearSnapshot, investment_ids["fear"]) is None
         assert session.get(BuyMemoEntry, investment_ids["buy_memo"]) is None
+        assert session.get(ReadingBook, investment_ids["reading_book"]) is None
+        assert session.get(ReadingProgressEntry, investment_ids["reading_progress"]) is None
 
 
 def test_write_requests_are_rejected_during_maintenance(tmp_path: Path) -> None:

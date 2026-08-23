@@ -4,6 +4,16 @@ FastAPI 后端为本地价值投资研究工作台提供数据采集、证据整
 
 ## 启动
 
+从项目根目录启动完整本地工作台：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-app.ps1
+```
+
+该启动器会监管前后端、选择可用端口、等待健康检查并打开浏览器。正常使用时可通过前端侧栏电源按钮关闭；网页不可访问时运行 `scripts/stop-app.ps1`。后端本地控制接口默认关闭，只在完整托管会话中由随机令牌临时启用。
+
+仅启动后端进行开发：
+
 ```powershell
 Set-Location backend
 python -m venv .venv

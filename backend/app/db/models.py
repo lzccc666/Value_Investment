@@ -436,6 +436,76 @@ class BuyMemoEntry(Base):
     )
 
 
+class ReadingBook(Base):
+    __tablename__ = "reading_books"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('finished', 'reading', 'planned')",
+            name="ck_reading_books_status",
+        ),
+        Index("ix_reading_books_status_updated", "status", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    author: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    progress_entries: Mapped[list[ReadingProgressEntry]] = relationship(
+        back_populates="book",
+        cascade="all, delete-orphan",
+        order_by="ReadingProgressEntry.round_number",
+    )
+
+
+class ReadingProgressEntry(Base):
+    __tablename__ = "reading_progress_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "book_id",
+            "round_number",
+            name="uq_reading_progress_entries_book_round",
+        ),
+        CheckConstraint(
+            "round_number > 0",
+            name="ck_reading_progress_entries_round_positive",
+        ),
+        CheckConstraint(
+            "progress_percent >= 0 AND progress_percent <= 100",
+            name="ck_reading_progress_entries_percent_range",
+        ),
+        Index(
+            "ix_reading_progress_entries_book_round",
+            "book_id",
+            "round_number",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("reading_books.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    round_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    book: Mapped[ReadingBook] = relationship(back_populates="progress_entries")
+
+
 class FinancialStatement(Base):
     __tablename__ = "financial_statements"
     __table_args__ = (

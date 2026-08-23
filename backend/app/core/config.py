@@ -8,6 +8,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "value_investment.db"
 DEFAULT_BACKUP_DIRECTORY = PROJECT_ROOT / "data" / "backups"
 DEFAULT_PROVIDER_CACHE_DIRECTORY = PROJECT_ROOT / "data" / "provider_cache"
+DEFAULT_RUNTIME_DIRECTORY = PROJECT_ROOT / "data" / "runtime"
 
 
 class Settings(BaseSettings):
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     backup_directory: Path = DEFAULT_BACKUP_DIRECTORY
     provider_cache_directory: Path = DEFAULT_PROVIDER_CACHE_DIRECTORY
+    runtime_directory: Path = DEFAULT_RUNTIME_DIRECTORY
+    local_app_control_enabled: bool = False
+    local_control_token: str | None = None
+    stop_request_file: Path | None = None
     provider_timeout_seconds: float = 20.0
     sec_user_agent: str | None = Field(
         default=None,

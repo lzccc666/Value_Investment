@@ -108,6 +108,8 @@ def test_init_db_migrates_legacy_sqlite_database(tmp_path: Path) -> None:
         "portfolio_holdings",
         "market_fear_snapshots",
         "buy_memo_entries",
+        "reading_books",
+        "reading_progress_entries",
     }.issubset(table_names)
     assert sqlite_schema_version == CURRENT_SQLITE_SCHEMA_VERSION
     assert price_decision_run_info["analyst_score_total"][3] == 0
@@ -211,7 +213,7 @@ def test_schema_9_backfills_and_preserves_portfolio_directory_order(tmp_path: Pa
             text("SELECT id FROM portfolio_owners ORDER BY display_order")
         ).scalars().all()
         assert preserved_order == [8, 3]
-        assert connection.scalar(text("PRAGMA user_version")) == 9
+        assert connection.scalar(text("PRAGMA user_version")) == 10
 
 
 def _create_legacy_sqlite_schema(engine) -> None:

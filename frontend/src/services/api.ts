@@ -3,7 +3,13 @@ export type HealthResponse = {
   service: string;
   version: string;
   environment: string;
+  local_control_enabled: boolean;
   checked_at: string;
+};
+
+export type LocalShutdownResponse = {
+  status: "accepted";
+  message: string;
 };
 
 export type Company = {
@@ -970,6 +976,33 @@ export type BuyMemoEntry = {
   updated_at: string;
 };
 
+export type ReadingBookStatus = "finished" | "reading" | "planned";
+
+export type ReadingProgressEntry = {
+  id: number;
+  book_id: number;
+  round_number: number;
+  progress_percent: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReadingBook = {
+  id: number;
+  title: string;
+  author: string | null;
+  status: ReadingBookStatus;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  progress_entries: ReadingProgressEntry[];
+};
+
+export type ReadingBookListResponse = {
+  items: ReadingBook[];
+  total: number;
+};
+
 export type PortfolioValuationItem = {
   holding_id: number;
   listing_id: number;
@@ -1066,6 +1099,7 @@ type RequestJsonOptions = {
   signal?: AbortSignal;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
+  headers?: Record<string, string>;
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -1073,7 +1107,10 @@ const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api";
 async function fetchJson<T>(path: string, options: RequestJsonOptions = {}): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: options.method ?? "GET",
-    headers: options.body ? { "Content-Type": "application/json" } : undefined,
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...options.headers
+    },
     body: options.body ? JSON.stringify(options.body) : undefined,
     signal: options.signal
   });
@@ -1134,6 +1171,17 @@ function formatApiErrorPayload(payload: unknown): string | null {
 
 export async function getHealth(): Promise<HealthResponse> {
   return fetchJson<HealthResponse>("/health");
+}
+
+export async function requestLocalShutdown(): Promise<LocalShutdownResponse> {
+  const controlToken = import.meta.env.VITE_LOCAL_CONTROL_TOKEN?.trim();
+  if (!controlToken) {
+    throw new Error("当前前端不是由本地应用启动器启动，无法关闭服务。");
+  }
+  return fetchJson<LocalShutdownResponse>("/system/shutdown", {
+    method: "POST",
+    headers: { "X-Local-Control-Token": controlToken }
+  });
 }
 
 export async function getCompanies(
@@ -2138,6 +2186,89 @@ export async function deleteBuyMemoEntry(
     method: "DELETE",
     signal
   });
+}
+
+export async function getReadingBooks(
+  signal?: AbortSignal
+): Promise<ReadingBookListResponse> {
+  return fetchJson<ReadingBookListResponse>("/investment-tools/reading-books", { signal });
+}
+
+export async function createReadingBook(
+  payload: {
+    title: string;
+    author?: string | null;
+    status: ReadingBookStatus;
+    notes?: string | null;
+    initial_progress: number;
+  },
+  signal?: AbortSignal
+): Promise<ReadingBook> {
+  return fetchJson<ReadingBook>("/investment-tools/reading-books", {
+    method: "POST",
+    body: payload,
+    signal
+  });
+}
+
+export async function updateReadingBook(
+  bookId: number,
+  payload: Partial<{
+    title: string;
+    author: string | null;
+    status: ReadingBookStatus;
+    notes: string | null;
+  }>,
+  signal?: AbortSignal
+): Promise<ReadingBook> {
+  return fetchJson<ReadingBook>(`/investment-tools/reading-books/${bookId}`, {
+    method: "PATCH",
+    body: payload,
+    signal
+  });
+}
+
+export async function deleteReadingBook(
+  bookId: number,
+  signal?: AbortSignal
+): Promise<{ id: number; deleted: boolean }> {
+  return fetchJson<{ id: number; deleted: boolean }>(
+    `/investment-tools/reading-books/${bookId}`,
+    { method: "DELETE", signal }
+  );
+}
+
+export async function createReadingProgress(
+  bookId: number,
+  progressPercent = 0,
+  signal?: AbortSignal
+): Promise<ReadingProgressEntry> {
+  return fetchJson<ReadingProgressEntry>(
+    `/investment-tools/reading-books/${bookId}/progress`,
+    { method: "POST", body: { progress_percent: progressPercent }, signal }
+  );
+}
+
+export async function updateReadingProgress(
+  progressId: number,
+  progressPercent: number,
+  signal?: AbortSignal
+): Promise<ReadingProgressEntry> {
+  return fetchJson<ReadingProgressEntry>(`/investment-tools/reading-progress/${progressId}`, {
+    method: "PATCH",
+    body: { progress_percent: progressPercent },
+    signal
+  });
+}
+
+export async function deleteReadingProgress(
+  progressId: number,
+  signal?: AbortSignal
+): Promise<{ id: number; deleted: boolean }> {
+  return fetchJson<{ id: number; deleted: boolean }>(
+    `/investment-tools/reading-progress/${progressId}`,
+    { method: "DELETE", signal }
+  );
 }
 
 export async function getPortfolioHoldings(

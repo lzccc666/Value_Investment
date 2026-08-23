@@ -1,2 +1,9 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+  readonly VITE_LOCAL_CONTROL_TOKEN?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}

@@ -30,6 +30,8 @@ BUSINESS_TABLES = (
     "portfolio_holdings",
     "market_fear_snapshots",
     "buy_memo_entries",
+    "reading_books",
+    "reading_progress_entries",
     "financial_statements",
     "announcements",
     "evidence",

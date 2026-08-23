@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
   ClipboardList,
   Clock3,
@@ -19,6 +20,8 @@ import {
 import type { LucideIcon } from "lucide-react";
 import type { CSSProperties, DragEvent, FormEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
+
+import { ReadingListWorkspace } from "./ReadingListWorkspace";
 
 import {
   createPortfolioHolding,
@@ -67,7 +70,7 @@ import {
   type SecurityListing
 } from "../services/api";
 
-export type InvestmentToolId = "portfolio" | "buy-memo" | "market-fear";
+export type InvestmentToolId = "portfolio" | "buy-memo" | "market-fear" | "reading-list";
 
 export type InvestmentToolDefinition = {
   id: InvestmentToolId;
@@ -78,7 +81,8 @@ export type InvestmentToolDefinition = {
 export const investmentToolRegistry: InvestmentToolDefinition[] = [
   { id: "portfolio", label: "持仓组合", icon: WalletCards },
   { id: "buy-memo", label: "买入备忘录", icon: ClipboardList },
-  { id: "market-fear", label: "市场温度", icon: Gauge }
+  { id: "market-fear", label: "市场温度", icon: Gauge },
+  { id: "reading-list", label: "阅读书单", icon: BookOpen }
 ];
 
 type InvestmentToolsViewProps = {
@@ -173,6 +177,7 @@ export function InvestmentToolsView({ refreshToken }: InvestmentToolsViewProps) 
       {activeTool === "portfolio" ? <PortfolioWorkspace refreshToken={refreshToken} /> : null}
       {activeTool === "buy-memo" ? <BuyMemoWorkspace refreshToken={refreshToken} /> : null}
       {activeTool === "market-fear" ? <MarketFearWorkspace refreshToken={refreshToken} /> : null}
+      {activeTool === "reading-list" ? <ReadingListWorkspace refreshToken={refreshToken} /> : null}
     </section>
   );
 }

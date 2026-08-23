@@ -13,6 +13,7 @@ HoldingDataStatus = Literal[
     "currency_mismatch",
     "inactive_listing",
 ]
+ReadingStatus = Literal["finished", "reading", "planned"]
 
 
 def _strip_required(value: str) -> str:
@@ -332,6 +333,73 @@ class BuyMemoEntryRead(BaseModel):
 
 class BuyMemoEntryListResponse(BaseModel):
     items: list[BuyMemoEntryRead]
+    total: int
+
+
+class ReadingProgressCreate(BaseModel):
+    progress_percent: int = Field(default=0, ge=0, le=100)
+
+
+class ReadingProgressUpdate(BaseModel):
+    progress_percent: int = Field(ge=0, le=100)
+
+
+class ReadingProgressRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    book_id: int
+    round_number: int
+    progress_percent: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReadingBookCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    author: str | None = Field(default=None, max_length=160)
+    status: ReadingStatus = "planned"
+    notes: str | None = Field(default=None, max_length=8000)
+    initial_progress: int = Field(default=0, ge=0, le=100)
+
+    _normalize_title = field_validator("title")(_strip_required)
+    _normalize_author = field_validator("author")(_strip_optional)
+    _normalize_notes = field_validator("notes")(_strip_optional)
+
+
+class ReadingBookUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    author: str | None = Field(default=None, max_length=160)
+    status: ReadingStatus | None = None
+    notes: str | None = Field(default=None, max_length=8000)
+
+    _normalize_title = field_validator("title")(_strip_optional)
+    _normalize_author = field_validator("author")(_strip_optional)
+    _normalize_notes = field_validator("notes")(_strip_optional)
+
+    @model_validator(mode="after")
+    def reject_null_required_fields(self):
+        for field_name in {"title", "status"} & self.model_fields_set:
+            if getattr(self, field_name) is None:
+                raise ValueError(f"{field_name} 不能为 null")
+        return self
+
+
+class ReadingBookRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    author: str | None = None
+    status: ReadingStatus
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    progress_entries: list[ReadingProgressRead]
+
+
+class ReadingBookListResponse(BaseModel):
+    items: list[ReadingBookRead]
     total: int
 
 

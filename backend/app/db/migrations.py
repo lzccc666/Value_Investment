@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import Connection, Engine, text
 
-CURRENT_SQLITE_SCHEMA_VERSION = 9
+CURRENT_SQLITE_SCHEMA_VERSION = 10
 
 
 @dataclass(frozen=True)

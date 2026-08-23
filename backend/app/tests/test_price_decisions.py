@@ -281,7 +281,7 @@ def _seed_company(
         exchange="NYSE",
         name=ticker,
         current_price=price,
-        market_data_updated_at=datetime(2026, 8, 16, 3, 0, tzinfo=UTC) if has_market_time else None,
+        market_data_updated_at=datetime.now(UTC) if has_market_time else None,
     )
     session.add(company)
     session.commit()

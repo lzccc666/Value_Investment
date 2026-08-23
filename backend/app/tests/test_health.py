@@ -14,4 +14,5 @@ def test_health_check_returns_service_status() -> None:
     assert payload["service"] == "Value Investment API"
     assert payload["version"] == "0.1.0"
     assert payload["environment"] == "development"
+    assert payload["local_control_enabled"] is False
     assert "checked_at" in payload

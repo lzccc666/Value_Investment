@@ -29,6 +29,7 @@ coverage/
 data/raw/*
 data/processed/*
 data/cache/*
+data/runtime/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/cache/.gitkeep

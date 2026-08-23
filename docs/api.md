@@ -15,7 +15,10 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/api/health` | 返回服务状态、名称和版本 |
+| `GET` | `/api/health` | 返回服务状态、名称、版本和 `local_control_enabled` |
+| `POST` | `/api/system/shutdown` | 仅托管本机会话可用；校验 loopback 来源及 `X-Local-Control-Token` 后请求监管进程关闭前后端 |
+
+`/api/system/shutdown` 默认未启用并返回 `404`。`scripts/dev.ps1` 在完整前后端模式下为每次运行生成随机令牌和停止请求文件，通过进程环境分别注入后端与 Vite；令牌不持久化到项目配置或运行会话 JSON。远程客户端、非本机 Origin 和错误令牌返回 `403`。
 
 ## 公司与档案
 
@@ -227,6 +230,14 @@ ECB 交叉汇率只使用同一 rate date，公式为 `quote_per_eur / base_per_
 | `DELETE` | `/api/investment-tools/buy-memo-entries/{entry_id}` | 无 | 删除一条买入备忘录，不删除 011 来源结果 |
 | `GET` | `/api/investment-tools/buy-memo-companies` | 可选 `q`、`limit` | 搜索至少有一个有效 011 投资决策结果的公司 |
 | `GET` | `/api/investment-tools/buy-memo-companies/{company_id}/price-decisions` | 无 | 获取公司可导入的 011 历史版本及已导入状态 |
+| `GET` | `/api/investment-tools/reading-books` | 无 | 获取全部书籍及各自多轮阅读进度 |
+| `POST` | `/api/investment-tools/reading-books` | `title`、`status`、`initial_progress`，可选 `author/notes` | 手工新增书籍并创建第一轮进度 |
+| `GET` | `/api/investment-tools/reading-books/{book_id}` | 无 | 获取一本书及全部历史阅读轮次 |
+| `PATCH` | `/api/investment-tools/reading-books/{book_id}` | 可更新 `title/author/status/notes` | 编辑书籍，不覆盖阅读轮次 |
+| `DELETE` | `/api/investment-tools/reading-books/{book_id}` | 无 | 删除书籍并显式级联全部阅读进度 |
+| `POST` | `/api/investment-tools/reading-books/{book_id}/progress` | 可选 `progress_percent`，默认 0 | 按历史最大编号新增一轮阅读 |
+| `PATCH` | `/api/investment-tools/reading-progress/{progress_id}` | `progress_percent` | 更新指定轮次的百分比 |
+| `DELETE` | `/api/investment-tools/reading-progress/{progress_id}` | 无 | 删除非最后一轮阅读记录；最后一轮返回 `409` |
 | `GET` | `/api/investment-tools/portfolio-snapshots/{snapshot_id}` | - | 快照详情 |
 | `PATCH` | `/api/investment-tools/portfolio-snapshots/{snapshot_id}` | 可更新字段 | 编辑快照 |
 | `DELETE` | `/api/investment-tools/portfolio-snapshots/{snapshot_id}` | - | 删除快照并显式级联其持仓 |
@@ -245,6 +256,8 @@ ECB 交叉汇率只使用同一 rate date，公式为 `quote_per_eur / base_per_
 持仓人和快照读取响应包含 `display_order`。重排请求必须无重复地提交当前作用域的完整 ID 集合，服务按数组顺序写入连续 `0..N-1`；遗漏当前记录、混入其他持仓人的快照或包含未知 ID 返回 `400`。Listing 搜索只返回启用中的 A/H/美普通股或 ADS，支持公司名、别名、ticker/symbol、点号归一化和 A股/港股/美股市场词。A/H 外部目录只接受沪深北普通股和港股 HKD 普通股，导入前按 `quote_id` 二次核验并与本地完全同名/别名发行人合并；ETF、基金、优先股、权证和币种无法确定的港股人民币柜台不会进入候选。SEC 搜索与导入均要求外部证券目录确认普通股或 ADS，因此 ETF、优先股、权证等不会出现在候选中或被导入；导入接受 Nasdaq/NYSE `operating` issuer，对 `entityType=other` 仅在 SEC submissions 存在 `20-F/6-K` 时放行。未核验的证券单位比例保持空值，不绕过 011 门禁。
 
 买入备忘录按选定的 `PriceDecisionRun` 冻结公司与 Listing、中性内在价值、建议买入价、生效安全边际、最新报告期和 011 版本。同一来源只能导入一次，重复返回 `409`；011 来源随后删除时仅将 `source_price_decision_run_id` 置空，冻结字段继续保留。删除备忘条目不删除来源 011，也不触发重算。
+
+阅读书单由用户手工维护，不关联 Company、Listing 或 004-011 运行。书籍状态只允许 `planned/reading/finished`；阅读进度为 `0-100` 整数。每一轮以服务端生成的正整数 `round_number` 独立保存，同一本书的轮次编号唯一，因此后续重读不会覆盖此前进度。状态与进度彼此独立，API 不根据百分比自动改变状态。
 
 估值公式为 `local_market_value = quantity × latest_price`、`base_market_value = local_market_value × applicable_fx_rate`、`weight = base_market_value / priced_total`。缺价格或 FX 的条目标记为未计价，不以 0 代替，也不进入总市值和权重分母。行情和汇率响应同时给出数据日期、来源和状态；这里的“最新”不表示交易级实时。
 
@@ -290,7 +303,7 @@ Preview 示例：
 }
 ```
 
-操作类型包括 `reset_company_research_data`、`clear_analysis_history`、`initialize_database`、`prune_versions`、`purge_deleted_and_vacuum`、`restore_backup` 和 `delete_backup`。Preview 响应包含各表影响数量、受引用保护记录、预计释放空间、是否自动备份、确认短语和过期时间。统计、操作指纹和备份 manifest 均包含 `security_listings`、`market_snapshots`、`fx_rate_snapshots` 以及 015 的 `portfolio_owners`、`portfolio_snapshots`、`portfolio_holdings`、`market_fear_snapshots`。公司研究重置和全局分析历史清理保留 015；完整初始化只有在预览、精确确认和操作前备份后才会删除 015 数据。
+操作类型包括 `reset_company_research_data`、`clear_analysis_history`、`initialize_database`、`prune_versions`、`purge_deleted_and_vacuum`、`restore_backup` 和 `delete_backup`。Preview 响应包含各表影响数量、受引用保护记录、预计释放空间、是否自动备份、确认短语和过期时间。统计、操作指纹和备份 manifest 均包含 `security_listings`、`market_snapshots`、`fx_rate_snapshots` 以及 015 的 `portfolio_owners`、`portfolio_snapshots`、`portfolio_holdings`、`market_fear_snapshots`、`buy_memo_entries`、`reading_books`、`reading_progress_entries`。公司研究重置和全局分析历史清理保留 015；完整初始化只有在预览、精确确认和操作前备份后才会删除 015 数据。
 
 Execute 示例：
 
@@ -305,7 +318,7 @@ Execute 示例：
 
 ## 数据范围边界
 
-- API 不提供券商账户同步、成本收益归因或交易执行端点；015 只提供人工录入证券数量与派生组合估值。
+- API 不提供券商账户同步、成本收益归因或交易执行端点；015 的持仓、买入备忘录、市场温度与阅读书单均保持独立工具边界。
 - 首轮完整链路只支持 A 股普通股、港交所普通股及 NASDAQ/NYSE/AMEX 普通股/ADS；ETF、基金、衍生品、OTC 不在范围内。
 - 008-010 的输入、输出和对应 UI 不接受市场价格、市值、MarketSnapshot、FX、目标价或交易动作。
 - 011 只读取已完成估值、其绑定 Memo、目标 Listing、不可变行情和必要的 FX；缺失币种、share basis、证券单位比率、行情或汇率时明确阻断。

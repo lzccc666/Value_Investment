@@ -9,4 +9,5 @@ class HealthResponse(BaseModel):
     service: str
     version: str
     environment: str
+    local_control_enabled: bool
     checked_at: datetime

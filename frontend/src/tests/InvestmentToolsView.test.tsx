@@ -28,6 +28,13 @@ const api = vi.hoisted(() => ({
   getBuyMemoDecisions: vi.fn(),
   createBuyMemoEntry: vi.fn(),
   deleteBuyMemoEntry: vi.fn(),
+  getReadingBooks: vi.fn(),
+  createReadingBook: vi.fn(),
+  updateReadingBook: vi.fn(),
+  deleteReadingBook: vi.fn(),
+  createReadingProgress: vi.fn(),
+  updateReadingProgress: vi.fn(),
+  deleteReadingProgress: vi.fn(),
   getMarketFear: vi.fn(),
   refreshMarketFear: vi.fn()
 }));
@@ -284,6 +291,34 @@ const buyMemoDecisions = [
   }
 ];
 
+const readingBook = {
+  id: 601,
+  title: "聪明的投资者",
+  author: "本杰明·格雷厄姆",
+  status: "reading" as const,
+  notes: "重读安全边际章节",
+  created_at: "2026-08-22T02:00:00Z",
+  updated_at: "2026-08-23T02:00:00Z",
+  progress_entries: [
+    {
+      id: 701,
+      book_id: 601,
+      round_number: 1,
+      progress_percent: 100,
+      created_at: "2026-08-22T02:00:00Z",
+      updated_at: "2026-08-22T02:00:00Z"
+    },
+    {
+      id: 702,
+      book_id: 601,
+      round_number: 2,
+      progress_percent: 30,
+      created_at: "2026-08-23T02:00:00Z",
+      updated_at: "2026-08-23T02:00:00Z"
+    }
+  ]
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -318,6 +353,35 @@ beforeEach(() => {
     price_decision_version_no: 2
   });
   api.deleteBuyMemoEntry.mockResolvedValue({ id: buyMemoEntry.id, deleted: true });
+  api.getReadingBooks.mockResolvedValue({ items: [readingBook], total: 1 });
+  api.createReadingBook.mockResolvedValue({
+    ...readingBook,
+    id: 602,
+    title: "证券分析",
+    status: "planned",
+    notes: null,
+    progress_entries: [{
+      ...readingBook.progress_entries[0],
+      id: 703,
+      book_id: 602,
+      progress_percent: 0
+    }]
+  });
+  api.updateReadingBook.mockImplementation((bookId: number, payload: object) =>
+    Promise.resolve({ ...readingBook, id: bookId, ...payload })
+  );
+  api.deleteReadingBook.mockResolvedValue({ id: readingBook.id, deleted: true });
+  api.createReadingProgress.mockResolvedValue({
+    ...readingBook.progress_entries[1],
+    id: 704,
+    round_number: 3,
+    progress_percent: 0
+  });
+  api.updateReadingProgress.mockResolvedValue({
+    ...readingBook.progress_entries[1],
+    progress_percent: 45
+  });
+  api.deleteReadingProgress.mockResolvedValue({ id: 702, deleted: true });
   api.getMarketFear.mockResolvedValue(fearResponse);
   api.refreshMarketFear.mockResolvedValue({ ...fearResponse, status: "success" });
 });
@@ -686,5 +750,64 @@ describe("InvestmentToolsView", () => {
     await waitFor(() => expect(api.refreshMarketFear).toHaveBeenCalledWith("HK"));
     fireEvent.click(screen.getByRole("button", { name: "刷新全部指标" }));
     await waitFor(() => expect(api.refreshMarketFear).toHaveBeenCalledWith(undefined));
+  });
+
+  it("supports reading book CRUD, multiple rounds, status, notes, and draggable progress", async () => {
+    render(<InvestmentToolsView refreshToken={0} />);
+    fireEvent.click(screen.getByRole("tab", { name: "阅读书单" }));
+
+    expect(await screen.findByText("聪明的投资者")).toBeInTheDocument();
+    expect(screen.getByText("第 1 次阅读")).toBeInTheDocument();
+    expect(screen.getByText("第 2 次阅读")).toBeInTheDocument();
+    expect(screen.getByText("100%")).toBeInTheDocument();
+    expect(screen.getByText("30%")).toBeInTheDocument();
+
+    const secondProgress = screen.getByLabelText("《聪明的投资者》第 2 次阅读进度");
+    fireEvent.change(secondProgress, { target: { value: "45" } });
+    fireEvent.pointerUp(secondProgress);
+    await waitFor(() => expect(api.updateReadingProgress).toHaveBeenCalledWith(702, 45));
+    expect(screen.getByText("45%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "新增一轮" }));
+    await waitFor(() => expect(api.createReadingProgress).toHaveBeenCalledWith(601, 0));
+    expect(await screen.findByText("第 3 次阅读")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("《聪明的投资者》阅读状态"), {
+      target: { value: "finished" }
+    });
+    await waitFor(() => expect(api.updateReadingBook).toHaveBeenCalledWith(601, {
+      status: "finished"
+    }));
+
+    fireEvent.click(screen.getByTitle("编辑《聪明的投资者》"));
+    const editForm = screen.getByText("编辑书籍").closest("form");
+    expect(editForm).not.toBeNull();
+    fireEvent.change(within(editForm!).getByLabelText("备注（可选）"), {
+      target: { value: "第二轮补充笔记" }
+    });
+    fireEvent.click(within(editForm!).getByRole("button", { name: "保存书籍" }));
+    await waitFor(() => expect(api.updateReadingBook).toHaveBeenCalledWith(
+      601,
+      expect.objectContaining({ notes: "第二轮补充笔记" })
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "添加书籍" }));
+    const createForm = screen.getByText("录入书籍").closest("form");
+    expect(createForm).not.toBeNull();
+    fireEvent.change(within(createForm!).getByLabelText("书名"), {
+      target: { value: "证券分析" }
+    });
+    fireEvent.change(within(createForm!).getByLabelText("第一次阅读进度"), {
+      target: { value: "20" }
+    });
+    fireEvent.click(within(createForm!).getByRole("button", { name: "保存书籍" }));
+    await waitFor(() => expect(api.createReadingBook).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "证券分析", initial_progress: 20 })
+    ));
+
+    fireEvent.click(screen.getByTitle("删除第 2 次阅读记录"));
+    await waitFor(() => expect(api.deleteReadingProgress).toHaveBeenCalledWith(702));
+    fireEvent.click(screen.getByTitle("删除《聪明的投资者》"));
+    await waitFor(() => expect(api.deleteReadingBook).toHaveBeenCalledWith(601));
   });
 });

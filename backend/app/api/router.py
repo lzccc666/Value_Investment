@@ -12,11 +12,13 @@ from app.api.routes import (
     memos,
     parameter_config,
     price_decisions,
+    system_control,
     valuations,
 )
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["system"])
+api_router.include_router(system_control.router, tags=["system"])
 api_router.include_router(companies.router, tags=["companies"])
 api_router.include_router(market_data.router, tags=["market-data"])
 api_router.include_router(fx_rates.router, tags=["market-data"])
